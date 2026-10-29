@@ -11,7 +11,7 @@ from poe2_rag.answering.domain.errors import (
     InvalidRetrievedChunkError,
 )
 from poe2_rag.answering.domain.retrieval import RetrievedChunk
-from poe2_rag.shared.domain._text import is_blank
+from poe2_rag.shared.domain import is_blank
 
 
 @dataclass(frozen=True, slots=True)
