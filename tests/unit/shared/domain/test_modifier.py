@@ -2,7 +2,12 @@ import math
 
 import pytest
 
-from poe2_rag.shared.domain import DomainError, InvalidModifierError, Modifier, ModifierKind
+from poe2_rag.shared.domain import (
+    DomainError,
+    InvalidModifierError,
+    Modifier,
+    ModifierKind,
+)
 
 
 def test_kind_values_are_lowercase_names() -> None:
