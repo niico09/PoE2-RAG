@@ -90,7 +90,7 @@ and gives every future adapter a contract to satisfy (§8).
 - [x] T1 — Branch `feat/answer-question`, feature doc, Engram mirror. Route: inline. S11.
 - [x] T2 — `ports.py` + `GeneratedAnswer` + application error base. Route: inline. S1, S4, S5.
 - [x] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
-- [ ] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
+- [x] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
 - [ ] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
 - [ ] T6 — Close: full suite, import boundary, architecture doc, evidence. Route: inline. S6, S12.
 
@@ -116,6 +116,19 @@ Filled at close.
     naive check. `StageScores` rejects it the same way.
   - `final_top_k > rerank_top_m` is rejected because the reranker cannot deliver more chunks than it
     was given, so a larger final budget could never be filled.
+- T4: RED → `ImportError: cannot import name 'AnswerQuestion' from 'poe2_rag.answering.application'`,
+  0 tests run (13 written). GREEN → **403 passed** (13 new).
+  - `execute` embeds first and hands the embedder's vector, never the raw text, to `VectorIndex`: the port
+    takes a vector, so the embedder is the only source of it.
+  - An unknown version surfaces the domain's `InvalidQueryError` from `Query.for_catalog`; no application
+    error wraps it, so a bad query has one error type and no port is called (a test asserts the journal
+    stayed empty).
+  - The final slice (`reranked[:final_top_k]`) keeps the budget even when an adapter ignores `limit`; the
+    test that pins it drives the reranker fake with `returned=` to make it over-deliver.
+  - The fakes share one `CallRecorder`, so a test asserts the whole call order without duplicating state
+    per fake; the journal is `Any`-typed on purpose, and that looseness stays inside `tests/`.
+  - `AnswerResult` carries no validation: only `execute` builds it, from values the domain already
+    validated, so a second check would only repeat the domain's rules.
 
 ## Close
 Filled at close.
