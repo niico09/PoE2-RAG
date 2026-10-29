@@ -2,6 +2,9 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
+> **Estado:** diseño del MVP acordado; todavía no hay código implementado.
+> El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
+
 ---
 
 ## 🎯 Objetivo y Desafíos Técnicos
@@ -16,74 +19,89 @@ Los sistemas RAG convencionales (naive RAG basado únicamente en similitud vecto
 
 ## 🏗️ Arquitectura del Sistema
 
+Arquitectura hexagonal con dos flujos que solo se comunican a través de los índices: **ingesta** (offline) y **consulta** (online). Detalle en [`docs/architecture.md`](docs/architecture.md).
+
 ```text
-[ Fuentes: Wiki / JSON de Datos / Patch Notes ]
+[ Fuentes: poe2db / poe2wiki.net / Notas de parche ]
                     │
                     ▼
      [ Ingesta & Parser Semántico ]
-   (Chunking estructurado por gema / sección)
+   (Chunking estructurado por gema / sección,
+    vigencia por rango de parches)
                     │
                     ▼
         [ Indexación Híbrida ]
     ┌───────────────┴───────────────┐
     ▼                               ▼
 [ BM25 Lexical Index ]      [ Dense Vector Store ]
-(Nombres, tags exactos)      (ChromaDB / Qdrant)
+(Nombres, tags exactos)      (Chroma + bge-base-en-v1.5)
     └───────────────┬───────────────┘
-                    │
+                    │  pre-filtro por vigencia del parche
                     ▼
        [ Reciprocal Rank Fusion ]
                     │
                     ▼
      [ Reranking (Cross-Encoder) ]
-    (Top-K reordenado por relevancia)
+    (bge-reranker-base, top-K final)
                     │
                     ▼
-          [ LLM + In-Context ]
+   [ LLM con citas nativas (Claude Sonnet 5.5) ]
 ```
+
+| Componente | Elección del MVP | Decisión |
+|---|---|---|
+| Idioma | Todo en inglés | [ADR-0001](docs/adr/0001-idioma-mvp-ingles.md) |
+| Fuentes | poe2db, notas de parche oficiales, poe2wiki.net | [ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md) |
+| Vector store | Chroma embebido | [ADR-0003](docs/adr/0003-vector-store-chroma.md) |
+| Embeddings | `bge-base-en-v1.5` local | [ADR-0004](docs/adr/0004-embeddings-locales.md) |
+| Generación | Claude Sonnet 5.5 por API | [ADR-0005](docs/adr/0005-llm-por-api.md) |
+| Interfaz | CLI (`ingest`, `ask`, `eval`) | [ADR-0006](docs/adr/0006-cli-como-interfaz.md) |
 
 ---
 
-## 📂 Estructura del Repositorio
+## 📂 Estructura del Repositorio (objetivo)
 
 ```text
 poe2-rag/
 ├── data/
-│   ├── raw/                 # Snapshots de la wiki y notas de parche sin procesar
-│   └── processed/           # Documentos normalizados en JSON con metadatos
-├── src/
-│   ├── ingestion/           # Parsers de datos, splitters semánticos y metadatos
-│   │   ├── gem_parser.py
-│   │   └── patch_parser.py
-│   ├── retrieval/           # Búsqueda densa, BM25, fusión y reranker
-│   │   ├── hybrid_retriever.py
-│   │   └── reranker.py
-│   ├── generation/          # Templates de prompts y llamada al LLM
-│   │   └── rag_chain.py
-│   └── eval/                # Dataset de pruebas y métricas (Hit Rate, MRR, Faithfulness)
-│       └── eval_pipeline.py
-├── tests/                   # Pruebas unitarias de parsing y recuperación
-├── .env.example              # Variables de entorno y API keys
-├── requirements.txt          # Dependencias del proyecto
-└── README.md
+│   ├── raw/                 # Snapshots de las fuentes sin procesar
+│   └── processed/           # Chunks normalizados en JSON con metadatos
+├── docs/
+│   ├── architecture.md      # Diseño del sistema
+│   └── adr/                 # Registro de decisiones de arquitectura
+├── src/poe2_rag/
+│   ├── shared/domain/       # PatchVersion, Validity, Chunk, Modifier, ...
+│   ├── ingestion/           # Fuentes, parsers, chunking e indexación
+│   ├── answering/           # Recuperación híbrida, RRF, reranking y generación
+│   ├── evaluation/          # Dataset y métricas (Hit@K, MRR, fidelidad, obsolescencia)
+│   └── bootstrap.py         # Composition root
+└── tests/                   # Unitarios, de contrato y de evaluación
 ```
+
+Cada capacidad se divide en `domain/`, `application/` y `adapters/`.
 
 ---
 
-## ⚙️ Esquema de Metadatos
+## ⚙️ Esquema de Chunk
 
-Cada chunk indexado contiene metadatos normalizados para permitir pre/post-filtrado determinista:
+La vigencia se expresa como un rango de parches, no como una marca de "parche actual": el catálogo de parches es el único que sabe cuál es el vigente. La identidad de la entidad (`gem:spark`) es independiente de la versión.
 
 ```json
 {
-  "doc_id": "gem_spark_v012",
-  "name": "Spark",
-  "category": "active_gem",
+  "chunk_id": "gem:spark@0.1.2#description",
+  "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
+  "validity": { "valid_from": "0.1.2", "valid_until": null },
+  "section": "description",
   "tags": ["Spell", "Lightning", "Projectile"],
-  "patch_version": "0.1.2",
-  "is_current_patch": true,
-  "source_url": "https://poe2db.tw/us/Spark",
-  "content": "Spark dispara proyectiles de rayo que rebotan en las paredes y se mueven erráticamente. Coste de Maná: 12. Escala con modificadores de Proyectiles y Daño de Rayo."
+  "modifiers": [
+    { "stat": "mana_cost", "value": 12, "kind": "flat" }
+  ],
+  "source": {
+    "type": "poe2db",
+    "url": "https://poe2db.tw/us/Spark",
+    "captured_at": "2026-10-29"
+  },
+  "text": "Spark fires lightning projectiles that bounce off walls and move erratically..."
 }
 ```
 
@@ -91,9 +109,14 @@ Cada chunk indexado contiene metadatos normalizados para permitir pre/post-filtr
 
 ## 🗺️ Roadmap
 
-- [x] Ingesta y chunking con metadatos de gemas de habilidad.
-- [x] Implementación de retriever híbrido (BM25 + ChromaDB / FAISS).
-- [x] Reranking con modelo Cross-Encoder (bge-reranker-base).
-- [ ] Filtrado temporal determinista para notas de parche concurrentes.
+- [x] Diseño de arquitectura y decisiones del MVP.
+- [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
+- [ ] Modelo de dominio (`PatchVersion`, `Validity`, `Chunk`, `Modifier`) con tests unitarios.
+- [ ] Ingesta y chunking con metadatos de gemas de habilidad.
+- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
+- [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
+- [ ] Generación con citas nativas y CLI.
+- [ ] Dataset de evaluación y métricas.
+- [ ] Comparar Nemotron 3.5 Lightning como generador local.
 - [ ] Modelado del árbol de habilidades pasivas mediante grafos de conocimiento (GraphRAG).
 - [ ] Soporte para balance de armas y cálculo de tiers de modificadores.
