@@ -88,7 +88,7 @@ and gives every future adapter a contract to satisfy (§8).
 
 ## Tasks
 - [x] T1 — Branch `feat/answer-question`, feature doc, Engram mirror. Route: inline. S11.
-- [ ] T2 — `ports.py` + `GeneratedAnswer` + application error base. Route: inline. S1, S4, S5.
+- [x] T2 — `ports.py` + `GeneratedAnswer` + application error base. Route: inline. S1, S4, S5.
 - [ ] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
 - [ ] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
 - [ ] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
@@ -100,6 +100,14 @@ Filled at close.
 ## Progress / Evidence
 - T1: branch `feat/answer-question` created from `main` (`7730db6`). Baseline on that base:
   `uv run pytest -q` → 344 passed. No RED applicable (documentation only).
+- T2: RED → collection `ModuleNotFoundError: No module named 'poe2_rag.answering.application'`,
+  0 tests run (9 written). GREEN → **353 passed** (9 new).
+  - `GeneratedAnswer` validates shape only (non-blank text, citations as a tuple of `Citation`): it cannot
+    check delivery, which stays `Answer.build`'s rule; the model may legitimately return no citations.
+  - `AnswerQuestionError` derives from `ValueError`, not from `DomainError`: a broken outbound contract is
+    not a domain invariant violation, so no caller can swallow it as one by accident.
+  - The ports are `runtime_checkable`, so a future contract test can assert an adapter implements its port;
+    a test pins that the check works.
 
 ## Close
 Filled at close.
