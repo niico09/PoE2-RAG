@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -23,6 +23,37 @@ def test_rejects_unparseable_url() -> None:
         SourceRef("poe2db", "http://[::1", CAPTURED)
 
 
+@pytest.mark.parametrize("url", ["http://[::1]/x", "https://localhost:8090/x"])
+def test_accepts_valid_hosts(url: str) -> None:
+    assert SourceRef("poe2db", url, CAPTURED).url == url
+
+
+@pytest.mark.parametrize(
+    "url", ["https://exa mple.com", "https://.a", "https://@:80", "https://exa\u00a0mple.com"]
+)
+def test_rejects_malformed_hosts(url: str) -> None:
+    with pytest.raises(InvalidSourceRefError):
+        SourceRef("poe2db", url, CAPTURED)
+
+
+@pytest.mark.parametrize("url", [123, None, b"https://poe2db.tw"])
+def test_rejects_a_non_string_url_with_a_domain_error(url: object) -> None:
+    with pytest.raises(InvalidSourceRefError):
+        SourceRef("poe2db", url, CAPTURED)  # type: ignore[arg-type]
+
+
+def test_strips_leading_and_trailing_url_whitespace() -> None:
+    ref = SourceRef("poe2db", "  https://poe2db.tw/us/Spark  ", CAPTURED)
+
+    assert ref.url == "https://poe2db.tw/us/Spark"
+
+
+def test_padded_url_equals_unpadded_url() -> None:
+    assert SourceRef("poe2db", "  https://poe2db.tw/us/Spark", CAPTURED) == SourceRef(
+        "poe2db", "https://poe2db.tw/us/Spark", CAPTURED
+    )
+
+
 @pytest.mark.parametrize("source_type", ["", "  "])
 def test_rejects_blank_type(source_type: str) -> None:
     with pytest.raises(InvalidSourceRefError):
@@ -32,6 +63,15 @@ def test_rejects_blank_type(source_type: str) -> None:
 def test_rejects_non_date_captured_at() -> None:
     with pytest.raises(InvalidSourceRefError):
         SourceRef("poe2db", "https://poe2db.tw", "2026-10-29")  # type: ignore[arg-type]
+
+
+def test_rejects_datetime_captured_at() -> None:
+    with pytest.raises(InvalidSourceRefError):
+        SourceRef("poe2db", "https://poe2db.tw", datetime(2026, 10, 29, 12, 0))  # type: ignore[arg-type]
+
+
+def test_accepts_date_captured_at() -> None:
+    assert SourceRef("poe2db", "https://poe2db.tw", CAPTURED).captured_at == CAPTURED
 
 
 def test_error_is_a_domain_error() -> None:
