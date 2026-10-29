@@ -7,7 +7,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from poe2_rag.shared.domain.errors import InvalidPatchVersionError
+from poe2_rag.shared.domain.errors import (
+    InvalidPatchCatalogError,
+    InvalidPatchVersionError,
+)
 from poe2_rag.shared.domain.patch_catalog import InMemoryPatchCatalog
 from poe2_rag.shared.domain.patch_version import PatchVersion
 
@@ -50,6 +53,8 @@ def _load(path: Path) -> InMemoryPatchCatalog:
         raise PatchCatalogLoadError(f"cannot read {path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise PatchCatalogLoadError(f"{path} is not valid TOML: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise PatchCatalogLoadError(f"{path} is not valid UTF-8: {exc}") from exc
     return _build(path, data)
 
 
@@ -65,7 +70,10 @@ def _build(path: Path, data: dict[str, Any]) -> InMemoryPatchCatalog:
     if not isinstance(entries, list):
         raise PatchCatalogLoadError(f"{path}: 'patches' must be an array of tables, got {entries!r}")
     versions = tuple(_entry_version(path, index, entry) for index, entry in enumerate(entries, start=1))
-    return InMemoryPatchCatalog(versions, current)
+    try:
+        return InMemoryPatchCatalog(versions, current)
+    except InvalidPatchCatalogError as exc:
+        raise InvalidPatchCatalogError(f"{path}: {exc}") from exc
 
 
 def _parse_current(path: Path, raw: object) -> PatchVersion:
@@ -88,7 +96,7 @@ def _entry_version(path: Path, position: int, entry: object) -> PatchVersion:
     if "version" not in entry:
         raise PatchCatalogLoadError(f"{where}: missing 'version'")
     released_on = entry.get("released_on")
-    if released_on is not None and not isinstance(released_on, date):
+    if released_on is not None and type(released_on) is not date:
         raise PatchCatalogLoadError(f"{where}: 'released_on' must be a TOML date, got {released_on!r}")
     raw = entry["version"]
     if not isinstance(raw, str):

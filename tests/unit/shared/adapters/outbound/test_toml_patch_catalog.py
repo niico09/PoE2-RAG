@@ -6,7 +6,7 @@ from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
     PatchCatalogLoadError,
     TomlPatchCatalog,
 )
-from poe2_rag.shared.domain import InvalidPatchCatalogError, PatchVersion
+from poe2_rag.shared.domain import DomainError, InvalidPatchCatalogError, PatchVersion
 
 MINIMAL = """\
 current = "0.1.1"
@@ -27,6 +27,12 @@ def v(raw: str) -> PatchVersion:
 def write_catalog(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "patches.toml"
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def write_bytes(tmp_path: Path, data: bytes) -> Path:
+    path = tmp_path / "patches.toml"
+    path.write_bytes(data)
     return path
 
 
@@ -124,6 +130,24 @@ class TestLoadErrors:
         with pytest.raises(PatchCatalogLoadError):
             TomlPatchCatalog(write_catalog(tmp_path, text))
 
+    def test_invalid_utf8_is_a_load_error_naming_the_path(self, tmp_path: Path) -> None:
+        path = write_bytes(tmp_path, b'current = "0.1.0"\n\n[[patches]]\nversion = "\xe9"\n')
+
+        with pytest.raises(PatchCatalogLoadError, match="not valid UTF-8") as exc_info:
+            TomlPatchCatalog(path)
+
+        assert not isinstance(exc_info.value, UnicodeDecodeError)
+
+    def test_datetime_release_is_rejected_as_not_a_date(self, tmp_path: Path) -> None:
+        text = (
+            'current = "0.1.0"\n\n[[patches]]\n'
+            'version = "0.1.0"\n'
+            'released_on = 2024-12-06T00:00:00\n'
+        )
+
+        with pytest.raises(PatchCatalogLoadError, match="released_on"):
+            TomlPatchCatalog(write_catalog(tmp_path, text))
+
 
 class TestCatalogInvariants:
     def test_absent_patches_means_an_empty_catalog(self, tmp_path: Path) -> None:
@@ -139,3 +163,27 @@ class TestCatalogInvariants:
     def test_current_absent_from_the_list_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(InvalidPatchCatalogError, match="current"):
             TomlPatchCatalog(write_catalog(tmp_path, 'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\n'))
+
+    def test_empty_catalog_error_names_the_path(self, tmp_path: Path) -> None:
+        path = write_catalog(tmp_path, 'current = "0.1.0"\n')
+
+        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+            TomlPatchCatalog(path)
+
+    def test_duplicate_version_error_names_the_path(self, tmp_path: Path) -> None:
+        text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
+        path = write_catalog(tmp_path, text)
+
+        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+            TomlPatchCatalog(path)
+
+    def test_unknown_current_error_names_the_path(self, tmp_path: Path) -> None:
+        path = write_catalog(tmp_path, 'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\n')
+
+        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+            TomlPatchCatalog(path)
+
+
+class TestErrorHierarchy:
+    def test_load_error_is_not_a_domain_error(self) -> None:
+        assert not issubclass(PatchCatalogLoadError, DomainError)
