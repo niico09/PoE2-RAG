@@ -2,7 +2,12 @@ import math
 
 import pytest
 
-from poe2_rag.shared.domain import DomainError, InvalidModifierError, Modifier, ModifierKind
+from poe2_rag.shared.domain import (
+    DomainError,
+    InvalidModifierError,
+    Modifier,
+    ModifierKind,
+)
 
 
 def test_kind_values_are_lowercase_names() -> None:
@@ -54,3 +59,9 @@ def test_rejects_raw_string_kind() -> None:
 
 def test_error_is_a_domain_error() -> None:
     assert issubclass(InvalidModifierError, DomainError)
+
+
+@pytest.mark.parametrize("kind", [ModifierKind.ADDED, ModifierKind.FLAT])
+def test_added_and_flat_are_both_additive(kind: ModifierKind) -> None:
+    """`added` and `flat` differ by pool, not by math: neither multiplies (see ModifierKind)."""
+    assert not Modifier("damage", 5, kind).is_multiplicative
