@@ -118,7 +118,8 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 ## 🗺️ Roadmap
 
 - [x] Diseño de arquitectura y decisiones del MVP.
-- [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
+- [x] Revisar las condiciones de uso de poe2db ([ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md)).
+- [ ] Conseguir acceso autorizado a poe2wiki.net.
 - [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
