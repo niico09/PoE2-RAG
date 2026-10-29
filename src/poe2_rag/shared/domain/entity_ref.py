@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
-from poe2_rag.shared.domain._text import is_blank
+from poe2_rag.shared.domain._text import is_blank, is_slug
 from poe2_rag.shared.domain.errors import InvalidEntityRefError
-
-_SLUG = re.compile(r"[a-z0-9_-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,11 +17,11 @@ class EntityRef:
     name: str
 
     def __post_init__(self) -> None:
-        if is_blank(self.kind):
-            raise InvalidEntityRefError("kind must be a non-blank string")
+        if not is_slug(self.kind):
+            raise InvalidEntityRefError(f"kind must match [a-z0-9_-]+, got {self.kind!r}")
         if is_blank(self.name):
             raise InvalidEntityRefError("name must be a non-blank string")
-        if not isinstance(self.slug, str) or _SLUG.fullmatch(self.slug) is None:
+        if not is_slug(self.slug):
             raise InvalidEntityRefError(f"slug must match [a-z0-9_-]+, got {self.slug!r}")
 
     @property

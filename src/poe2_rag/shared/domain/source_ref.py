@@ -32,5 +32,8 @@ class SourceRef:
 def _is_http_url(value: object) -> bool:
     if not isinstance(value, str):
         return False
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
     return parts.scheme in _ALLOWED_SCHEMES and bool(parts.netloc)

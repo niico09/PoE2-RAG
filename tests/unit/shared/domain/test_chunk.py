@@ -62,6 +62,15 @@ class TestInvariants:
         with pytest.raises(InvalidChunkError):
             make_chunk(**{field: value})
 
+    @pytest.mark.parametrize("section", [" description", "desc#x", "a@b", "a:b", "Description", "two words"])
+    def test_rejects_non_slug_section(self, section: str) -> None:
+        with pytest.raises(InvalidChunkError):
+            make_chunk(section=section)
+
+    @pytest.mark.parametrize("section", ["description", "skill-tree", "level_20"])
+    def test_accepts_slug_section(self, section: str) -> None:
+        assert make_chunk(section=section).section == section
+
     @pytest.mark.parametrize("field", ["entity", "validity", "source"])
     def test_rejects_wrong_component_types(self, field: str) -> None:
         with pytest.raises(InvalidChunkError):

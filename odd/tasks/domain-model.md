@@ -25,6 +25,7 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 - [x] T3 — `Validity`: half-open range `[valid_from, valid_until)`, open-ended when `valid_until is None`, `is_valid_at(version)`, invariant `valid_from < valid_until`. Route: delegated.
 - [x] T4 — `EntityRef`, `SourceRef`, `Modifier` (`ModifierKind`: increased, reduced, more, less, added, flat). Route: delegated.
 - [x] T5 — `Chunk` entity composing the above; `chunk_id` format `<kind>:<slug>@<valid_from>#<section>`. Route: delegated.
+- [x] T6 — Fix review warnings (lineage review-b3722f7a7baa70e5, approved, non-blocking): constrain `section` and `EntityRef.kind` to a slug-like pattern so `chunk_id` cannot contain separators or surrounding whitespace; `PatchVersion.parse` raises `InvalidPatchVersionError` for non-str input; `SourceRef` maps `urlsplit` `ValueError` to `InvalidSourceRefError`. Deferred suggestions: type check in `is_valid_at`, `OverflowError` for huge ints in `Modifier`, `datetime` accepted as `captured_at`. Route: delegated (writer, 4+ files).
 
 ## Acceptance criteria
 - `uv run pytest` passes; every task observed RED before GREEN.
@@ -39,6 +40,7 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 - T3: RED → ImportError (`InvalidValidityError` not exported). GREEN → 36 passed (13 new; boundary tests from==valid, until==invalid, v<from, open range far future). Commit `dc434f6`.
 - T4: RED → ImportError (`EntityRef`, `InvalidModifierError`, `InvalidSourceRefError` not exported). GREEN → 81 passed (45 new). `Modifier.is_multiplicative` encodes more/less vs increased (D2); values must be finite int/float (bool rejected); URLs need http(s) scheme and host. Commit `976ce09`.
 - T5: RED → ImportError (`Chunk` not exported). GREEN → 99 passed (18 new). `chunk_id` uses `EntityRef.key`, so it reads `active_gem:spark@0.1.2#description` (architecture §4.3 example shows `gem:spark`, which does not match `entity.kind`; flagged for a doc fix). `dataclasses.replace` re-runs invariants. Commit `cf4162b`.
+- T6: RED → 16 failed, 105 passed (non-slug `section`/`kind`, non-str `PatchVersion.parse`, `http://[::1` URL). GREEN → 121 passed (16 new). Single shared `_text.is_slug` (`[a-z0-9_-]+`) now validates `EntityRef.kind`, `EntityRef.slug` and `Chunk.section`; deferred suggestions left untouched. Commit: see `git log` (`fix(domain): harden chunk_id parts and input validation`).
 
 ## Next step
-All tasks done. Doc examples fixed in `26a3c5b`. Review assessment (base `main`, committed-only): risk medium, `review_due=false` (`under_budget`). Next: delivery (push / PR) decision by the user.
+Delivery decision (push / PR) by the user.

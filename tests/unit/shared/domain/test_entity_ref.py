@@ -24,6 +24,17 @@ def test_rejects_blank_kind(kind: str) -> None:
         EntityRef(kind, "spark", "Spark")
 
 
+@pytest.mark.parametrize("kind", ["active gem", "gem:x", "Gem", "gem@1", "gem#1", " gem"])
+def test_rejects_non_slug_kind(kind: str) -> None:
+    with pytest.raises(InvalidEntityRefError):
+        EntityRef(kind, "spark", "Spark")
+
+
+@pytest.mark.parametrize("kind", ["active_gem", "support-gem", "item"])
+def test_accepts_slug_kind(kind: str) -> None:
+    assert EntityRef(kind, "spark", "Spark").kind == kind
+
+
 @pytest.mark.parametrize("name", ["", "   "])
 def test_rejects_blank_name(name: str) -> None:
     with pytest.raises(InvalidEntityRefError):

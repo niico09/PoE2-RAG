@@ -14,7 +14,7 @@ class InvalidValidityError(DomainError):
 
 
 class InvalidEntityRefError(DomainError):
-    """Raised when an entity reference has a blank field or a malformed slug."""
+    """Raised when an entity reference has a blank name or a malformed kind or slug."""
 
 
 class InvalidSourceRefError(DomainError):

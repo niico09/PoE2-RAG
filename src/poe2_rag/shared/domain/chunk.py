@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from poe2_rag.shared.domain._text import is_blank
+from poe2_rag.shared.domain._text import is_blank, is_slug
 from poe2_rag.shared.domain.entity_ref import EntityRef
 from poe2_rag.shared.domain.errors import InvalidChunkError
 from poe2_rag.shared.domain.modifier import Modifier
@@ -29,8 +29,8 @@ class Chunk:
         self._require_type("entity", EntityRef)
         self._require_type("validity", Validity)
         self._require_type("source", SourceRef)
-        if is_blank(self.section):
-            raise InvalidChunkError("section must be a non-blank string")
+        if not is_slug(self.section):
+            raise InvalidChunkError(f"section must match [a-z0-9_-]+, got {self.section!r}")
         if is_blank(self.text):
             raise InvalidChunkError("text must be a non-blank string")
         if not isinstance(self.tags, tuple) or any(is_blank(tag) for tag in self.tags):

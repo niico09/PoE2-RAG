@@ -18,6 +18,11 @@ def test_rejects_non_http_urls(url: str) -> None:
         SourceRef("poe2db", url, CAPTURED)
 
 
+def test_rejects_unparseable_url() -> None:
+    with pytest.raises(InvalidSourceRefError):
+        SourceRef("poe2db", "http://[::1", CAPTURED)
+
+
 @pytest.mark.parametrize("source_type", ["", "  "])
 def test_rejects_blank_type(source_type: str) -> None:
     with pytest.raises(InvalidSourceRefError):
