@@ -12,6 +12,26 @@ def catalog(*raw_versions: str, current: str = "0.1.1") -> InMemoryPatchCatalog:
     return InMemoryPatchCatalog([v(raw) for raw in raw_versions], v(current))
 
 
+class SpyCatalog:
+    """Wraps a catalog and counts every read, so a test can pin the validation order."""
+
+    def __init__(self, wrapped: InMemoryPatchCatalog) -> None:
+        self._wrapped = wrapped
+        self.calls = 0
+
+    def current(self) -> PatchVersion:
+        self.calls += 1
+        return self._wrapped.current()
+
+    def known(self) -> tuple[PatchVersion, ...]:
+        self.calls += 1
+        return self._wrapped.known()
+
+    def contains(self, version: PatchVersion) -> bool:
+        self.calls += 1
+        return self._wrapped.contains(version)
+
+
 def test_error_is_a_domain_error() -> None:
     assert issubclass(InvalidQueryError, DomainError)
 
@@ -70,5 +90,9 @@ class TestForCatalog:
             Query.for_catalog("spark", object())  # type: ignore[arg-type]
 
     def test_rejects_blank_text_without_touching_the_catalog(self) -> None:
+        spy = SpyCatalog(catalog("0.1.1"))
+
         with pytest.raises(InvalidQueryError, match="text"):
-            Query.for_catalog("  ", catalog("0.1.1"))
+            Query.for_catalog("  ", spy)
+
+        assert spy.calls == 0
