@@ -18,6 +18,9 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 ## Delivery
 - Branch: `feat/domain-model`. Strategy: `ask-on-risk`. Forecast: ~350–450 authored changed lines.
 - One work-unit commit per task (Conventional Commits).
+- Chain strategy: stacked PRs to `main` (chosen by the user).
+  - PR 1 (`feat/domain-model-01-core` → `main`): `1c0cda3`..`dc434f6` — scaffold, `PatchVersion`, `Validity`. 369 lines (36 tests pass at `dc434f6`).
+  - PR 2 (`feat/domain-model` → `feat/domain-model-01-core`): `976ce09`..HEAD — `EntityRef`, `SourceRef`, `Modifier`, `Chunk`, doc alignment, T6 hardening. ~500 lines, over the 400 budget; kept as one slice because T6 spans both value objects and `Chunk`.
 
 ## Tasks
 - [x] T1 — Project scaffold: `pyproject.toml`, package layout, pytest config, `.gitignore`. Route: delegated (writer, 2+ files).
@@ -43,4 +46,4 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 - T6: RED → 16 failed, 105 passed (non-slug `section`/`kind`, non-str `PatchVersion.parse`, `http://[::1` URL). GREEN → 121 passed (16 new). Single shared `_text.is_slug` (`[a-z0-9_-]+`) now validates `EntityRef.kind`, `EntityRef.slug` and `Chunk.section`; deferred suggestions left untouched. Commit: see `git log` (`fix(domain): harden chunk_id parts and input validation`).
 
 ## Next step
-Delivery decision (push / PR) by the user.
+Merge PR 1, then PR 2 (retarget to `main` after PR 1 merges).
