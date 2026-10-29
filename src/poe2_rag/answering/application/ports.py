@@ -1,7 +1,7 @@
 """Outbound ports of the `AnswerQuestion` flow: one responsibility per protocol.
 
 Every port is a `typing.Protocol`, so an adapter only has to match the method signatures and the
-use case can run against the in-memory fakes of `tests/unit/answering/application/fakes.py` (§8).
+use case can run against the in-memory fakes of `tests/unit/answering/application/answering_fakes.py` (§8).
 The validity filter lives inside the indexes, never here (§5.1 step 2, ADR-0003).
 """
 

@@ -3,6 +3,9 @@
 Each fake appends to a shared `CallRecorder`, so a test can assert the arguments a port received and
 the order of the whole pipeline without touching a real adapter (§8). The fakes honor `limit` and the
 score each port promises, so a test that sees a different shape is testing the use case, not the fake.
+
+The module carries the capability name because `tests/` is not a package: pytest puts each test
+directory on `sys.path`, and a second capability's `fakes.py` would shadow this one.
 """
 
 from __future__ import annotations

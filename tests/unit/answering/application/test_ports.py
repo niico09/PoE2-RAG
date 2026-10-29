@@ -6,9 +6,15 @@ import pytest
 
 from poe2_rag.answering.application import (
     AnswerQuestionError,
+    ChunkMismatchError,
+    DuplicateChunkError,
     GeneratedAnswer,
     InvalidGeneratedAnswerError,
+    InvalidRetrievalSettingsError,
     LexicalIndex,
+    MissingScoreError,
+    StaleChunkError,
+    UnretrievedChunkError,
 )
 from poe2_rag.answering.domain import Citation
 from poe2_rag.shared.domain import DomainError
@@ -24,7 +30,16 @@ def test_application_errors_are_not_domain_errors() -> None:
     """A broken outbound contract is an application failure, not a domain invariant violation."""
     assert issubclass(AnswerQuestionError, ValueError)
     assert not issubclass(AnswerQuestionError, DomainError)
-    assert issubclass(InvalidGeneratedAnswerError, AnswerQuestionError)
+    for error in (
+        InvalidGeneratedAnswerError,
+        InvalidRetrievalSettingsError,
+        StaleChunkError,
+        UnretrievedChunkError,
+        DuplicateChunkError,
+        MissingScoreError,
+        ChunkMismatchError,
+    ):
+        assert issubclass(error, AnswerQuestionError)
 
 
 class TestGeneratedAnswer:

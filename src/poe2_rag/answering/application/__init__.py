@@ -7,9 +7,13 @@ from poe2_rag.answering.application.answer_question import (
 )
 from poe2_rag.answering.application.errors import (
     AnswerQuestionError,
+    ChunkMismatchError,
+    DuplicateChunkError,
     InvalidGeneratedAnswerError,
     InvalidRetrievalSettingsError,
+    MissingScoreError,
     StaleChunkError,
+    UnretrievedChunkError,
 )
 from poe2_rag.answering.application.ports import (
     Embedder,
@@ -25,15 +29,19 @@ __all__ = [
     "AnswerQuestion",
     "AnswerQuestionError",
     "AnswerResult",
+    "ChunkMismatchError",
+    "DuplicateChunkError",
     "Embedder",
     "GeneratedAnswer",
     "InvalidGeneratedAnswerError",
     "InvalidRetrievalSettingsError",
     "LanguageModel",
     "LexicalIndex",
+    "MissingScoreError",
     "NO_INFORMATION_TEXT",
     "Reranker",
     "RetrievalSettings",
     "StaleChunkError",
+    "UnretrievedChunkError",
     "VectorIndex",
 ]

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import pytest
-from fakes import (
+from answering_fakes import (
     CallRecorder,
     FakeEmbedder,
     FakeLanguageModel,
@@ -17,9 +17,13 @@ from fakes import (
 from poe2_rag.answering.application import (
     AnswerQuestion,
     AnswerResult,
+    ChunkMismatchError,
+    DuplicateChunkError,
     GeneratedAnswer,
+    MissingScoreError,
     RetrievalSettings,
     StaleChunkError,
+    UnretrievedChunkError,
 )
 from poe2_rag.answering.domain import (
     Answer,
@@ -48,6 +52,7 @@ def make_chunk(
     *,
     valid_from: str = "0.1.1",
     valid_until: str | None = None,
+    text: str | None = None,
 ) -> Chunk:
     """Build a chunk valid from `valid_from`, or up to `valid_until` when it is given."""
     return Chunk(
@@ -57,16 +62,20 @@ def make_chunk(
             None if valid_until is None else PatchVersion.parse(valid_until),
         ),
         section="description",
-        text=f"{slug.title()} text.",
+        text=text or f"{slug.title()} text.",
         source=SourceRef("poe2db", f"https://poe2db.tw/us/{slug.title()}", date(2026, 10, 29)),
     )
 
 
 def retrieved(
-    chunk: Chunk, *, lexical: float | None = None, dense: float | None = None
+    chunk: Chunk,
+    *,
+    lexical: float | None = None,
+    dense: float | None = None,
+    rerank: float | None = None,
 ) -> RetrievedChunk:
-    """A chunk as one index returns it, with that stage's score set."""
-    return RetrievedChunk(chunk, StageScores(lexical=lexical, dense=dense))
+    """A chunk as one stage returns it, with that stage's score set."""
+    return RetrievedChunk(chunk, StageScores(lexical=lexical, dense=dense, rerank=rerank))
 
 
 def catalog() -> InMemoryPatchCatalog:
@@ -225,7 +234,7 @@ def test_keeps_the_final_top_k_even_when_the_reranker_returns_more() -> None:
     settings = RetrievalSettings(lexical_top_n=10, dense_top_n=10, rerank_top_m=5, final_top_k=2)
     pipe = pipeline(
         lexical=[retrieved(chunk, lexical=3 - rank) for rank, chunk in enumerate(chunks)],
-        returned=[retrieved(chunk) for chunk in chunks],
+        returned=[retrieved(chunk, rerank=1.0) for chunk in chunks],
         settings=settings,
     )
 
@@ -342,3 +351,145 @@ def test_an_empty_rerank_skips_the_model_and_is_unsupported() -> None:
     assert pipe.recorder.kinds() == ["embed", "lexical", "dense", "rerank"]
     assert result.answer.supported is False
     assert result.delivered == ()
+
+
+def test_rejects_a_reranked_chunk_that_no_index_retrieved() -> None:
+    """A valid chunk the pipeline never retrieved must not reach the context window (D3)."""
+    spark = make_chunk("spark")
+    ghost = make_chunk("ghost")
+    pipe = pipeline(
+        lexical=[retrieved(spark, lexical=1.5)],
+        returned=[retrieved(ghost, rerank=1.0)],
+    )
+
+    with pytest.raises(UnretrievedChunkError, match="not retrieved"):
+        pipe.use_case.execute(QUESTION)
+
+    assert "generate" not in pipe.recorder.kinds()
+
+
+def test_a_foreign_chunk_beyond_the_final_top_k_still_fails_loud() -> None:
+    chunks = [make_chunk(slug) for slug in ("alpha", "beta", "gamma")]
+    ghost = make_chunk("ghost")
+    pipe = pipeline(
+        lexical=[retrieved(chunk, lexical=3 - rank) for rank, chunk in enumerate(chunks)],
+        returned=[
+            *(retrieved(chunk, rerank=1.0) for chunk in chunks),
+            retrieved(ghost, rerank=0.5),
+        ],
+    )
+
+    with pytest.raises(UnretrievedChunkError, match="not retrieved"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_a_stale_chunk_beyond_the_final_top_k_still_fails_loud() -> None:
+    """The guard runs before the slice, so the budget cannot hide a stale chunk (D1)."""
+    chunks = [make_chunk(slug) for slug in ("alpha", "beta", "gamma")]
+    stale = make_chunk("ghost", valid_from="0.1.1", valid_until="0.1.2")
+    pipe = pipeline(
+        lexical=[retrieved(chunk, lexical=3 - rank) for rank, chunk in enumerate(chunks)],
+        returned=[
+            *(retrieved(chunk, rerank=1.0) for chunk in chunks),
+            retrieved(stale, rerank=0.5),
+        ],
+    )
+
+    with pytest.raises(StaleChunkError, match="reranker"):
+        pipe.use_case.execute(QUESTION, NEXT)
+
+
+def test_rejects_a_duplicate_chunk_from_the_lexical_index() -> None:
+    spark = make_chunk("spark")
+    pipe = pipeline(lexical=[retrieved(spark, lexical=1.5), retrieved(spark, lexical=1.2)])
+
+    with pytest.raises(DuplicateChunkError, match="lexical index"):
+        pipe.use_case.execute(QUESTION)
+
+    assert pipe.recorder.kinds() == ["embed", "lexical"]
+
+
+def test_rejects_a_duplicate_chunk_from_the_reranker() -> None:
+    spark = make_chunk("spark")
+    pipe = pipeline(
+        lexical=[retrieved(spark, lexical=1.5)],
+        returned=[retrieved(spark, rerank=1.0), retrieved(spark, rerank=0.5)],
+    )
+
+    with pytest.raises(DuplicateChunkError, match="reranker"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_rejects_a_lexical_chunk_without_its_score() -> None:
+    pipe = pipeline(lexical=[retrieved(make_chunk("spark"))])
+
+    with pytest.raises(MissingScoreError, match="lexical score"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_rejects_a_vector_chunk_without_its_score() -> None:
+    pipe = pipeline(dense=[retrieved(make_chunk("spark"))])
+
+    with pytest.raises(MissingScoreError, match="dense score"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_rejects_a_reranked_chunk_without_its_score() -> None:
+    spark = make_chunk("spark")
+    pipe = pipeline(
+        lexical=[retrieved(spark, lexical=1.5)],
+        returned=[retrieved(spark)],
+    )
+
+    with pytest.raises(MissingScoreError, match="rerank score"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_rejects_divergent_chunks_with_the_same_id() -> None:
+    """chunk_id does not cover the text, so two index views can disagree; pick neither silently."""
+    pipe = pipeline(
+        lexical=[retrieved(make_chunk("spark", text="Spark text."), lexical=1.5)],
+        dense=[retrieved(make_chunk("spark", text="Old Spark text."), dense=0.8)],
+    )
+
+    with pytest.raises(ChunkMismatchError, match="disagree"):
+        pipe.use_case.execute(QUESTION)
+
+
+def test_uses_the_configured_rrf_k() -> None:
+    spark = make_chunk("spark")
+    settings = RetrievalSettings(
+        lexical_top_n=10, dense_top_n=10, rerank_top_m=5, final_top_k=3, rrf_k=10
+    )
+    pipe = pipeline(
+        lexical=[retrieved(spark, lexical=1.5)],
+        dense=[retrieved(spark, dense=0.8)],
+        settings=settings,
+    )
+
+    pipe.use_case.execute(QUESTION)
+
+    candidates = pipe.recorder.arguments("rerank")[0][1]
+    assert candidates[0].scores.fused == 2 / 11
+
+
+def test_the_model_and_the_answer_check_only_see_the_final_top_k() -> None:
+    """A citation to a chunk the budget cut must invalidate the answer, not be backed by it."""
+    chunks = [make_chunk(slug) for slug in ("alpha", "beta", "gamma")]
+    settings = RetrievalSettings(lexical_top_n=10, dense_top_n=10, rerank_top_m=5, final_top_k=2)
+    answer = GeneratedAnswer(
+        "Gamma is the answer.", (Citation(chunks[2].chunk_id, "Gamma text."),)
+    )
+    pipe = pipeline(
+        lexical=[retrieved(chunk, lexical=3 - rank) for rank, chunk in enumerate(chunks)],
+        returned=[retrieved(chunk, rerank=1.0) for chunk in chunks],
+        answer=answer,
+        settings=settings,
+    )
+
+    with pytest.raises(InvalidCitationError, match="which was not delivered"):
+        pipe.use_case.execute(QUESTION)
+
+    assert pipe.recorder.arguments("generate") == [
+        (QUESTION, (chunks[0].chunk_id, chunks[1].chunk_id))
+    ]

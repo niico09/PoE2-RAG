@@ -6,7 +6,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from poe2_rag.answering.application.errors import StaleChunkError
+from poe2_rag.answering.application.errors import (
+    ChunkMismatchError,
+    DuplicateChunkError,
+    MissingScoreError,
+    StaleChunkError,
+    UnretrievedChunkError,
+)
 from poe2_rag.answering.application.ports import (
     Embedder,
     LanguageModel,
@@ -72,13 +78,14 @@ class AnswerQuestion:
         """Answer `text` for `version`, or for the catalog's current patch when it is omitted.
 
         `Query.for_catalog` resolves the version, so an unknown patch raises `InvalidQueryError`
-        before any port is called. Retrieval runs sequentially in the MVP. Validity is enforced
-        before fusion: a chunk any stage returns that is not valid at the target patch raises
-        `StaleChunkError` instead of being dropped, because filtering after fusion would leave
-        holes in the top-K (D1, §5.1 step 3). With no candidates, or with a reranker that returns
-        none, the model is never called and the answer is the fixed, unsupported no-information
-        text. `Answer.build` validates the citations: a citation to an undelivered chunk raises
-        `InvalidCitationError` instead of being dropped (ADR-0005).
+        before any port is called. Retrieval runs sequentially in the MVP. Every stage result is
+        checked before it is used: a chunk not valid at the target patch raises `StaleChunkError`
+        instead of being dropped, because filtering after fusion would leave holes in the top-K
+        (D1, §5.1 step 3), and a stage that duplicates a chunk, omits its score or returns a chunk
+        nobody retrieved stops the run with an application error (D3, D4). With no candidates, or
+        with a reranker that returns none, the model is never called and the answer is the fixed,
+        unsupported no-information text. `Answer.build` validates the citations: a citation to an
+        undelivered chunk raises `InvalidCitationError` instead of being dropped (ADR-0005).
         """
         query = Query.for_catalog(text, self._catalog, version)
         vector = self._embedder.embed(query.text)
@@ -87,18 +94,18 @@ class AnswerQuestion:
                 query.text, query.target_version, self._settings.lexical_top_n
             )
         )
-        _require_valid(lexical, query.target_version, "lexical index")
+        _require_index_result(lexical, query.target_version, "lexical", "lexical index")
         dense = tuple(
             self._vector_index.search(vector, query.target_version, self._settings.dense_top_n)
         )
-        _require_valid(dense, query.target_version, "vector index")
+        _require_index_result(dense, query.target_version, "dense", "vector index")
         candidates = self._fuse(lexical, dense)
         if not candidates:
             return self._unsupported(query.target_version)
         reranked = tuple(
             self._reranker.rerank(query.text, candidates, self._settings.final_top_k)
         )
-        _require_valid(reranked, query.target_version, "reranker")
+        _require_reranked(reranked, candidates, query.target_version)
         delivered = reranked[: self._settings.final_top_k]
         if not delivered:
             return self._unsupported(query.target_version)
@@ -121,11 +128,17 @@ class AnswerQuestion:
             ),
             self._settings.rrf_k,
         )
-        # A chunk id is derived from the chunk itself, so both indexes describe the same chunk for
-        # the same id; the first view (lexical) supplies the text sent to the model.
+        # chunk_id covers source, entity, valid_from and section, but not text or valid_until, so
+        # equal ids do not prove that both index views match. Compare the chunks and refuse to pick
+        # one silently: a difference means one index was rebuilt from a different corpus.
         chunks: dict[str, Chunk] = {}
         for item in (*lexical, *dense):
-            chunks.setdefault(item.chunk.chunk_id, item.chunk)
+            view = chunks.setdefault(item.chunk.chunk_id, item.chunk)
+            if view != item.chunk:
+                raise ChunkMismatchError(
+                    f"the lexical index and the vector index disagree about "
+                    f"{item.chunk.chunk_id!r}"
+                )
         lexical_scores = _stage_scores(lexical, "lexical")
         dense_scores = _stage_scores(dense, "dense")
         return tuple(
@@ -141,6 +154,34 @@ class AnswerQuestion:
         )
 
 
+def _require_index_result(
+    chunks: Sequence[RetrievedChunk],
+    version: PatchVersion,
+    stage: Literal["lexical", "dense"],
+    source: str,
+) -> None:
+    """Validate what an index returned before anything is fused: valid, distinct and scored."""
+    _require_valid(chunks, version, source)
+    _require_distinct(chunks, source)
+    _require_stage_score(chunks, stage, source)
+
+
+def _require_reranked(
+    reranked: Sequence[RetrievedChunk],
+    candidates: Sequence[RetrievedChunk],
+    version: PatchVersion,
+) -> None:
+    """The reranker may only reorder the candidates it received, scored and still valid.
+
+    Validity comes first because a stale chunk is the D1 failure; membership follows, so a chunk
+    nobody retrieved cannot enter the answer even when it happens to be valid (D3).
+    """
+    _require_valid(reranked, version, "reranker")
+    _require_candidates(reranked, candidates)
+    _require_distinct(reranked, "reranker")
+    _require_stage_score(reranked, "rerank", "reranker")
+
+
 def _require_valid(
     chunks: Sequence[RetrievedChunk], version: PatchVersion, source: str
 ) -> None:
@@ -154,6 +195,43 @@ def _require_valid(
         if not item.chunk.is_valid_at(version):
             raise StaleChunkError(
                 f"the {source} returned {item.chunk.chunk_id!r}, which is not valid at {version}"
+            )
+
+
+def _require_distinct(chunks: Sequence[RetrievedChunk], source: str) -> None:
+    """Raise `DuplicateChunkError` when `source` returns the same chunk twice in one result."""
+    seen: set[str] = set()
+    for item in chunks:
+        chunk_id = item.chunk.chunk_id
+        if chunk_id in seen:
+            raise DuplicateChunkError(f"the {source} returned {chunk_id!r} more than once")
+        seen.add(chunk_id)
+
+
+def _require_stage_score(
+    chunks: Sequence[RetrievedChunk], stage: Literal["lexical", "dense", "rerank"], source: str
+) -> None:
+    """Raise `MissingScoreError` when a stage returns a chunk it did not score.
+
+    The per-stage scores are what make the delivered context measurable (§8, D4); a chunk without
+    the score of the stage that produced it cannot be attributed in the evaluation.
+    """
+    for item in chunks:
+        if getattr(item.scores, stage) is None:
+            raise MissingScoreError(
+                f"the {source} returned {item.chunk.chunk_id!r} without its {stage} score"
+            )
+
+
+def _require_candidates(
+    reranked: Sequence[RetrievedChunk], candidates: Sequence[RetrievedChunk]
+) -> None:
+    """Raise `UnretrievedChunkError` when the reranker returns a chunk it was not given."""
+    allowed = {item.chunk.chunk_id for item in candidates}
+    for item in reranked:
+        if item.chunk.chunk_id not in allowed:
+            raise UnretrievedChunkError(
+                f"the reranker returned {item.chunk.chunk_id!r}, which was not retrieved"
             )
 
 

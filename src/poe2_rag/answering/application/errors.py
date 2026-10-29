@@ -20,3 +20,19 @@ class InvalidRetrievalSettingsError(AnswerQuestionError):
 
 class StaleChunkError(AnswerQuestionError):
     """Raised when a retrieval stage returns a chunk that is not valid at the target patch (D1)."""
+
+
+class UnretrievedChunkError(AnswerQuestionError):
+    """Raised when the reranker returns a chunk that the indexes never retrieved."""
+
+
+class DuplicateChunkError(AnswerQuestionError):
+    """Raised when one stage returns the same chunk_id more than once in a single result."""
+
+
+class MissingScoreError(AnswerQuestionError):
+    """Raised when a stage returns a chunk without the score that stage is responsible for (D4)."""
+
+
+class ChunkMismatchError(AnswerQuestionError):
+    """Raised when the two indexes return different chunks for the same chunk_id."""
