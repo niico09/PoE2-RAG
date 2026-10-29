@@ -101,6 +101,11 @@ class TestContains:
         assert not patch_catalog.contains(v("0.0.9"))
         assert not patch_catalog.contains(v("99.0.0"))
 
+    @pytest.mark.parametrize("value", ["0.1.0", None, 1])
+    def test_rejects_a_non_version_argument(self, build_catalog: BuildCatalog, value: object) -> None:
+        with pytest.raises(InvalidPatchCatalogError):
+            build_catalog(VERSIONS, CURRENT).contains(value)  # type: ignore[arg-type]
+
 
 class TestInvariants:
     def test_rejects_an_empty_catalog(self, build_catalog: BuildCatalog) -> None:

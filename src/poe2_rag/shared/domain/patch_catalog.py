@@ -23,7 +23,10 @@ class PatchCatalog(Protocol):
         ...
 
     def contains(self, version: PatchVersion) -> bool:
-        """Return True when `version` is a known patch."""
+        """Return True when `version` is a known patch.
+
+        Raise `InvalidPatchCatalogError` when `version` is not a `PatchVersion`.
+        """
         ...
 
 
