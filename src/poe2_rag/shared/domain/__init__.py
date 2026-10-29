@@ -2,7 +2,7 @@
 
 from poe2_rag.shared.domain._text import is_blank
 from poe2_rag.shared.domain.chunk import Chunk
-from poe2_rag.shared.domain.entity_ref import EntityRef
+from poe2_rag.shared.domain.entity_ref import ENTITY_KINDS, EntityRef
 from poe2_rag.shared.domain.errors import (
     DomainError,
     InvalidChunkError,
@@ -20,6 +20,7 @@ from poe2_rag.shared.domain.source_ref import SourceRef
 from poe2_rag.shared.domain.validity import Validity
 
 __all__ = [
+    "ENTITY_KINDS",
     "Chunk",
     "is_blank",
     "DomainError",

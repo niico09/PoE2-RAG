@@ -1,6 +1,8 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado**. Ninguna parte de este documento está implementada todavía.
+> Estado: **diseño del MVP acordado**. Implementado el modelo de dominio de §4 y el puerto
+> `PatchCatalog` con su adaptador TOML; los casos de uso de §5, el resto de los puertos y la
+> evaluación de §8 todavía no.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendientes antes de implementar los adaptadores de fuentes: términos de uso de poe2db y vía de acceso autorizada a poe2wiki.net ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -99,7 +101,7 @@ El esquema actual del README tiene dos problemas de diseño:
 
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.1#description",
+  "chunk_id": "poe2db:active_gem:spark@0.1.1#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.1", "valid_until": null },
   "section": "description",

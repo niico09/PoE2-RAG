@@ -96,7 +96,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.1#description",
+  "chunk_id": "poe2db:active_gem:spark@0.1.1#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.1", "valid_until": null },
   "section": "description",
@@ -119,7 +119,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 
 - [x] Diseño de arquitectura y decisiones del MVP.
 - [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
-- [x] Modelo de dominio (`PatchVersion`, `Validity`, `Chunk`, `Modifier`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
+- [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).

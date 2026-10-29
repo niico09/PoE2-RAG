@@ -1,18 +1,25 @@
 import pytest
 
-from poe2_rag.shared.domain import DomainError, EntityRef, InvalidEntityRefError
+from poe2_rag.shared.domain import (
+    ENTITY_KINDS,
+    DomainError,
+    EntityRef,
+    InvalidEntityRefError,
+)
 
 
 def test_key_combines_kind_and_slug() -> None:
     assert EntityRef("active_gem", "spark", "Spark").key == "active_gem:spark"
 
 
-@pytest.mark.parametrize("slug", ["spark", "lightning-arrow", "gem_01"])
+@pytest.mark.parametrize("slug", ["spark", "lightning-arrow", "gem_01", "a", "1"])
 def test_accepts_valid_slugs(slug: str) -> None:
     assert EntityRef("active_gem", slug, "Name").slug == slug
 
 
-@pytest.mark.parametrize("slug", ["", "Spark", "spark arrow", "spark:1", "ñandu", " spark"])
+@pytest.mark.parametrize(
+    "slug", ["", "Spark", "spark arrow", "spark:1", "ñandu", " spark", "---"]
+)
 def test_rejects_invalid_slugs(slug: str) -> None:
     with pytest.raises(InvalidEntityRefError):
         EntityRef("active_gem", slug, "Name")
@@ -30,9 +37,19 @@ def test_rejects_non_slug_kind(kind: str) -> None:
         EntityRef(kind, "spark", "Spark")
 
 
-@pytest.mark.parametrize("kind", ["active_gem", "support-gem", "item"])
-def test_accepts_slug_kind(kind: str) -> None:
+@pytest.mark.parametrize("kind", ["active_gem", "support_gem", "mechanic", "item"])
+def test_accepts_closed_kind_vocabulary(kind: str) -> None:
     assert EntityRef(kind, "spark", "Spark").kind == kind
+
+
+@pytest.mark.parametrize("kind", ["active-gem", "gem", "ACTIVE_GEM"])
+def test_rejects_kind_near_misses(kind: str) -> None:
+    with pytest.raises(InvalidEntityRefError) as exc_info:
+        EntityRef(kind, "spark", "Spark")
+
+    message = str(exc_info.value)
+    for allowed in ENTITY_KINDS:
+        assert allowed in message
 
 
 @pytest.mark.parametrize("name", ["", "   "])
