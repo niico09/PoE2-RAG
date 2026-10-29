@@ -63,6 +63,8 @@ Arquitectura hexagonal con dos flujos que solo se comunican a través de los ín
 
 ```text
 poe2-rag/
+├── config/
+│   └── patches.toml         # Catálogo de parches: cuáles existen y cuál es el actual
 ├── data/
 │   ├── raw/                 # Snapshots de las fuentes sin procesar
 │   └── processed/           # Chunks normalizados en JSON con metadatos
@@ -85,6 +87,8 @@ Cada capacidad se divide en `domain/`, `application/` y `adapters/`.
 ## ⚙️ Esquema de Chunk
 
 La vigencia se expresa como un rango de parches, no como una marca de "parche actual": el catálogo de parches es el único que sabe cuál es el vigente. La identidad de la entidad (`active_gem:spark`) es independiente de la versión.
+
+El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[patches]]` por parche) y lo carga el adaptador `TomlPatchCatalog`; el puerto `PatchCatalog` es la única fuente de verdad de "parche actual".
 
 ```json
 {
