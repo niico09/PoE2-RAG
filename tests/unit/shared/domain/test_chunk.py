@@ -8,6 +8,7 @@ from poe2_rag.shared.domain import (
     DomainError,
     EntityRef,
     InvalidChunkError,
+    InvalidValidityError,
     Modifier,
     ModifierKind,
     PatchVersion,
@@ -53,6 +54,11 @@ class TestIsValidAt:
 
         assert chunk.is_valid_at(PatchVersion.parse("0.1.0"))
         assert not chunk.is_valid_at(PatchVersion.parse("0.2.0"))
+
+    @pytest.mark.parametrize("value", ["0.1.2", None, 1])
+    def test_rejects_a_non_version_argument(self, value: object) -> None:
+        with pytest.raises(InvalidValidityError):
+            make_chunk().is_valid_at(value)  # type: ignore[arg-type]
 
 
 class TestInvariants:

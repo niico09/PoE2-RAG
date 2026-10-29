@@ -49,5 +49,8 @@ class Chunk:
         return f"{self.entity.key}@{self.validity.valid_from}#{self.section}"
 
     def is_valid_at(self, version: PatchVersion) -> bool:
-        """Return True when this chunk applies to `version`."""
+        """Return True when this chunk applies to `version`.
+
+        Raise `InvalidValidityError` when `version` is not a `PatchVersion`.
+        """
         return self.validity.is_valid_at(version)

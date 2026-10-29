@@ -1,0 +1,17 @@
+# Which patches exist and which one is current (docs/architecture.md 4.2).
+#
+# `current` is the single source of truth for "current patch": chunks never store a
+# derived "is current" flag, they store a validity range. It must be one of the
+# patches listed below, and no version may be repeated.
+#
+# Release dates are recorded for humans; the PatchCatalog port only exposes versions.
+
+current = "0.1.1"
+
+[[patches]]
+version = "0.1.0"
+released_on = 2024-12-06
+
+[[patches]]
+version = "0.1.1"
+released_on = 2025-01-17

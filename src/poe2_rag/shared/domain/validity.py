@@ -28,7 +28,12 @@ class Validity:
             )
 
     def is_valid_at(self, version: PatchVersion) -> bool:
-        """Return True when `version` falls inside the range (lower bound inclusive, upper exclusive)."""
+        """Return True when `version` falls inside the range (lower bound inclusive, upper exclusive).
+
+        Raise `InvalidValidityError` when `version` is not a `PatchVersion`.
+        """
+        if not isinstance(version, PatchVersion):
+            raise InvalidValidityError(f"version must be a PatchVersion, got {version!r}")
         if version < self.valid_from:
             return False
         return self.valid_until is None or version < self.valid_until
