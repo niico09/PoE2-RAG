@@ -28,8 +28,22 @@ def make_chunk(**overrides: object) -> Chunk:
     return Chunk(**{**defaults, **overrides})  # type: ignore[arg-type]
 
 
-def test_chunk_id_combines_entity_version_and_section() -> None:
-    assert make_chunk().chunk_id == "active_gem:spark@0.1.2#description"
+def test_chunk_id_combines_source_entity_version_and_section() -> None:
+    assert make_chunk().chunk_id == "poe2db:active_gem:spark@0.1.2#description"
+
+
+def test_chunk_id_differs_when_source_type_differs() -> None:
+    poe2db_chunk = make_chunk(source=SourceRef("poe2db", "https://poe2db.tw/us/Spark", date(2026, 10, 29)))
+    wiki_chunk = make_chunk(source=SourceRef("poe2wiki", "https://www.poe2wiki.net/wiki/Spark", date(2026, 10, 29)))
+
+    assert poe2db_chunk.chunk_id != wiki_chunk.chunk_id
+
+
+def test_chunk_id_is_equal_when_source_entity_version_and_section_match() -> None:
+    first = make_chunk(text="First version of the text.")
+    second = make_chunk(text="A different text about the same entity.")
+
+    assert first.chunk_id == second.chunk_id
 
 
 def test_tags_and_modifiers_default_to_empty_tuples() -> None:
@@ -68,12 +82,14 @@ class TestInvariants:
         with pytest.raises(InvalidChunkError):
             make_chunk(**{field: value})
 
-    @pytest.mark.parametrize("section", [" description", "desc#x", "a@b", "a:b", "Description", "two words"])
+    @pytest.mark.parametrize(
+        "section", [" description", "desc#x", "a@b", "a:b", "Description", "two words", "-", "_", "---"]
+    )
     def test_rejects_non_slug_section(self, section: str) -> None:
         with pytest.raises(InvalidChunkError):
             make_chunk(section=section)
 
-    @pytest.mark.parametrize("section", ["description", "skill-tree", "level_20"])
+    @pytest.mark.parametrize("section", ["description", "skill-tree", "level_20", "a", "1"])
     def test_accepts_slug_section(self, section: str) -> None:
         assert make_chunk(section=section).section == section
 

@@ -2,7 +2,7 @@
 
 import re
 
-_SLUG = re.compile(r"[a-z0-9_-]+")
+_SLUG = re.compile(r"[a-z0-9_-]*[a-z0-9][a-z0-9_-]*")
 
 
 def is_blank(value: object) -> bool:

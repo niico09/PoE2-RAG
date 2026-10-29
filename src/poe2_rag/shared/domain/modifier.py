@@ -11,7 +11,14 @@ from poe2_rag.shared.domain.errors import InvalidModifierError
 
 
 class ModifierKind(Enum):
-    """How a modifier combines with others; `more`/`less` multiply, the rest sum (driver D2)."""
+    """How a modifier combines with others (driver D2).
+
+    `more`/`less` multiply. `increased`/`reduced` sum into the additive percentage pool.
+    `added` and `flat` both sum, but into different pools: `added` is damage the effect itself
+    adds ("adds 5 to 10 fire damage"), while `flat` is a flat bonus to a stat ("+12 to maximum
+    mana"). Keeping them apart means the ingester never has to choose arbitrarily and a later
+    stat model can scale the two pools differently.
+    """
 
     INCREASED = "increased"
     REDUCED = "reduced"
@@ -37,7 +44,7 @@ class Modifier:
             raise InvalidModifierError("stat must be a non-blank string")
         if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
             raise InvalidModifierError(f"value must be an int or float, got {self.value!r}")
-        if not math.isfinite(self.value):
+        if isinstance(self.value, float) and not math.isfinite(self.value):
             raise InvalidModifierError(f"value must be finite, got {self.value!r}")
         if not isinstance(self.kind, ModifierKind):
             raise InvalidModifierError(f"kind must be a ModifierKind, got {self.kind!r}")

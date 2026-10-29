@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from poe2_rag.shared.domain._text import is_blank, is_slug
 from poe2_rag.shared.domain.errors import InvalidEntityRefError
 
+ENTITY_KINDS = frozenset({"active_gem", "support_gem", "mechanic", "item"})
+
 
 @dataclass(frozen=True, slots=True)
 class EntityRef:
@@ -17,8 +19,8 @@ class EntityRef:
     name: str
 
     def __post_init__(self) -> None:
-        if not is_slug(self.kind):
-            raise InvalidEntityRefError(f"kind must match [a-z0-9_-]+, got {self.kind!r}")
+        if self.kind not in ENTITY_KINDS:
+            raise InvalidEntityRefError(f"kind must be one of {sorted(ENTITY_KINDS)}, got {self.kind!r}")
         if is_blank(self.name):
             raise InvalidEntityRefError("name must be a non-blank string")
         if not is_slug(self.slug):
