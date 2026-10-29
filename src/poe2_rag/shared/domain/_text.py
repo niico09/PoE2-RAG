@@ -1,4 +1,9 @@
-"""Internal text helpers shared by domain value objects."""
+"""Text helpers shared by domain value objects.
+
+The module stays private because the helpers are implementation details of the value objects,
+but `is_blank` is re-exported by the package as part of the shared domain contract, so other
+capabilities validate "blank" the same way instead of duplicating the rule.
+"""
 
 import re
 

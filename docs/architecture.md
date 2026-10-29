@@ -90,7 +90,7 @@ El esquema actual del README tiene dos problemas de diseño:
 | `Modifier` | Value object | Modificador estructurado: `stat`, `value`, `kind` ∈ {`increased`, `reduced`, `more`, `less`, `added`, `flat`}. Resuelve D2 por estructura, no solo por búsqueda. |
 | `Chunk` | Entidad | Unidad indexable: `chunk_id`, `EntityRef`, `Validity`, `section`, `text`, `tags`, `modifiers`, `SourceRef`. |
 | `SourceRef` | Value object | URL, tipo de fuente y fecha de captura. Base de las citas (D3). |
-| `Query` | Value object | Texto + entidades detectadas + `target_version` (por defecto, la actual). |
+| `Query` | Value object | Texto + `target_version` (por defecto, la actual del catálogo). La detección de entidades todavía no existe: es trabajo futuro, no una capacidad de este value object. |
 | `RetrievedChunk` | Value object | `Chunk` + puntajes por etapa (léxico, denso, fusión, rerank). Permite depurar y evaluar. |
 | `Answer` | Value object | Texto generado + lista de `Citation` que apuntan a `chunk_id`. Invariante: una respuesta sin citas se marca como "sin respaldo". |
 
@@ -138,7 +138,7 @@ El esquema actual del README tiene dos problemas de diseño:
 5. **Reranking:** cross-encoder sobre el top-M fusionado → top-K final.
 6. **Construcción de contexto:** cada chunk se entrega al LLM con su `chunk_id` y versión.
 7. **Generación:** cada chunk se envía como documento con citas nativas habilitadas ([ADR-0005](adr/0005-llm-por-api.md)); el prompt exige responder "no hay información" si el contexto no alcanza.
-8. **Validación de citas:** las citas que no correspondan a chunks entregados se descartan y la respuesta se marca.
+8. **Validación de citas:** las citas se validan contra los chunks entregados. El dominio (`Answer.build`) **rechaza** la respuesta con `InvalidCitationError` cuando una cita nombra un chunk que no se entregó: no descarta en silencio, porque una cita sin respaldo invalida la respuesta ([ADR-0005](adr/0005-llm-por-api.md)). `AnswerQuestion` decide qué hacer con ese rechazo; si no queda ninguna cita válida, la respuesta se construye con `supported=False` ("sin respaldo").
 
 Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar por separado.
 
