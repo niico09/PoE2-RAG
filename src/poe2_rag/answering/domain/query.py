@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from poe2_rag.answering.domain.errors import InvalidQueryError
-from poe2_rag.shared.domain._text import is_blank
+from poe2_rag.shared.domain import is_blank
 from poe2_rag.shared.domain.patch_catalog import PatchCatalog
 from poe2_rag.shared.domain.patch_version import PatchVersion
 

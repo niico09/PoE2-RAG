@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from poe2_rag.answering.domain.errors import InvalidRankingError
-from poe2_rag.shared.domain._text import is_blank
+from poe2_rag.shared.domain import is_blank
 
 DEFAULT_K = 60
 
