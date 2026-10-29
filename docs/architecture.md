@@ -75,7 +75,7 @@ La ingesta y la consulta no se llaman entre sí: se comunican solo a través de 
 El esquema actual del README tiene dos problemas de diseño:
 
 1. **`is_current_patch: true` es estado derivado guardado en el dato.** Se vuelve falso en cada parche nuevo y obliga a reescribir todo el corpus. Se reemplaza por un **rango de vigencia** y un **catálogo de parches** que sabe cuál es el actual.
-2. **`doc_id: "gem_spark_v012"` mezcla identidad y versión.** Se separa en `entity_id` (estable: `gem:spark`) y `patch_version`. Así se puede pedir "Spark en cualquier versión" o "todas las versiones de Spark".
+2. **`doc_id: "gem_spark_v012"` mezcla identidad y versión.** Se separa en `entity` (estable: `active_gem:spark`) y la versión. Así se puede pedir "Spark en cualquier versión" o "todas las versiones de Spark".
 
 ### 4.2 Conceptos
 
@@ -96,7 +96,7 @@ El esquema actual del README tiene dos problemas de diseño:
 
 ```json
 {
-  "chunk_id": "gem:spark@0.1.2#description",
+  "chunk_id": "active_gem:spark@0.1.2#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.2", "valid_until": null },
   "section": "description",

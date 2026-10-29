@@ -21,6 +21,12 @@ class TestParse:
             PatchVersion.parse(raw)
 
 
+    @pytest.mark.parametrize("raw", [None, 12, b"0.1.2"])
+    def test_rejects_non_string_input(self, raw: object) -> None:
+        with pytest.raises(InvalidPatchVersionError):
+            PatchVersion.parse(raw)  # type: ignore[arg-type]
+
+
 class TestConstruction:
     def test_rejects_negative_components(self) -> None:
         with pytest.raises(InvalidPatchVersionError):

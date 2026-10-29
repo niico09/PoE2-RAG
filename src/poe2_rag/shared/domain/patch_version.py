@@ -30,6 +30,8 @@ class PatchVersion:
     @classmethod
     def parse(cls, raw: str) -> PatchVersion:
         """Build a version from its canonical `major.minor.patch` text, rejecting anything else."""
+        if not isinstance(raw, str):
+            raise InvalidPatchVersionError(f"expected a string, got {raw!r}")
         match = _PATTERN.fullmatch(raw)
         if match is None:
             raise InvalidPatchVersionError(f"expected 'major.minor.patch', got {raw!r}")
