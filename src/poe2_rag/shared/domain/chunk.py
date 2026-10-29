@@ -45,8 +45,8 @@ class Chunk:
 
     @property
     def chunk_id(self) -> str:
-        """Stable id `<kind>:<slug>@<valid_from>#<section>`, unique per entity, version and section."""
-        return f"{self.entity.key}@{self.validity.valid_from}#{self.section}"
+        """Stable id `<source>:<kind>:<slug>@<valid_from>#<section>`, unique per source, entity, version and section."""
+        return f"{self.source.type}:{self.entity.key}@{self.validity.valid_from}#{self.section}"
 
     def is_valid_at(self, version: PatchVersion) -> bool:
         """Return True when this chunk applies to `version`."""

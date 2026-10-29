@@ -96,7 +96,7 @@ El esquema actual del README tiene dos problemas de diseño:
 
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.2#description",
+  "chunk_id": "poe2db:active_gem:spark@0.1.2#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.2", "valid_until": null },
   "section": "description",
