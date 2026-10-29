@@ -58,22 +58,92 @@ library.
   dependency; see `odd/tasks/patch-catalog.md` T13).
 
 ## Tasks
-- [ ] T1 — Branch `feat/answering-domain`, feature doc, Engram mirror. Route: inline. S10.
-- [ ] T2 — `Query` + `Query.for_catalog` + `InvalidQueryError` + package skeleton. Route: inline. S1, S5.
-- [ ] T3 — `StageScores` + `RetrievedChunk`. Route: inline. S2, S5.
-- [ ] T4 — `reciprocal_rank_fusion`. Route: inline. S3, S5, S7, S8.
-- [ ] T5 — `Citation` + `Answer` + `Answer.build`. Route: inline. S4, S5.
-- [ ] T6 — Close: full suite, evidence per task, RED/GREEN report. Route: inline. S7, S11.
+- [x] T1 — Branch `feat/answering-domain`, feature doc, Engram mirror. Route: inline. S10. Commit `759d372`.
+- [x] T2 — `Query` + `Query.for_catalog` + `InvalidQueryError` + package skeleton. Route: inline. S1, S5. Commit `bd9816d`.
+- [x] T3 — `StageScores` + `RetrievedChunk`. Route: inline. S2, S5. Commit `cbcc0d8`.
+- [x] T4 — `reciprocal_rank_fusion`. Route: inline. S3, S5, S7, S8. Commit `ffe11ac`.
+- [x] T5 — `Citation` + `Answer` + `Answer.build`. Route: inline. S4, S5. Commit `1ecd13a`.
+- [x] T6 — Close: full suite, evidence per task, RED/GREEN report. Route: inline. S7, S11.
 
 ## Delivery slices
-- One commit per task (S10), five work-unit commits for T2-T5 plus two documentation commits (T1, T6).
+- One commit per task (S10): `759d372` doc, `bd9816d` T2, `cbcc0d8` T3, `ffe11ac` T4, `1ecd13a` T5.
+- Authored lines for this feature (`e7a998b..HEAD`, lock files excluded): **933**, split as 138 (doc), 135 (T2),
+  174 (T3), 191 (T4), 295 (T5). The whole feature is over the ~400-line review slice; the split is
+  one green commit per task, which keeps every commit reviewable alone and lets the native review take
+  any single one.
 - The harness counts authored lines against `origin/main`, so its slice warning includes the whole
-  `feat/patch-catalog` stack this branch sits on (see L2), not this feature's diff. The slice that
-  belongs to this feature is `e7a998b..HEAD`; the real count is recorded at close in T6, not guessed
-  here.
+  `feat/patch-catalog` stack this branch sits on (see L2), not this feature's diff.
 - PR target: `main` once `feat/patch-catalog` merges. Until then the branch base is `feat/patch-catalog`.
 
 ## Progress / Evidence
+- T1: branch `feat/answering-domain` created from `feat/patch-catalog` (`e7a998b`, see L2). Baseline on that
+  base: `uv run pytest -q` → 213 passed. No RED applicable (documentation only). Commit `759d372`.
+- T2: RED → collection `ModuleNotFoundError: No module named 'poe2_rag.answering'`, 0 tests run (14 written).
+  GREEN → **227 passed** (14 new).
+  - `Query.for_catalog` validates the catalog, the text and the version *before* asking the catalog, so a
+    non-`PatchVersion` argument raises `InvalidQueryError` instead of leaking the catalog port's
+    `InvalidPatchCatalogError`: one error type for everything wrong with a query.
+  - An unknown version is rejected rather than accepted, because answering for a patch that does not exist
+    would retrieve nothing while looking like a valid answer (D1). Commit `bd9816d`.
+- T3: RED → collection `ImportError: cannot import name 'InvalidRetrievedChunkError'`, 0 tests run (21 written).
+  GREEN → **248 passed** (21 new).
+  - `StageScores` rejects `bool` and non-finite values, matching `Modifier`: a NaN score would make every
+    downstream comparison false and silently reorder retrieval.
+  - `RetrievedChunk` validates both fields, so a chunk cannot enter the context window without its scores.
+    Commit `cbcc0d8`.
+- T4: RED → collection `ImportError: cannot import name 'InvalidRankingError'`, 0 tests run (36 written).
+  GREEN → **284 passed** (36 new). The four required cases are present: hand-computed `1/(60+rank)` example,
+  a chunk in only one ranking, deterministic ties, empty input.
+  - Ties break by ascending `chunk_id` inside the sort key, so the order is total and never depends on dict
+    insertion order or on the order the rankings arrive in.
+  - Rejected as `InvalidRankingError`: `k <= 0`, non-int `k` (`bool` included), a bare string or any
+    non-`Sequence` as `rankings`, a non-`Sequence` ranking (a set has no rank order), blank or non-string ids,
+    and a repeated id inside one ranking. The same id in *different* rankings is the point of RRF and is accepted.
+  - No validity filtering (S8): the module never imports `Validity`, and its docstring states that rankings
+    must arrive pre-filtered. Commit `ffe11ac`.
+- T5: RED → collection `ImportError: cannot import name 'Answer'`, 0 tests run (27 written).
+  GREEN → **311 passed** (27 new).
+  - `Answer.build` validates citations against the delivered `chunk_id` set, never against object identity:
+    the model returns ids (ADR-0005), so ids are the contract. A citation to an undelivered chunk raises
+    `InvalidCitationError` naming that id.
+  - No citations → `supported=False`, both through `build` and through the constructor, and
+    `Answer(text, (), supported=True)` is rejected: an answer can never claim backing it does not have.
+    Commit `1ecd13a`.
+- T6: close. Full suite **311 passed**; `uvx pyright==1.1.414` → `0 errors, 0 warnings, 0 informations`.
+  - A commit-hygiene defect found and fixed before close: `tests/.../test_fusion.py` had landed in the T3
+    commit because the T3 commit and the T4 test write ran in the same parallel batch, which made the T3
+    commit fail collection on its own. The three unpushed commits (T3, T4, T5) were replayed; each rewritten
+    tree was verified green alone (T3 → 248, T4 → 284, T5 → 311), and `git diff` against the pre-rewrite
+    final commit is empty, so no content changed. Old hashes are only in the reflog.
+
+## Close
+- Final `uv run pytest -q` → **311 passed** (baseline on the stacked base: 213; +98 tests, +933 authored lines).
+- `uvx pyright==1.1.414` (bare, project config) → `0 errors, 0 warnings, 0 informations`.
+- Per-spec verdict:
+  - S1 ✅ `Query(text, target_version)` + `for_catalog(text, catalog, version=None)` defaulting to
+    `catalog.current()`, rejecting unknown versions (`InvalidQueryError`).
+  - S2 ✅ `StageScores(lexical, dense, fused, rerank)` all `float | None` (default `None`) and
+    `RetrievedChunk(chunk, scores)`.
+  - S3 ✅ `reciprocal_rank_fusion(rankings, k=60)`, `score = sum(1/(k+rank))` with rank from 1, tie-break by
+    `chunk_id`, `k <= 0` and duplicate ids within one ranking rejected.
+  - S4 ✅ `Citation(chunk_id, quoted_text)`, `Answer(text, citations, supported)`, `Answer.build` validating
+    against delivered ids (`InvalidCitationError`), no citations → `supported=False`.
+  - S5 ✅ Six `DomainError` subclasses in `answering/domain/errors.py`; each test module asserts the subclass
+    relationship, not just the raise.
+  - S6 ✅ Imports read back with `grep`: only `__future__`, `collections.abc`, `dataclasses`, `math`,
+    `poe2_rag.answering.domain.*` and `poe2_rag.shared.domain.*`. No third party, no ingestion, no adapter.
+  - S7 ✅ RED observed for every task, then GREEN; the four required RRF cases are named tests in
+    `tests/unit/answering/domain/test_fusion.py`.
+  - S8 ✅ `grep -rn 'is_valid_at\|Validity' src/poe2_rag/answering/` → no matches; RRF documents the contract.
+  - S9 ✅ `src/poe2_rag/answering/` contains only `domain/`; no `application/`, no `adapters/`, no CLI.
+  - S10 ✅ Five Conventional Commits, one per task; `git log e7a998b..HEAD --format=%B | grep -ci`
+    `'co-authored-by\|generated with\|claude\|assisted-by'` → `0`.
+  - S11 ✅ Counts above, per task.
+- No check was skipped; nothing is pending.
+
+## Next step
+Push and open the PR against `feat/patch-catalog` (or `main` once that branch merges): the user's decision,
+not taken here. Nothing is committed beyond this feature branch.
 
 ## Log
 
