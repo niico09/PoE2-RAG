@@ -30,6 +30,17 @@ class TestIsValidAt:
         assert Validity(v("0.1.2")).valid_until is None
 
 
+class TestIsValidAtRejectsNonVersion:
+    @pytest.mark.parametrize("value", ["0.1.2", None, 1, (0, 1, 2)])
+    def test_rejects_non_patch_version_argument(self, value: object) -> None:
+        with pytest.raises(InvalidValidityError):
+            Validity(v("0.1.0"), v("0.2.0")).is_valid_at(value)  # type: ignore[arg-type]
+
+    def test_error_message_names_the_value(self) -> None:
+        with pytest.raises(InvalidValidityError, match="0\\.1\\.2"):
+            Validity(v("0.1.0"), v("0.2.0")).is_valid_at("0.1.2")  # type: ignore[arg-type]
+
+
 class TestInvariants:
     def test_rejects_equal_bounds(self) -> None:
         with pytest.raises(InvalidValidityError):
