@@ -47,7 +47,7 @@ configuration file (§6), which is an adapter concern, never a domain one.
 - [x] T1 — Branch `feat/patch-catalog` from `main`, feature doc, Engram mirror. Route: inline. Commit: `docs(odd): record patch-catalog plan`.
 - [x] T2 — `InvalidPatchCatalogError` + `PatchCatalog` port + `InMemoryPatchCatalog` with unit tests. Route: inline. Commit: `feat(domain): add PatchCatalog port and in-memory catalog`.
 - [x] T3 — Shared contract suite + `TomlPatchCatalog` adapter + `config/patches.toml` sample, with adapter unit tests. Route: inline. Commit: `feat(adapters): load patch catalog from a TOML file`.
-- [ ] T4 — S4: `Validity.is_valid_at` and `Chunk.is_valid_at` reject non-`PatchVersion` args. Route: inline. Commit: `fix(domain): reject non-PatchVersion in is_valid_at`.
+- [x] T4 — S4: `Validity.is_valid_at` and `Chunk.is_valid_at` reject non-`PatchVersion` args. Route: inline. Commit: `fix(domain): reject non-PatchVersion in is_valid_at`.
 - [ ] T5 — Close: full suite, evidence per task, RED/GREEN report. Route: inline.
 
 ## Acceptance criteria
@@ -132,3 +132,9 @@ Give the system one authoritative answer to "which patches exist and which one i
   - `released_on` is validated as a TOML date but not exposed: the port promises versions, and the dates are for humans reading the config.
   - Sample data uses real patches (0.1.0 = 2024-12-06, 0.1.1 = 2025-01-17, from poe2wiki's version history) and keeps the S3 format exactly. `README.md` gains `config/` in the repository tree and one sentence pointing at the adapter.
   - Tooling note: the harness's Pyright runner reports `reportMissingImports` for `pytest` and `poe2_rag` on these files (and on the untouched `test_validity.py`). `uvx pyright --pythonpath .venv/bin/python` on the same three files reports **0 errors**, and adding a `pyrightconfig.json` did not change the runner's outcome, so it is an interpreter-binding defect in the runner, not in the code. The file was not committed. Commit `feat(adapters): load patch catalog from a TOML file`.
+- T4: RED → 8 failed, 193 passed; every failure was `TypeError: '<' not supported between instances of 'str' and 'PatchVersion'` raised at `validity.py:32`, the opaque behaviour S4 replaces. GREEN → 201 passed (8 new: 5 in `test_validity.py`, 3 in `test_chunk.py`).
+  - `Chunk.is_valid_at` needed no separate check: it delegates to `Validity.is_valid_at`, so both now raise `InvalidValidityError` with the message `version must be a PatchVersion, got ...`. Verified with `grep` that those are the only two `is_valid_at` sites in `src/`, so no unnamed consumer exists and no differential check applies; the pre-existing valid-argument tests in both files stayed green, which is the regression guard for the shared path. Commit `fix(domain): reject non-PatchVersion in is_valid_at`.
+
+## Delivery slices
+- Slice 1 (`b543588`..`eded729`, 702 authored lines): T1-T3. Over the ~400-line review slice on its own, and kept as one slice because the user's delivery rule is one commit per task and the chain is a single dependent feature (port → adapter → contract). Whether to split it into chained PRs is the user's decision.
+- Slice 2 (T4): the S4 hardening, 19 lines, small enough to review alone.
