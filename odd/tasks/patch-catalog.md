@@ -63,8 +63,10 @@ configuration file (§6), which is an adapter concern, never a domain one.
 
 ## Checks
 - `uv run pytest -q`
-- `uvx pyright --pythonpath .venv/bin/python src tests` (the harness runner cannot bind the venv;
-  see T3 evidence)
+- Type check, best effort and **not** a gate: `uvx pyright==1.1.414`. Pyright is not a project dependency
+  (`uv run pyright` fails), so this pinned `uvx` command is the reproducible way to run it.
+  `pyrightconfig.json` makes it resolve the uv environment; the config exists because the harness
+  language server started before `.venv` did and reported every import as missing (see T10).
 
 ## Progress / Evidence
 - T1: baseline `uv run pytest -q` → 121 passed. Branch `feat/patch-catalog` created from `main` at `b8e19af` (the `feat/ingest` worktree was parked; it sat on the same commit). No RED applicable (documentation only). Commit `docs(odd): record patch-catalog plan` (`b543588`).
