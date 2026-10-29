@@ -4,7 +4,7 @@
 > `PatchCatalog` con su adaptador TOML y el caso de uso `AnswerQuestion` de §5.1 con sus puertos de
 > consulta, probado con *fakes*; los adaptadores de consulta (BM25, Chroma, reranker, LLM), la ingesta,
 > la CLI y la evaluación de §8 todavía no.
-> Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendientes antes de implementar los adaptadores de fuentes: términos de uso de poe2db y vía de acceso autorizada a poe2wiki.net ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
+> Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
 
