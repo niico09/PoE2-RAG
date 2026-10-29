@@ -1,4 +1,9 @@
-"""Patch catalog read from a TOML configuration file."""
+"""Patch catalog read from a TOML configuration file.
+
+The file is a repository artifact, not package data: `uv build` ships this module but not
+`config/`, because operators add patches by editing the file instead of reinstalling the package.
+`TomlPatchCatalog` receives the path; `bootstrap.py` owns how that path is resolved.
+"""
 
 from __future__ import annotations
 

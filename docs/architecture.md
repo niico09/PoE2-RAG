@@ -94,11 +94,14 @@ El esquema actual del README tiene dos problemas de diseño:
 
 ### 4.3 Esquema de chunk propuesto
 
+> Ejemplo ilustrativo. El parche que el sistema considera actual lo declara `current` en
+> `config/patches.toml`; un chunk es vigente por su rango de `Validity`, nunca por una marca propia.
+
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.2#description",
+  "chunk_id": "active_gem:spark@0.1.1#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
-  "validity": { "valid_from": "0.1.2", "valid_until": null },
+  "validity": { "valid_from": "0.1.1", "valid_until": null },
   "section": "description",
   "tags": ["Spell", "Lightning", "Projectile"],
   "modifiers": [
@@ -163,8 +166,9 @@ Organizada por capacidad (*screaming architecture*) y, dentro de cada una, por c
 
 ```text
 src/poe2_rag/
-├── shared/                  # núcleo compartido del dominio
-│   └── domain/              # PatchVersion, Validity, EntityRef, Chunk, SourceRef, Modifier
+├── shared/                  # núcleo compartido por ingesta y consulta
+│   ├── domain/              # PatchVersion, Validity, PatchCatalog, EntityRef, Chunk, SourceRef, Modifier
+│   └── adapters/outbound/   # adaptadores de puertos que usan ambas capacidades (config/patches.toml)
 ├── ingestion/
 │   ├── domain/              # reglas de chunking y normalización
 │   ├── application/         # IngestSource, ReindexCorpus, puertos de ingesta
@@ -189,7 +193,7 @@ tests/
 └── eval/                    # dataset de preguntas con respuestas esperadas
 ```
 
-**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas.
+**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad.
 
 RRF vive en el dominio de `answering` porque es una función pura sobre rankings, no depende de ninguna librería.
 

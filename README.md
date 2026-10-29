@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** diseño del MVP acordado; todavía no hay código implementado.
+> **Estado:** en implementación. El modelo de dominio compartido y el catálogo de parches existen con tests unitarios y de contrato; ingesta, recuperación y generación todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -72,7 +72,9 @@ poe2-rag/
 │   ├── architecture.md      # Diseño del sistema
 │   └── adr/                 # Registro de decisiones de arquitectura
 ├── src/poe2_rag/
-│   ├── shared/domain/       # PatchVersion, Validity, Chunk, Modifier, ...
+│   ├── shared/
+│   │   ├── domain/          # PatchVersion, Validity, PatchCatalog, Chunk, Modifier, ...
+│   │   └── adapters/outbound/  # adaptadores compartidos (catálogo de parches)
 │   ├── ingestion/           # Fuentes, parsers, chunking e indexación
 │   ├── answering/           # Recuperación híbrida, RRF, reranking y generación
 │   ├── evaluation/          # Dataset y métricas (Hit@K, MRR, fidelidad, obsolescencia)
@@ -90,11 +92,13 @@ La vigencia se expresa como un rango de parches, no como una marca de "parche ac
 
 El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[patches]]` por parche) y lo carga el adaptador `TomlPatchCatalog`; el puerto `PatchCatalog` es la única fuente de verdad de "parche actual".
 
+> Los valores de versión del ejemplo siguiente son ilustrativos: el parche actual autoritativo es `current` en `config/patches.toml`.
+
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.2#description",
+  "chunk_id": "active_gem:spark@0.1.1#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
-  "validity": { "valid_from": "0.1.2", "valid_until": null },
+  "validity": { "valid_from": "0.1.1", "valid_until": null },
   "section": "description",
   "tags": ["Spell", "Lightning", "Projectile"],
   "modifiers": [
