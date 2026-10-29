@@ -85,10 +85,10 @@ class TestRetrievedChunk:
         assert retrieved.chunk is chunk
         assert retrieved.scores is scores
 
-    def test_exposes_the_delivered_chunk_id_through_the_chunk(self) -> None:
-        retrieved = RetrievedChunk(make_chunk(), StageScores())
+    def test_keeps_the_delivered_chunk_untouched(self) -> None:
+        chunk = make_chunk()
 
-        assert retrieved.chunk.chunk_id == "active_gem:spark@0.1.2#description"
+        assert RetrievedChunk(chunk, StageScores()).chunk is chunk
 
     def test_rejects_a_chunk_of_the_wrong_type(self) -> None:
         with pytest.raises(InvalidRetrievedChunkError, match="chunk"):
