@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación. El modelo de dominio compartido y el catálogo de parches existen con tests unitarios y de contrato; ingesta, recuperación y generación todavía no.
+> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches y el caso de uso `AnswerQuestion` con sus puertos de consulta existen con tests unitarios (con *fakes*); los adaptadores de recuperación y generación, la ingesta y la CLI todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -120,6 +120,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [x] Diseño de arquitectura y decisiones del MVP.
 - [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
 - [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
+- [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
