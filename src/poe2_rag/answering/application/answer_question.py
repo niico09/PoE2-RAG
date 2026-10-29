@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from poe2_rag.answering.application.errors import StaleChunkError
 from poe2_rag.answering.application.ports import (
     Embedder,
     LanguageModel,
@@ -22,6 +23,8 @@ from poe2_rag.answering.domain import (
     reciprocal_rank_fusion,
 )
 from poe2_rag.shared.domain import Chunk, PatchCatalog, PatchVersion
+
+NO_INFORMATION_TEXT = "No information available for this question in the selected patch."
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +72,13 @@ class AnswerQuestion:
         """Answer `text` for `version`, or for the catalog's current patch when it is omitted.
 
         `Query.for_catalog` resolves the version, so an unknown patch raises `InvalidQueryError`
-        before any port is called. Retrieval runs sequentially in the MVP. Fusion carries the
-        per-stage scores of every chunk, so the result shows how each one was found. `Answer.build`
-        validates the citations: a citation to an undelivered chunk raises `InvalidCitationError`
-        instead of being dropped (ADR-0005).
+        before any port is called. Retrieval runs sequentially in the MVP. Validity is enforced
+        before fusion: a chunk any stage returns that is not valid at the target patch raises
+        `StaleChunkError` instead of being dropped, because filtering after fusion would leave
+        holes in the top-K (D1, §5.1 step 3). With no candidates, or with a reranker that returns
+        none, the model is never called and the answer is the fixed, unsupported no-information
+        text. `Answer.build` validates the citations: a citation to an undelivered chunk raises
+        `InvalidCitationError` instead of being dropped (ADR-0005).
         """
         query = Query.for_catalog(text, self._catalog, version)
         vector = self._embedder.embed(query.text)
@@ -81,16 +87,28 @@ class AnswerQuestion:
                 query.text, query.target_version, self._settings.lexical_top_n
             )
         )
+        _require_valid(lexical, query.target_version, "lexical index")
         dense = tuple(
             self._vector_index.search(vector, query.target_version, self._settings.dense_top_n)
         )
+        _require_valid(dense, query.target_version, "vector index")
         candidates = self._fuse(lexical, dense)
+        if not candidates:
+            return self._unsupported(query.target_version)
         reranked = tuple(
             self._reranker.rerank(query.text, candidates, self._settings.final_top_k)
-        )[: self._settings.final_top_k]
-        generated = self._language_model.generate(query.text, reranked)
-        answer = Answer.build(generated.text, generated.citations, reranked)
-        return AnswerResult(answer, query.target_version, reranked)
+        )
+        _require_valid(reranked, query.target_version, "reranker")
+        delivered = reranked[: self._settings.final_top_k]
+        if not delivered:
+            return self._unsupported(query.target_version)
+        generated = self._language_model.generate(query.text, delivered)
+        answer = Answer.build(generated.text, generated.citations, delivered)
+        return AnswerResult(answer, query.target_version, delivered)
+
+    def _unsupported(self, version: PatchVersion) -> AnswerResult:
+        """Return the fixed unsupported answer for a run that delivered nothing (§5.1 step 6)."""
+        return AnswerResult(Answer(NO_INFORMATION_TEXT, (), False), version, ())
 
     def _fuse(
         self, lexical: tuple[RetrievedChunk, ...], dense: tuple[RetrievedChunk, ...]
@@ -121,6 +139,22 @@ class AnswerQuestion:
             )
             for chunk_id, score in fused[: self._settings.rerank_top_m]
         )
+
+
+def _require_valid(
+    chunks: Sequence[RetrievedChunk], version: PatchVersion, source: str
+) -> None:
+    """Raise `StaleChunkError` when `source` returned a chunk that is not valid at `version`.
+
+    Dropping the chunk here would satisfy the letter of D1 and still leave a hole in the top-K, so
+    the run stops: the validity filter belongs inside the index, and a stale chunk means that
+    contract is broken (§5.1 step 2, ADR-0003).
+    """
+    for item in chunks:
+        if not item.chunk.is_valid_at(version):
+            raise StaleChunkError(
+                f"the {source} returned {item.chunk.chunk_id!r}, which is not valid at {version}"
+            )
 
 
 def _stage_scores(

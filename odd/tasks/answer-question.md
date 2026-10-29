@@ -91,7 +91,7 @@ and gives every future adapter a contract to satisfy (§8).
 - [x] T2 — `ports.py` + `GeneratedAnswer` + application error base. Route: inline. S1, S4, S5.
 - [x] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
 - [x] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
-- [ ] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
+- [x] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
 - [ ] T6 — Close: full suite, import boundary, architecture doc, evidence. Route: inline. S6, S12.
 
 ## Delivery slices
@@ -129,6 +129,32 @@ Filled at close.
     per fake; the journal is `Any`-typed on purpose, and that looseness stays inside `tests/`.
   - `AnswerResult` carries no validation: only `execute` builds it, from values the domain already
     validated, so a second check would only repeat the domain's rules.
+- T5: RED → **5 failed, 403 passed** (5 new behaviour tests): the stale chunks travelled through fusion
+  and the empty runs still called the model. GREEN → **408 passed** (5 new).
+  - Each search is guarded immediately, so a broken lexical index stops the run before the dense search;
+    the test asserts the journal ends at the broken call. The reranker output is guarded as well: a stale
+    chunk there can only come from an adapter that invented one, so the fake injects it through
+    `returned=`.
+  - The `final_top_k` slice happens *after* the guard, so a stale chunk beyond the budget still fails
+    loud instead of disappearing with the slice.
+  - Both empty paths (no fused candidates, empty rerank) return the fixed text through one
+    `_unsupported` helper and never call the model; an empty fusion also skips the reranker, which cannot
+    create candidates. One test pins the exact message, so changing it is a deliberate edit.
+
+## Tooling notes
+- The gentle-pi lens reports `Import "pytest" could not be resolved` and `Import block is un-sorted` on
+  these test files in this worktree. Both are analyzer-environment defects, not code defects:
+  `effective_config` shows the per-file analysis loads no project configuration (`documents: []`, every
+  provenance count `0`), so its Pyright never sees the committed `pyrightconfig.json` (`venvPath`, `venv`,
+  `extraPaths: ["src"]`) and its isort classifies `poe2_rag` as third-party. The authoritative checks in
+  this worktree are green: `.venv/bin/python -c "import pytest"` → `9.2.0`, `uv run pytest -q` → 408
+  passed, `uvx pyright==1.1.414 src/poe2_rag/answering/application tests/unit/answering/application` →
+  `0 errors, 0 warnings, 0 informations`, and `uvx ruff check --select I` → `All checks passed`. Following
+  the analyzer's hints (grouping `poe2_rag` with `pytest`) would break `ruff`, the tool the repository
+  actually uses, so no code change was made.
+- The lens also emits `Potential SQL injection sink` advisories on `pipe.use_case.execute(...)`. The rule
+  that fires is `no-sql-in-code-execute` (TypeScript) and its own header documents `.execute` as a
+  method-name false-positive class. There is no SQL, cursor or database call in the repository.
 
 ## Close
 Filled at close.

@@ -1,6 +1,10 @@
 """Answering application: the read path orchestrated over its outbound ports (§5.1)."""
 
-from poe2_rag.answering.application.answer_question import AnswerQuestion, AnswerResult
+from poe2_rag.answering.application.answer_question import (
+    NO_INFORMATION_TEXT,
+    AnswerQuestion,
+    AnswerResult,
+)
 from poe2_rag.answering.application.errors import (
     AnswerQuestionError,
     InvalidGeneratedAnswerError,
@@ -27,6 +31,7 @@ __all__ = [
     "InvalidRetrievalSettingsError",
     "LanguageModel",
     "LexicalIndex",
+    "NO_INFORMATION_TEXT",
     "Reranker",
     "RetrievalSettings",
     "StaleChunkError",

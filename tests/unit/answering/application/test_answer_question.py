@@ -19,6 +19,7 @@ from poe2_rag.answering.application import (
     AnswerResult,
     GeneratedAnswer,
     RetrievalSettings,
+    StaleChunkError,
 )
 from poe2_rag.answering.domain import (
     Answer,
@@ -283,3 +284,61 @@ def test_calls_the_ports_in_pipeline_order() -> None:
     pipe.use_case.execute(QUESTION)
 
     assert pipe.recorder.kinds() == ["embed", "lexical", "dense", "rerank", "generate"]
+
+
+def test_a_stale_chunk_from_the_lexical_index_raises_stale_chunk_error() -> None:
+    stale = make_chunk("spark", valid_from="0.1.1", valid_until="0.1.2")
+    pipe = pipeline(lexical=[retrieved(stale, lexical=1.5)])
+
+    with pytest.raises(StaleChunkError, match="lexical index"):
+        pipe.use_case.execute(QUESTION, NEXT)
+
+    assert pipe.recorder.kinds() == ["embed", "lexical"]
+
+
+def test_a_stale_chunk_from_the_vector_index_raises_stale_chunk_error() -> None:
+    stale = make_chunk("spark", valid_from="0.1.1", valid_until="0.1.2")
+    pipe = pipeline(dense=[retrieved(stale, dense=0.9)])
+
+    with pytest.raises(StaleChunkError, match="vector index"):
+        pipe.use_case.execute(QUESTION, NEXT)
+
+    assert pipe.recorder.kinds() == ["embed", "lexical", "dense"]
+
+
+def test_a_stale_chunk_from_the_reranker_raises_stale_chunk_error() -> None:
+    spark = make_chunk("spark")
+    stale = make_chunk("ghost", valid_from="0.1.1", valid_until="0.1.2")
+    pipe = pipeline(
+        lexical=[retrieved(spark, lexical=1.5)],
+        returned=[retrieved(stale, lexical=1.0)],
+    )
+
+    with pytest.raises(StaleChunkError, match="reranker"):
+        pipe.use_case.execute(QUESTION, NEXT)
+
+    assert "generate" not in pipe.recorder.kinds()
+
+
+def test_empty_retrieval_skips_every_remaining_stage_and_is_unsupported() -> None:
+    pipe = pipeline()
+
+    result = pipe.use_case.execute(QUESTION)
+
+    assert pipe.recorder.kinds() == ["embed", "lexical", "dense"]
+    assert result.answer.text == "No information available for this question in the selected patch."
+    assert result.answer.supported is False
+    assert result.answer.citations == ()
+    assert result.delivered == ()
+    assert result.target_version == CURRENT
+
+
+def test_an_empty_rerank_skips_the_model_and_is_unsupported() -> None:
+    spark = make_chunk("spark")
+    pipe = pipeline(lexical=[retrieved(spark, lexical=1.5)], returned=[])
+
+    result = pipe.use_case.execute(QUESTION)
+
+    assert pipe.recorder.kinds() == ["embed", "lexical", "dense", "rerank"]
+    assert result.answer.supported is False
+    assert result.delivered == ()
