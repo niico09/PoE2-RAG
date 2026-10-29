@@ -44,8 +44,8 @@ configuration file (§6), which is an adapter concern, never a domain one.
 - Integer version encoding (ADR-0003, an adapter detail), Chroma, CLI, ingestion.
 
 ## Tasks
-- [ ] T1 — Branch `feat/patch-catalog` from `main`, feature doc, Engram mirror. Route: inline. Commit: `docs(odd): record patch-catalog plan`.
-- [ ] T2 — `InvalidPatchCatalogError` + `PatchCatalog` port + `InMemoryPatchCatalog` with unit tests. Route: inline. Commit: `feat(domain): add PatchCatalog port and in-memory catalog`.
+- [x] T1 — Branch `feat/patch-catalog` from `main`, feature doc, Engram mirror. Route: inline. Commit: `docs(odd): record patch-catalog plan`.
+- [x] T2 — `InvalidPatchCatalogError` + `PatchCatalog` port + `InMemoryPatchCatalog` with unit tests. Route: inline. Commit: `feat(domain): add PatchCatalog port and in-memory catalog`.
 - [ ] T3 — Shared contract suite + `TomlPatchCatalog` adapter + `config/patches.toml` sample, with adapter unit tests. Route: inline. Commit: `feat(adapters): load patch catalog from a TOML file`.
 - [ ] T4 — S4: `Validity.is_valid_at` and `Chunk.is_valid_at` reject non-`PatchVersion` args. Route: inline. Commit: `fix(domain): reject non-PatchVersion in is_valid_at`.
 - [ ] T5 — Close: full suite, evidence per task, RED/GREEN report. Route: inline.
@@ -122,3 +122,5 @@ Give the system one authoritative answer to "which patches exist and which one i
   the Writer rule's "2+ independent units" does not hold.
 
 ## Progress / Evidence
+- T1: baseline `uv run pytest -q` → 121 passed. Branch `feat/patch-catalog` created from `main` at `b8e19af` (the `feat/ingest` worktree was parked; it sat on the same commit). No RED applicable (documentation only). Commit `docs(odd): record patch-catalog plan`.
+- T2: RED → collection `ImportError: cannot import name 'InMemoryPatchCatalog' from 'poe2_rag.shared.domain'`, 0 tests run. GREEN → 141 passed (20 new). Two first-run failures were bugs in the test helper (default `current="0.1.1"` absent from a single-version catalog), not in the code: the invariant rejected them as designed, the helper was fixed. `PatchCatalog` is `runtime_checkable` so the contract test can assert conformance; `InMemoryPatchCatalog` is a plain slotted class rather than a dataclass because a frozen dataclass cannot hold a `current` field and a `current()` method at once. It copies and sorts its input, so a later mutation of the caller's list cannot change it. Commit `feat(domain): add PatchCatalog port and in-memory catalog`.

@@ -27,3 +27,7 @@ class InvalidModifierError(DomainError):
 
 class InvalidChunkError(DomainError):
     """Raised when a chunk is missing content or holds components of the wrong type."""
+
+
+class InvalidPatchCatalogError(DomainError):
+    """Raised when a patch catalog is empty, repeats a version or declares an unknown current patch."""
