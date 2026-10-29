@@ -92,10 +92,24 @@ and gives every future adapter a contract to satisfy (§8).
 - [x] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
 - [x] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
 - [x] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
-- [ ] T6 — Close: full suite, import boundary, architecture doc, evidence. Route: inline. S6, S12.
+- [x] T6 — Close: full suite, import boundary, architecture doc, evidence. Route: inline. S6, S12.
 
 ## Delivery slices
-Filled at close.
+- One commit per task (S11): `bfb161f` T1 (plan), `69ab572` T2 (ports + `GeneratedAnswer` + errors),
+  `57cdb45` T3 (settings), `12bb9f3` T4 (read path + fakes), `5612854` T5 (stale guard + empty path),
+  plus the closing commit that carries this record and the architecture update.
+- Authored changed lines per commit (additions + deletions, `uv.lock` excluded): 197, 234, 130, 570, 144.
+  The per-commit sum (1275) exceeds the T1-T5 range total (`git diff --numstat 7730db6..5612854`,
+  `uv.lock` excluded: **1249 added, 0 deleted**) because lines rewritten by a later commit are counted
+  twice, e.g. the application `__init__.py` and the feature document. The closing documentation commit
+  that carries this record sits outside that count.
+- T4 is the largest commit because it carries the fakes every later test reuses. It stays one behaviour
+  (the happy path): splitting the fakes from their first consumer would only create a commit with dead
+  test infrastructure.
+- The whole feature is over the ~400-line review slice. Every commit is green on its own, so native
+  review can take any one of them.
+- The harness slice warning counts authored lines against `origin/main` for the whole branch, not per
+  task.
 
 ## Progress / Evidence
 - T1: branch `feat/answer-question` created from `main` (`7730db6`). Baseline on that base:
@@ -157,10 +171,43 @@ Filled at close.
   method-name false-positive class. There is no SQL, cursor or database call in the repository.
 
 ## Close
-Filled at close.
+- Final `uv run pytest -q` → **408 passed** (baseline on `main`: 344; **+64 tests**).
+- `uvx pyright==1.1.414` (bare, project config) → `0 errors, 0 warnings, 0 informations`.
+- `uvx ruff check --select I src/poe2_rag/answering/application tests/unit/answering/application` →
+  `All checks passed`.
+- Import boundary (S5): every import in `src/poe2_rag/answering/application/*.py` is `__future__`,
+  `collections.abc`, `dataclasses`, `typing`, `poe2_rag.answering.domain*`, `poe2_rag.shared.domain` or a
+  sibling module of the package. No third party, no ingestion, no adapter.
+- Per-spec verdict:
+  - S1 ✅ five `typing.Protocol` ports with the requested signatures, plus `GeneratedAnswer(text,
+    citations)` as a frozen slotted dataclass that validates shape only.
+  - S2 ✅ `RetrievalSettings(lexical_top_n, dense_top_n, rerank_top_m, final_top_k, rrf_k=60)`, all
+    positive ints, `final_top_k <= rerank_top_m`, `InvalidRetrievalSettingsError` otherwise.
+  - S3 ✅ `AnswerQuestion.execute` runs the seven steps; every step is named by at least one test.
+  - S4 ✅ `AnswerQuestionError` subclasses `ValueError`, not `DomainError`; `InvalidGeneratedAnswerError`,
+    `InvalidRetrievalSettingsError` and `StaleChunkError` derive from it.
+  - S5 ✅ see the import boundary above.
+  - S6 ✅ RED observed before every implementation, then GREEN; counts per task above.
+  - S7 ✅ fakes in `tests/unit/answering/application/fakes.py`, sharing one `CallRecorder`.
+  - S8 ✅ every required case is a named test: default and explicit version, unknown version, both
+    indexes receiving the version, single-ranking survivor, `final_top_k`, empty retrieval skipping the
+    model, undelivered citation, a stale chunk from each stage, zero citations.
+  - S9 ✅ no adapter, no `bootstrap.py`, no CLI command, no entity detection, no concurrency.
+  - S10 ✅ code, tests, the feature document and every commit message are English;
+    `docs/architecture.md` stays Spanish because the whole file is (L2).
+  - S11 ✅ branch from `main`, one Conventional Commit per task, no attribution, nothing pushed or opened.
+  - S12 ✅ the numbers above, per task.
+- `Risk: none`. The feature adds modules and ports; it changes no stored data, no credential or guard, no
+  existing contract (nothing consumes these modules yet), no concurrency and no delivery path, and every
+  rule it introduces has a test that fails without it.
+- No gate was skipped. The two lens findings (`import pytest` unresolved, import block "un-sorted") are
+  analyzer defects documented in Tooling notes, with the commands that prove the files resolve and sort.
 
 ## Next step
-Filled at close.
+The user's decision, not taken here: push `feat/answer-question` and open the PR against `main`. Nothing
+was pushed and no PR was opened. The natural follow-up is the query adapters (BM25, Chroma, cross-encoder,
+LLM) behind the port contract suite of §8: they are the only reading work left before `bootstrap.py` can
+wire a real pipeline.
 
 ## Log
 
@@ -250,3 +297,23 @@ docs/architecture.md
 Concise report: tasks done, commits, test counts, deviations from this prompt and why.
 Close with a `## Key Learnings` block of 1–5 numbered standalone facts.
 ````
+
+### L2 — implementation decisions (not fixed by L1)
+
+1. `settings.py` and `errors.py` are separate modules in `answering/application`: L1 named `ports.py` and
+   `answer_question.py` and left the rest to the package style (one responsibility per module).
+2. `execute` embeds the query before searching. `VectorIndex.search` takes a vector, so `Embedder` is the
+   only source of it and the dense index never receives raw text.
+3. The D1 guard runs immediately after each search and after the rerank, and before the `final_top_k`
+   slice. "Any returned chunk" covers the reranker: a stale chunk there can only come from an adapter
+   that invented it, and slicing first could hide it.
+4. Both empty paths share one `_unsupported` helper; the empty-fusion path also skips the reranker, which
+   cannot create candidates, and no path reaches the model without delivered chunks.
+5. The use case does not validate its ports in the constructor. It is wired once in `bootstrap.py` (a
+   future task) and an incompatible port fails on the first call; a runtime Protocol check would add
+   ceremony without protecting a domain invariant.
+6. `RetrievalSettings.rrf_k` defaults to the domain's `DEFAULT_K`, so the settings cannot drift from the
+   fusion default while a test still pins the value at `60`.
+7. `docs/architecture.md` is edited in Spanish: it is the repository's existing design document and ADR
+   index, and a bilingual file would read worse. Everything new (code, tests, feature document, commits)
+   is English, as L1 asks.

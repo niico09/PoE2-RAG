@@ -1,8 +1,9 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado**. Implementado el modelo de dominio de §4 y el puerto
-> `PatchCatalog` con su adaptador TOML; los casos de uso de §5, el resto de los puertos y la
-> evaluación de §8 todavía no.
+> Estado: **diseño del MVP acordado**. Implementados el modelo de dominio de §4, el puerto
+> `PatchCatalog` con su adaptador TOML y el caso de uso `AnswerQuestion` de §5.1 con sus puertos de
+> consulta, probado con *fakes*; los adaptadores de consulta (BM25, Chroma, reranker, LLM), la ingesta,
+> la CLI y la evaluación de §8 todavía no.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendientes antes de implementar los adaptadores de fuentes: términos de uso de poe2db y vía de acceso autorizada a poe2wiki.net ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -126,19 +127,19 @@ El esquema actual del README tiene dos problemas de diseño:
 |---|---|---|
 | `IngestSource` | Ingesta | Identificador de fuente → chunks persistidos en `data/processed/` |
 | `ReindexCorpus` | Ingesta | Corpus procesado → índices léxico y vectorial reconstruidos |
-| `AnswerQuestion` | Consulta | `Query` → `Answer` con citas |
+| `AnswerQuestion` | Consulta | `(texto, versión)` → `AnswerResult`: `Answer` con citas + chunks entregados |
 | `RunEvaluation` | Evaluación | Dataset de evaluación → reporte de métricas |
 
 ### 5.1 Flujo de `AnswerQuestion`
 
 1. **Análisis de la consulta:** detectar entidades (nombres de gemas), tipo de modificador mencionado y versión objetivo. Sin versión explícita, usar la actual del `PatchCatalog`.
-2. **Pre-filtrado por vigencia:** ambos índices reciben el filtro `is_valid_at(target_version)`. **El filtro se aplica antes de la fusión**, nunca después: si se filtra tarde, RRF ya mezcló rankings con datos obsoletos y el top-K queda con huecos.
+2. **Pre-filtrado por vigencia:** ambos índices reciben el filtro `is_valid_at(target_version)`. **El filtro se aplica antes de la fusión**, nunca después: si se filtra tarde, RRF ya mezcló rankings con datos obsoletos y el top-K queda con huecos. Si un índice devuelve un chunk que no es vigente para la versión objetivo, `AnswerQuestion` falla con `StaleChunkError` en vez de descartarlo: el contrato del índice está roto y descartar dejaría el mismo hueco.
 3. **Recuperación híbrida:** BM25 (top-N) y vectorial (top-N) en paralelo.
 4. **Fusión:** Reciprocal Rank Fusion sobre ambos rankings.
 5. **Reranking:** cross-encoder sobre el top-M fusionado → top-K final.
 6. **Construcción de contexto:** cada chunk se entrega al LLM con su `chunk_id` y versión.
 7. **Generación:** cada chunk se envía como documento con citas nativas habilitadas ([ADR-0005](adr/0005-llm-por-api.md)); el prompt exige responder "no hay información" si el contexto no alcanza.
-8. **Validación de citas:** las citas se validan contra los chunks entregados. El dominio (`Answer.build`) **rechaza** la respuesta con `InvalidCitationError` cuando una cita nombra un chunk que no se entregó: no descarta en silencio, porque una cita sin respaldo invalida la respuesta ([ADR-0005](adr/0005-llm-por-api.md)). `AnswerQuestion` decide qué hacer con ese rechazo; si no queda ninguna cita válida, la respuesta se construye con `supported=False` ("sin respaldo").
+8. **Validación de citas:** las citas se validan contra los chunks entregados. El dominio (`Answer.build`) **rechaza** la respuesta con `InvalidCitationError` cuando una cita nombra un chunk que no se entregó: no descarta en silencio, porque una cita sin respaldo invalida la respuesta ([ADR-0005](adr/0005-llm-por-api.md)). `AnswerQuestion` deja propagar ese rechazo: cualquier cita a un chunk no entregado invalida la respuesta completa; una respuesta sin citas se construye con `supported=False` ("sin respaldo").
 
 Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar por separado.
 
@@ -158,7 +159,7 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 | `Reranker` | Reordenar candidatos | `bge-reranker-base` |
 | `LanguageModel` | Generar la respuesta | Claude Sonnet 5.5 por API ([ADR-0005](adr/0005-llm-por-api.md)); Nemotron 3.5 Lightning como candidato |
 
-Los puertos son interfaces pequeñas (un método principal cada uno). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada.
+Los puertos son interfaces pequeñas (un método principal cada uno). En el código son `typing.Protocol`, y los de consulta viven en `answering/application/ports.py` con sus *fakes* en `tests/` (§8). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada.
 
 ---
 
@@ -205,7 +206,7 @@ RRF vive en el dominio de `answering` porque es una función pura sobre rankings
 
 | Nivel | Qué prueba | Cómo |
 |---|---|---|
-| Unitario | `PatchVersion`, `Validity`, RRF, validación de citas, casos de uso | Fakes en memoria para cada puerto |
+| Unitario | `PatchVersion`, `Validity`, RRF, validación de citas, casos de uso | Fakes en memoria para cada puerto; registran sus llamadas para verificar orden y argumentos |
 | Contrato | Cada adaptador cumple su puerto (ej.: el vector store respeta el filtro de vigencia) | Misma suite ejecutada contra cada implementación |
 | Evaluación | Calidad de punta a punta | Dataset fijo; métricas Hit@K, MRR, fidelidad y **tasa de respuestas con datos obsoletos** |
 
