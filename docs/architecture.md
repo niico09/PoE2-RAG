@@ -1,6 +1,8 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado**. Ninguna parte de este documento está implementada todavía.
+> Estado: **diseño del MVP acordado**. Implementado el modelo de dominio de §4
+> (`src/poe2_rag/shared/domain/`) con su suite de tests unitarios; §5 (casos de uso), §6
+> (adaptadores) y §8 (evaluación) todavía no.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendientes antes de implementar los adaptadores de fuentes: términos de uso de poe2db y vía de acceso autorizada a poe2wiki.net ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---

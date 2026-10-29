@@ -2,7 +2,9 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** diseño del MVP acordado; todavía no hay código implementado.
+> **Estado:** diseño del MVP acordado; implementado el modelo de dominio compartido
+> (`src/poe2_rag/shared/domain/`) con su suite de tests unitarios. La ingesta, la consulta y la
+> evaluación siguen sin implementar.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -88,7 +90,7 @@ La vigencia se expresa como un rango de parches, no como una marca de "parche ac
 
 ```json
 {
-  "chunk_id": "active_gem:spark@0.1.2#description",
+  "chunk_id": "poe2db:active_gem:spark@0.1.2#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.2", "valid_until": null },
   "section": "description",
@@ -111,7 +113,7 @@ La vigencia se expresa como un rango de parches, no como una marca de "parche ac
 
 - [x] Diseño de arquitectura y decisiones del MVP.
 - [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
-- [ ] Modelo de dominio (`PatchVersion`, `Validity`, `Chunk`, `Modifier`) con tests unitarios.
+- [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) con tests unitarios.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
