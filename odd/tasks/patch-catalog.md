@@ -48,7 +48,7 @@ configuration file (§6), which is an adapter concern, never a domain one.
 - [x] T2 — `InvalidPatchCatalogError` + `PatchCatalog` port + `InMemoryPatchCatalog` with unit tests. Route: inline. Commit: `feat(domain): add PatchCatalog port and in-memory catalog`.
 - [x] T3 — Shared contract suite + `TomlPatchCatalog` adapter + `config/patches.toml` sample, with adapter unit tests. Route: inline. Commit: `feat(adapters): load patch catalog from a TOML file`.
 - [x] T4 — S4: `Validity.is_valid_at` and `Chunk.is_valid_at` reject non-`PatchVersion` args. Route: inline. Commit: `fix(domain): reject non-PatchVersion in is_valid_at`.
-- [ ] T5 — Close: full suite, evidence per task, RED/GREEN report. Route: inline.
+- [x] T5 — Close: full suite, evidence per task, RED/GREEN report. Route: inline. Commit: `docs(odd): close patch-catalog feature`.
 
 ## Acceptance criteria
 - Every port method behaves identically in both implementations, asserted by one contract suite.
@@ -122,8 +122,8 @@ Give the system one authoritative answer to "which patches exist and which one i
   the Writer rule's "2+ independent units" does not hold.
 
 ## Progress / Evidence
-- T1: baseline `uv run pytest -q` → 121 passed. Branch `feat/patch-catalog` created from `main` at `b8e19af` (the `feat/ingest` worktree was parked; it sat on the same commit). No RED applicable (documentation only). Commit `docs(odd): record patch-catalog plan`.
-- T2: RED → collection `ImportError: cannot import name 'InMemoryPatchCatalog' from 'poe2_rag.shared.domain'`, 0 tests run. GREEN → 141 passed (20 new). Two first-run failures were bugs in the test helper (default `current="0.1.1"` absent from a single-version catalog), not in the code: the invariant rejected them as designed, the helper was fixed. `PatchCatalog` is `runtime_checkable` so the contract test can assert conformance; `InMemoryPatchCatalog` is a plain slotted class rather than a dataclass because a frozen dataclass cannot hold a `current` field and a `current()` method at once. It copies and sorts its input, so a later mutation of the caller's list cannot change it. Commit `feat(domain): add PatchCatalog port and in-memory catalog`.
+- T1: baseline `uv run pytest -q` → 121 passed. Branch `feat/patch-catalog` created from `main` at `b8e19af` (the `feat/ingest` worktree was parked; it sat on the same commit). No RED applicable (documentation only). Commit `docs(odd): record patch-catalog plan` (`b543588`).
+- T2: RED → collection `ImportError: cannot import name 'InMemoryPatchCatalog' from 'poe2_rag.shared.domain'`, 0 tests run. GREEN → 141 passed (20 new). Two first-run failures were bugs in the test helper (default `current="0.1.1"` absent from a single-version catalog), not in the code: the invariant rejected them as designed, the helper was fixed. `PatchCatalog` is `runtime_checkable` so the contract test can assert conformance; `InMemoryPatchCatalog` is a plain slotted class rather than a dataclass because a frozen dataclass cannot hold a `current` field and a `current()` method at once. It copies and sorts its input, so a later mutation of the caller's list cannot change it. Commit `feat(domain): add PatchCatalog port and in-memory catalog` (`3eceef3`).
 - T3: RED → `ModuleNotFoundError: No module named 'poe2_rag.shared.adapters'` for both new suites (collection error, 0 tests run). GREEN → 193 passed (52 new: 32 contract cases — 16 scenarios run against each implementation — and 20 adapter unit tests).
   - The adapter *composes* `InMemoryPatchCatalog` instead of re-checking invariants, so "never a partial catalog" is structural: the only way to build a `TomlPatchCatalog` is to hand validated versions to the domain, and any decode, shape or invariant failure aborts before an instance exists.
   - `PatchCatalogLoadError(RuntimeError)` is deliberately not a `DomainError`: a broken file is an environment failure, and keeping it out of the `ValueError`/`DomainError` branch means callers can never confuse it with an invariant violation. Invariants raised by decoded files stay `InvalidPatchCatalogError`, so the contract suite asserts one error type for both implementations.
@@ -131,10 +131,19 @@ Give the system one authoritative answer to "which patches exist and which one i
   - Unknown keys (top level and per table) are rejected: this file is the single source of truth for "current", so a misspelled key must fail closed instead of being silently ignored.
   - `released_on` is validated as a TOML date but not exposed: the port promises versions, and the dates are for humans reading the config.
   - Sample data uses real patches (0.1.0 = 2024-12-06, 0.1.1 = 2025-01-17, from poe2wiki's version history) and keeps the S3 format exactly. `README.md` gains `config/` in the repository tree and one sentence pointing at the adapter.
-  - Tooling note: the harness's Pyright runner reports `reportMissingImports` for `pytest` and `poe2_rag` on these files (and on the untouched `test_validity.py`). `uvx pyright --pythonpath .venv/bin/python` on the same three files reports **0 errors**, and adding a `pyrightconfig.json` did not change the runner's outcome, so it is an interpreter-binding defect in the runner, not in the code. The file was not committed. Commit `feat(adapters): load patch catalog from a TOML file`.
+  - Tooling note: the harness's Pyright runner reports `reportMissingImports` for `pytest` and `poe2_rag` on these files (and on the untouched `test_validity.py`). `uvx pyright --pythonpath .venv/bin/python` on the same three files reports **0 errors**, and adding a `pyrightconfig.json` did not change the runner's outcome, so it is an interpreter-binding defect in the runner, not in the code. The file was not committed. Commit `feat(adapters): load patch catalog from a TOML file` (`eded729`).
 - T4: RED → 8 failed, 193 passed; every failure was `TypeError: '<' not supported between instances of 'str' and 'PatchVersion'` raised at `validity.py:32`, the opaque behaviour S4 replaces. GREEN → 201 passed (8 new: 5 in `test_validity.py`, 3 in `test_chunk.py`).
-  - `Chunk.is_valid_at` needed no separate check: it delegates to `Validity.is_valid_at`, so both now raise `InvalidValidityError` with the message `version must be a PatchVersion, got ...`. Verified with `grep` that those are the only two `is_valid_at` sites in `src/`, so no unnamed consumer exists and no differential check applies; the pre-existing valid-argument tests in both files stayed green, which is the regression guard for the shared path. Commit `fix(domain): reject non-PatchVersion in is_valid_at`.
+  - `Chunk.is_valid_at` needed no separate check: it delegates to `Validity.is_valid_at`, so both now raise `InvalidValidityError` with the message `version must be a PatchVersion, got ...`. Verified with `grep` that those are the only two `is_valid_at` sites in `src/`, so no unnamed consumer exists and no differential check applies; the pre-existing valid-argument tests in both files stayed green, which is the regression guard for the shared path. Commit `fix(domain): reject non-PatchVersion in is_valid_at` (`f3eaf70`).
 
 ## Delivery slices
 - Slice 1 (`b543588`..`eded729`, 702 authored lines): T1-T3. Over the ~400-line review slice on its own, and kept as one slice because the user's delivery rule is one commit per task and the chain is a single dependent feature (port → adapter → contract). Whether to split it into chained PRs is the user's decision.
 - Slice 2 (T4): the S4 hardening, 19 lines, small enough to review alone.
+
+## Close
+- T5: `uv run pytest -q` → **201 passed** (baseline before the feature: 121). The sample config was also loaded through the public adapter outside pytest: `current: 0.1.1`, `known: 0.1.0, 0.1.1`, `contains(0.1.0) = True`, `contains(0.2.0) = False`.
+- S5 checked by reading the imports: `domain/patch_catalog.py` imports only `collections.abc`, `itertools`, `typing` and sibling domain modules; `tomllib`, `pathlib` and `datetime` appear only in the adapter.
+- S7 checked: `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'` → 0.
+- No check was skipped; nothing is pending.
+
+## Next step
+Push and open the PR: the user's decision, not taken here.
