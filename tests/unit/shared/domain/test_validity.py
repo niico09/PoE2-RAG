@@ -1,6 +1,11 @@
 import pytest
 
-from poe2_rag.shared.domain import DomainError, InvalidValidityError, PatchVersion, Validity
+from poe2_rag.shared.domain import (
+    DomainError,
+    InvalidValidityError,
+    PatchVersion,
+    Validity,
+)
 
 
 def v(raw: str) -> PatchVersion:
