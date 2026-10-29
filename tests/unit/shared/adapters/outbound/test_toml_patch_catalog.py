@@ -133,10 +133,12 @@ class TestLoadErrors:
     def test_invalid_utf8_is_a_load_error_naming_the_path(self, tmp_path: Path) -> None:
         path = write_bytes(tmp_path, b'current = "0.1.0"\n\n[[patches]]\nversion = "\xe9"\n')
 
-        with pytest.raises(PatchCatalogLoadError, match="not valid UTF-8") as exc_info:
+        with pytest.raises(PatchCatalogLoadError) as exc_info:
             TomlPatchCatalog(path)
 
-        assert not isinstance(exc_info.value, UnicodeDecodeError)
+        message = str(exc_info.value)
+        assert str(path) in message
+        assert "not valid UTF-8" in message
 
     def test_datetime_release_is_rejected_as_not_a_date(self, tmp_path: Path) -> None:
         text = (
@@ -167,21 +169,27 @@ class TestCatalogInvariants:
     def test_empty_catalog_error_names_the_path(self, tmp_path: Path) -> None:
         path = write_catalog(tmp_path, 'current = "0.1.0"\n')
 
-        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+        with pytest.raises(InvalidPatchCatalogError) as exc_info:
             TomlPatchCatalog(path)
+
+        assert str(path) in str(exc_info.value)
 
     def test_duplicate_version_error_names_the_path(self, tmp_path: Path) -> None:
         text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
         path = write_catalog(tmp_path, text)
 
-        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+        with pytest.raises(InvalidPatchCatalogError) as exc_info:
             TomlPatchCatalog(path)
+
+        assert str(path) in str(exc_info.value)
 
     def test_unknown_current_error_names_the_path(self, tmp_path: Path) -> None:
         path = write_catalog(tmp_path, 'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\n')
 
-        with pytest.raises(InvalidPatchCatalogError, match=str(path)):
+        with pytest.raises(InvalidPatchCatalogError) as exc_info:
             TomlPatchCatalog(path)
+
+        assert str(path) in str(exc_info.value)
 
 
 class TestErrorHierarchy:
