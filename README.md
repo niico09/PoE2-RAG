@@ -84,11 +84,11 @@ Cada capacidad se divide en `domain/`, `application/` y `adapters/`.
 
 ## ⚙️ Esquema de Chunk
 
-La vigencia se expresa como un rango de parches, no como una marca de "parche actual": el catálogo de parches es el único que sabe cuál es el vigente. La identidad de la entidad (`gem:spark`) es independiente de la versión.
+La vigencia se expresa como un rango de parches, no como una marca de "parche actual": el catálogo de parches es el único que sabe cuál es el vigente. La identidad de la entidad (`active_gem:spark`) es independiente de la versión.
 
 ```json
 {
-  "chunk_id": "gem:spark@0.1.2#description",
+  "chunk_id": "active_gem:spark@0.1.2#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
   "validity": { "valid_from": "0.1.2", "valid_until": null },
   "section": "description",
