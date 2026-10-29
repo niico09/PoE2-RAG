@@ -30,7 +30,12 @@ class Citation:
 
 @dataclass(frozen=True, slots=True)
 class Answer:
-    """Generated text with the citations that support it; `supported` is False when nothing backs it."""
+    """Generated text with the citations that support it; `supported` is False when nothing backs it.
+
+    Direct construction cannot check that a citation names a delivered chunk, because it has no
+    delivered set to compare against. `build` is the validating entry point for anything a model
+    produced; the constructor enforces the shape and the "no citations means no backing" rule.
+    """
 
     text: str
     citations: tuple[Citation, ...]
@@ -40,7 +45,7 @@ class Answer:
         if is_blank(self.text):
             raise InvalidAnswerError("text must be a non-blank string")
         if not isinstance(self.citations, tuple):
-            raise InvalidAnswerError(f"citations must be a tuple of Citation, got {self.citations!r}")
+            raise InvalidCitationError(f"citations must be a tuple of Citation, got {self.citations!r}")
         if not all(isinstance(citation, Citation) for citation in self.citations):
             raise InvalidCitationError(f"citations must be Citation values, got {self.citations!r}")
         if not isinstance(self.supported, bool):

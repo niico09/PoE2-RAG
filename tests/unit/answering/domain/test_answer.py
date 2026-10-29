@@ -1,3 +1,4 @@
+import re
 from datetime import date
 
 import pytest
@@ -81,7 +82,7 @@ class TestAnswerConstruction:
     def test_rejects_citations_that_are_not_a_tuple(self) -> None:
         citation = Citation("active_gem:spark@0.1.2#description", "12 mana")
 
-        with pytest.raises(InvalidAnswerError, match="citations"):
+        with pytest.raises(InvalidCitationError, match="citations"):
             Answer("Spark costs 12 mana.", [citation], True)  # type: ignore[arg-type]
 
     def test_rejects_citations_that_are_not_citations(self) -> None:
@@ -107,6 +108,15 @@ class TestAnswerConstruction:
         assert Answer("Spark costs 12 mana.", (citation,), False).supported is False
 
 
+@pytest.mark.parametrize("citations", ["no-es-tupla", None, 42])
+def test_both_paths_reject_a_malformed_citations_argument_the_same_way(citations: object) -> None:
+    """A caller catching InvalidCitationError must see it from either construction path."""
+    with pytest.raises(InvalidCitationError):
+        Answer("Spark costs 12 mana.", citations, False)  # type: ignore[arg-type]
+    with pytest.raises(InvalidCitationError):
+        Answer.build("Spark costs 12 mana.", citations, [])  # type: ignore[arg-type]
+
+
 class TestAnswerBuild:
     def test_builds_a_supported_answer_when_every_citation_was_delivered(self) -> None:
         chunk = make_chunk()
@@ -122,7 +132,7 @@ class TestAnswerBuild:
         chunk = make_chunk()
         missing = make_chunk(slug="blight")
 
-        with pytest.raises(InvalidCitationError, match="active_gem:blight@0.1.2#description"):
+        with pytest.raises(InvalidCitationError, match=re.escape(missing.chunk_id)):
             Answer.build("Blight spreads.", [Citation(missing.chunk_id, "spread")], delivered(chunk))
 
     def test_rejects_when_only_one_of_several_citations_was_not_delivered(self) -> None:
