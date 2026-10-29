@@ -14,6 +14,7 @@ from poe2_rag.answering.application.ports import (
     Reranker,
     VectorIndex,
 )
+from poe2_rag.answering.application.settings import RetrievalSettings
 
 __all__ = [
     "AnswerQuestionError",
@@ -24,6 +25,7 @@ __all__ = [
     "LanguageModel",
     "LexicalIndex",
     "Reranker",
+    "RetrievalSettings",
     "StaleChunkError",
     "VectorIndex",
 ]

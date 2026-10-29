@@ -89,7 +89,7 @@ and gives every future adapter a contract to satisfy (§8).
 ## Tasks
 - [x] T1 — Branch `feat/answer-question`, feature doc, Engram mirror. Route: inline. S11.
 - [x] T2 — `ports.py` + `GeneratedAnswer` + application error base. Route: inline. S1, S4, S5.
-- [ ] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
+- [x] T3 — `RetrievalSettings` and its validation. Route: inline. S2, S4.
 - [ ] T4 — `AnswerQuestion` happy path + `AnswerResult` + fakes. Route: inline. S3, S7, S8.
 - [ ] T5 — Stale-chunk guard and the empty-retrieval path. Route: inline. S3, S8.
 - [ ] T6 — Close: full suite, import boundary, architecture doc, evidence. Route: inline. S6, S12.
@@ -108,6 +108,14 @@ Filled at close.
     not a domain invariant violation, so no caller can swallow it as one by accident.
   - The ports are `runtime_checkable`, so a future contract test can assert an adapter implements its port;
     a test pins that the check works.
+- T3: RED → collection `ImportError: cannot import name 'RetrievalSettings' from
+  'poe2_rag.answering.application'`, 0 tests run (37 cases written). GREEN → **390 passed** (37 new).
+  - `rrf_k` defaults to the domain's `DEFAULT_K`, so the settings cannot drift from the fusion default;
+    a test still pins the value at `60`.
+  - `bool` is rejected before `int`: `isinstance(True, int)` is true, and `True` as a budget would pass a
+    naive check. `StageScores` rejects it the same way.
+  - `final_top_k > rerank_top_m` is rejected because the reranker cannot deliver more chunks than it
+    was given, so a larger final budget could never be filled.
 
 ## Close
 Filled at close.
