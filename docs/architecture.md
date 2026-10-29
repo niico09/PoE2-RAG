@@ -28,7 +28,7 @@ Ordenados por prioridad. Cada decisión de diseño se justifica contra esta list
 
 | # | Driver | Por qué importa |
 |---|---|---|
-| D1 | **Vigencia temporal** | Una respuesta correcta para `0.1.0` puede ser falsa en `0.1.2`. Un dato obsoleto es peor que ninguno. |
+| D1 | **Vigencia temporal** | Una respuesta correcta para `0.1.1` puede ser falsa en `0.2.0`. Un dato obsoleto es peor que ninguno. |
 | D2 | **Precisión léxica** | `increased` (aditivo) y `more` (multiplicativo) no son sinónimos. Los nombres propios requieren coincidencia exacta. |
 | D3 | **Trazabilidad** | Toda afirmación de la respuesta debe poder rastrearse a un chunk y a su fuente. |
 | D4 | **Evaluabilidad** | Cada cambio en el pipeline se mide contra un dataset fijo antes de aceptarse. |
@@ -207,7 +207,7 @@ RRF vive en el dominio de `answering` porque es una función pura sobre rankings
 | Contrato | Cada adaptador cumple su puerto (ej.: el vector store respeta el filtro de vigencia) | Misma suite ejecutada contra cada implementación |
 | Evaluación | Calidad de punta a punta | Dataset fijo; métricas Hit@K, MRR, fidelidad y **tasa de respuestas con datos obsoletos** |
 
-La métrica de datos obsoletos es la que protege D1: una pregunta sobre `0.1.2` que recupera un chunk válido solo en `0.1.0` cuenta como fallo.
+La métrica de datos obsoletos es la que protege D1: una pregunta sobre `0.2.0` que recupera un chunk válido solo en `0.1.1` cuenta como fallo.
 
 ---
 
