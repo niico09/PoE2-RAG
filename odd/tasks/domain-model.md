@@ -23,7 +23,7 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 - [x] T1 — Project scaffold: `pyproject.toml`, package layout, pytest config, `.gitignore`. Route: delegated (writer, 2+ files).
 - [x] T2 — `PatchVersion`: parse `major.minor.patch`, total ordering, reject invalid formats and negatives. Route: delegated.
 - [x] T3 — `Validity`: half-open range `[valid_from, valid_until)`, open-ended when `valid_until is None`, `is_valid_at(version)`, invariant `valid_from < valid_until`. Route: delegated.
-- [ ] T4 — `EntityRef`, `SourceRef`, `Modifier` (`ModifierKind`: increased, reduced, more, less, added, flat). Route: delegated.
+- [x] T4 — `EntityRef`, `SourceRef`, `Modifier` (`ModifierKind`: increased, reduced, more, less, added, flat). Route: delegated.
 - [ ] T5 — `Chunk` entity composing the above; `chunk_id` format `<kind>:<slug>@<valid_from>#<section>`. Route: delegated.
 
 ## Acceptance criteria
@@ -36,7 +36,8 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 ## Progress / Evidence
 - T1: scaffold via `uv init --lib`, Python 3.12.16 pinned, pytest 9.2.0 dev dep, `testpaths = ["tests"]`. `uv run pytest -q` → "no tests ran" (exit 5, expected, no tests yet). No RED applicable (configuration only). Commit `1c0cda3`.
 - T2: RED → collection ImportError (`PatchVersion` not defined in `poe2_rag.shared.domain`). GREEN → 23 passed. Leading zeros (`01.0.0`) also rejected so `str()` round-trips exactly. Commit `773555c`.
-- T3: RED → ImportError (`InvalidValidityError` not exported). GREEN → 36 passed (13 new; boundary tests from==valid, until==invalid, v<from, open range far future).
+- T3: RED → ImportError (`InvalidValidityError` not exported). GREEN → 36 passed (13 new; boundary tests from==valid, until==invalid, v<from, open range far future). Commit `dc434f6`.
+- T4: RED → ImportError (`EntityRef`, `InvalidModifierError`, `InvalidSourceRefError` not exported). GREEN → 81 passed (45 new). `Modifier.is_multiplicative` encodes more/less vs increased (D2); values must be finite int/float (bool rejected); URLs need http(s) scheme and host.
 
 ## Next step
-T4.
+T5.
