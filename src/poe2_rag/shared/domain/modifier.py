@@ -37,7 +37,7 @@ class Modifier:
             raise InvalidModifierError("stat must be a non-blank string")
         if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
             raise InvalidModifierError(f"value must be an int or float, got {self.value!r}")
-        if not math.isfinite(self.value):
+        if isinstance(self.value, float) and not math.isfinite(self.value):
             raise InvalidModifierError(f"value must be finite, got {self.value!r}")
         if not isinstance(self.kind, ModifierKind):
             raise InvalidModifierError(f"kind must be a ModifierKind, got {self.kind!r}")

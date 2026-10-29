@@ -41,6 +41,12 @@ def test_rejects_non_finite_or_non_numeric_values(value: object) -> None:
         Modifier("mana_cost", value, ModifierKind.FLAT)  # type: ignore[arg-type]
 
 
+def test_accepts_arbitrarily_large_integers() -> None:
+    huge = 10**400
+    modifier = Modifier("damage", huge, ModifierKind.FLAT)
+    assert modifier.value == huge
+
+
 def test_rejects_raw_string_kind() -> None:
     with pytest.raises(InvalidModifierError):
         Modifier("damage", 20, "more")  # type: ignore[arg-type]
