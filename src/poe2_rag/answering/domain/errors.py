@@ -17,3 +17,11 @@ class InvalidRetrievedChunkError(DomainError):
 
 class InvalidRankingError(DomainError):
     """Raised when a fusion input is not a sequence of rankings of unique, non-blank chunk ids."""
+
+
+class InvalidCitationError(DomainError):
+    """Raised when a citation is malformed or names a chunk that was not delivered."""
+
+
+class InvalidAnswerError(DomainError):
+    """Raised when an answer is malformed or claims support it does not have."""
