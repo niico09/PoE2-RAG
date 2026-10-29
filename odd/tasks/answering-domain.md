@@ -47,7 +47,9 @@ library.
 ## Acceptance criteria
 - RRF output is a total, deterministic order: same input, same list, on every run and every Python
   process. Ties never depend on dict or set iteration order.
-- No path builds an `Answer` that claims backing it does not have.
+- No `Answer` built through `Answer.build` claims backing it does not have: every citation must name a
+  delivered chunk, and no citations means `supported=False`. Direct construction cannot check delivery
+  (it has no delivered set) and only enforces the shape and the no-backing rule.
 - `answering/domain` imports only the standard library and `poe2_rag.shared.domain`.
 - `uv run pytest -q` green; each task's RED and GREEN observed and recorded below.
 
@@ -66,11 +68,16 @@ library.
 - [x] T6 — Close: full suite, evidence per task, RED/GREEN report. Route: inline. S7, S11.
 
 ## Delivery slices
-- One commit per task (S10): `759d372` doc, `bd9816d` T2, `cbcc0d8` T3, `ffe11ac` T4, `1ecd13a` T5.
-- Authored lines for this feature (`e7a998b..HEAD`, lock files excluded): **933**, split as 138 (doc), 135 (T2),
-  174 (T3), 191 (T4), 295 (T5). The whole feature is over the ~400-line review slice; the split is
-  one green commit per task, which keeps every commit reviewable alone and lets the native review take
-  any single one.
+- One commit per task (S10): `759d372` doc, `bd9816d` T2, `cbcc0d8` T3, `ffe11ac` T4, `1ecd13a` T5,
+  `9aa578e` T6. The round-1 review fixes add `7d7d991`, `546b2b1`, `acb0bd0`, `8b5ba2d`.
+- Authored changed lines per commit (additions + deletions, `uv.lock` excluded): 138, 135, 174, 191,
+  295, 90, 26, 13, 23, 2. They sum to **1087**, which is larger than the range total because a line
+  rewritten by a later commit is counted in both commits (for example the `is_blank` import).
+- The range itself (`git diff --numstat e7a998b..8b5ba2d`, `uv.lock` excluded) is **1048 added, 1
+  deleted** over 10 commits. The documentation commit that carries this record sits outside that
+  count.
+- The whole feature is over the ~400-line review slice. The split is one green commit per task, which
+  keeps every commit reviewable alone and lets the native review take any single one.
 - The harness counts authored lines against `origin/main`, so its slice warning includes the whole
   `feat/patch-catalog` stack this branch sits on (see L2), not this feature's diff.
 - PR target: `main` once `feat/patch-catalog` merges. Until then the branch base is `feat/patch-catalog`.
@@ -136,10 +143,50 @@ library.
     `tests/unit/answering/domain/test_fusion.py`.
   - S8 ✅ `grep -rn 'is_valid_at\|Validity' src/poe2_rag/answering/` → no matches; RRF documents the contract.
   - S9 ✅ `src/poe2_rag/answering/` contains only `domain/`; no `application/`, no `adapters/`, no CLI.
-  - S10 ✅ Five Conventional Commits, one per task; `git log e7a998b..HEAD --format=%B | grep -ci`
+  - S10 ✅ Ten Conventional Commits: one per task (T1-T6) plus four round-1 fixes; `git log
+    e7a998b..HEAD --format=%B | grep -ci`
     `'co-authored-by\|generated with\|claude\|assisted-by'` → `0`.
   - S11 ✅ Counts above, per task.
 - No check was skipped; nothing is pending.
+
+## Round 1 — QA and review findings
+
+Seven findings from the round-1 review pass, all applied on this branch. The QA findings of the same
+round targeted `feat/domain` and are recorded in `odd/tasks/domain-model.md`.
+
+- R1 `docs/architecture.md` §5.1 step 8 still described the discard-and-mark policy while
+  `Answer.build` rejects. The step now states the rejection and leaves the discard decision to
+  `AnswerQuestion`, so the next implementer cannot read the old rule.
+- R2 The acceptance criterion claimed no path can build an unbacked `Answer`, but direct construction
+  cannot check delivery. The criterion now covers `Answer.build` only, and the class docstring says
+  what the constructor cannot check.
+- R3 `answering/domain` imported the private `shared.domain._text`. `is_blank` is now re-exported by
+  the shared package as part of its contract, and `_text`'s docstring says why it stays private.
+- R4 A malformed `citations` argument raised `InvalidAnswerError` from the constructor and
+  `InvalidCitationError` from `build`. Both paths now raise `InvalidCitationError`; a parametrized test
+  pins it.
+- R5 The delivery evidence did not match the branch: it omitted the closing commit and used a total
+  that ignored rewritten lines. The slice now lists every commit and explains why the per-commit sum
+  exceeds the range total.
+- R6 The `Query` row of §4.2 still listed detected entities. It now matches the value object and marks
+  entity detection as future work.
+- R7 The test claiming a blank query never touches the catalog only checked the error type. A spy
+  catalog counts reads and the claim is now checked.
+
+Two follow-ups recorded rather than applied here:
+
+- `chunk_id` gained a source prefix on `feat/domain` (QA Q6) so two sources cannot collide. This
+  branch still carries the old format in its fixtures, so the two assertions that pinned the shared
+  format were rewritten to assert identity instead of a literal. The format is pinned once, in
+  `tests/unit/shared/domain/test_chunk.py`, which is the file that owns it.
+- The harness language analyzer inspects these files under the `feat/domain` project root, where
+  `poe2_rag.answering` does not exist, so it reports the package import as unresolved and the import
+  block as unsorted. In this worktree `uvx ruff check --select I` passes, `uvx pyright` reports 0
+  errors and the suite is green; the two roots classify `poe2_rag` differently, so no edit satisfies
+  both. Resolving it means merging this branch into `feat/domain`, which is an integration decision.
+
+Commits `7d7d991`, `546b2b1`, `acb0bd0`, `8b5ba2d` and the documentation commit that carries this
+record. Suite: 311 → 314 passed.
 
 ## Next step
 Push and open the PR against `feat/patch-catalog` (or `main` once that branch merges): the user's decision,
