@@ -119,7 +119,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 
 - [x] Diseño de arquitectura y decisiones del MVP.
 - [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
-- [ ] Modelo de dominio (`PatchVersion`, `Validity`, `Chunk`, `Modifier`) con tests unitarios.
+- [x] Modelo de dominio (`PatchVersion`, `Validity`, `Chunk`, `Modifier`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).

@@ -54,6 +54,10 @@ configuration file (§6), which is an adapter concern, never a domain one.
 - [x] T8 — Round 1: declare `contains` rejection and the error triggers in the port and error docstrings, and pin `contains` in the contract suite. Commit: `docs(domain): declare the PatchCatalog failure modes`.
 - [x] T9 — Round 1: align `docs/architecture.md` §7 and the README tree with `shared/adapters`, resolve the `0.1.2` example contradiction, refresh the README status line, and record how `config/patches.toml` is resolved. Commit: `docs: align structure and sample versions with the implementation`.
 - [x] T10 — Round 1: commit `pyrightconfig.json` so Pyright resolves the uv environment, and correct the T3 tooling note that wrongly called it unfixable. Commit: `chore(tooling): resolve the uv environment for Pyright`.
+- [x] T11 — Round 2: align the last `0.1.2` references that explain obsolescence (README and `docs/architecture.md` D1 and §8) to real patches. Commit: `docs: use real patch versions in the obsolescence examples`.
+- [x] T12 — Round 2: strengthen the adapter path assertions (literal path, UTF-8 case included) and drop the tautological `isinstance` check. Commit: `test(adapters): assert the catalog path literally`.
+- [x] T13 — Round 2: document the type check as best effort with a pinned `uvx`, and drop the refuted note in `## Checks`. Commit: `docs(odd): document the type check honestly`.
+- [x] T14 — Round 2: check the README roadmap item and complete the round-1 delivery record (five commits, no stale count). Commit: `docs: finish the round-1 delivery record`.
 
 ## Acceptance criteria
 - Every port method behaves identically in both implementations, asserted by one contract suite.
@@ -86,11 +90,16 @@ configuration file (§6), which is an adapter concern, never a domain one.
 - T7: RED → `5 failed, 21 passed` in the focused adapter suite: invalid UTF-8 escaped as `UnicodeDecodeError`, a TOML `datetime` was accepted as `released_on`, and the three invariant errors carried no file path. GREEN → **207 passed** (6 new, no existing assertion weakened; the path prefix keeps the `empty`/`duplicate`/`current` substrings the old tests match). Each finding was reproduced against the shipped adapter before the fix, not taken on trust. The `PatchCatalogLoadError` hierarchy pin is a characterization guard and passed immediately, as expected. Commit `fix(adapters): harden patch catalog file loading`.
 - T8: no RED applicable — both implementations already rejected a non-`PatchVersion` in `contains`, so the added contract scenario and the docstrings pin shipped behaviour instead of driving new behaviour. GREEN → **213 passed** (6 new contract cases: one scenario × three values × two implementations). Commit `docs(domain): declare the PatchCatalog failure modes`.
 - T10: tooling only, no RED applicable. `.venv` did not exist when the harness started its language server, so bare Pyright had no site-packages and reported every import as missing, including on untouched passing tests. `pyrightconfig.json` pins `venvPath`/`venv` and `extraPaths: ["src"]`; with it, bare Pyright and the harness probe both report 0 diagnostics. Commit `chore(tooling): resolve the uv environment for Pyright`.
+- T11: documentation only, no RED applicable. The three prose claims that treated `0.1.2` as a real patch (README's obsolescence bullet, D1 and the §8 metric) now use `0.2.0`/`0.1.1`. After the change, `0.1.2` survives only as test fixture data, as the ADR-0003 encoding examples, as the §4.2 version comparison, and inside historical log quotes, none of which assert that the patch exists. Commit `docs: use real patch versions in the obsolescence examples`.
+- T12: no RED applicable — the assertions were strengthened, not driven by a behaviour gap: the adapter already named the path, so this is a characterization fix. Suite stays at **213 passed**, and that is the point: the old `match=str(path)` could not tell `patches.toml` from `patchesXtoml` (regex dots), the UTF-8 case asserted no path at all, and its `assert not isinstance(exc_info.value, UnicodeDecodeError)` could never fail because `pytest.raises` had already constrained the type. All four now compare the literal path. Commit `test(adapters): assert the catalog path literally`.
+- T13: documentation only. Verified the two premises before writing: `uv run pyright` fails because Pyright is not in the dev group, and `uvx pyright==1.1.414` reports 0 errors. `## Checks` now says that, and states the check is best effort instead of citing the refuted runner conclusion. Growing the dev group with a Node-backed distribution for a check no pipeline runs was the alternative and was declined. Commit `docs(odd): document the type check honestly`.
+- T14: documentation only. The README roadmap item is checked and mentions `PatchCatalog`; slice 3 now covers T6-T10 and names `80e95ef`; L3 item 10 no longer cites a test count the README never had. Commit `docs: finish the round-1 delivery record`.
 
 ## Delivery slices
 - Slice 1 (`b543588`..`eded729`, 702 authored lines): T1-T3. Over the ~400-line review slice on its own, and kept as one slice because the user's delivery rule is one commit per task and the chain is a single dependent feature (port → adapter → contract). Whether to split it into chained PRs is the user's decision.
 - Slice 2 (T4): the S4 hardening, 19 lines, small enough to review alone.
-- Slice 3 (T6-T9): the round-1 findings, split into four commits by subject (process doc, adapter correctness, domain contract, repository docs).
+- Slice 3 (T6-T10): the round-1 findings, split into five commits by subject (process doc, adapter correctness, domain contract, repository docs, and the tooling commit `80e95ef` that adds `pyrightconfig.json`).
+- Slice 4 (T11-T14): the round-2 findings, four commits (docs alignment, test-assertion strength, check documentation, record fix).
 
 ## Close
 - Final `uv run pytest -q` → **213 passed** (baseline before the feature: 121).
@@ -201,7 +210,7 @@ Every finding was reproduced against the shipped code before changing anything.
 9. Review BAJO — error docstrings did not name the triggers this feature added. Answered in
    `errors.py`, `validity.py` and `chunk.py`: each now states what raises it and when.
 10. Review BAJO — README status line said "todavía no hay código implementado". Answered by replacing it
-    with the current state (domain and patch catalog implemented, 207 tests).
+    with the current state (the domain model and the patch catalog exist), without a test count that ages.
 11. Review MEDIO (process) — this worktree is on `feat/patch-catalog` while the flow channel is
     `poe2-rag@feat/ingest`, and `feat/ingest` has no worktree. Not answerable from inside the worktree:
     moving the branch out mid-round would leave the round reviewing an empty diff, and renaming the
@@ -210,3 +219,23 @@ Every finding was reproduced against the shipped code before changing anything.
     or move this work into its own worktree before the next round starts.
 12. Review BAJO — the `PatchCatalogLoadError` hierarchy was the decision nobody tested. Answered by
     pinning `not issubclass(PatchCatalogLoadError, DomainError)` in the adapter tests.
+
+### L4 — round 2 QA/review findings and how each was answered
+1. QA BAJO — `0.1.2` survived in README:16, architecture D1 and §8, the three places that explain
+   obsolescence, contradicting L2. Answered with real patches (`0.2.0` superseding `0.1.1`); the
+   syntactic uses (ADR-0003 encoding, §4.2 comparison) stay because they never claim the patch exists.
+2. QA BAJO — the path assertions were weaker than the contract they claimed to pin: `pytest.raises(match=)`
+   is a regex, so `patches.toml` also matched `patchesXtoml`; the UTF-8 test asserted no path; and its
+   `assert not isinstance(...)` could not fail. Answered with literal `str(path) in str(exc_info.value)`
+   assertions in all four spots.
+3. QA BAJO — `pyrightconfig.json` was committed while Pyright is not a project dependency, so the
+   documented check could not run from the declared environment. Answered by pinning the tool version in
+   the documented command (`uvx pyright==1.1.414`, verified) and declaring the check best effort, rather
+   than adding a Node-backed distribution to the dev group for a gate nothing runs.
+4. QA MINOR — `## Checks` still pointed at "the harness runner cannot bind the venv", refuted by T10.
+   Answered by replacing it with the reason the config exists (language server started before `.venv`).
+5. Review BAJO — the README status line and the roadmap gave opposite answers about the domain model.
+   Answered by checking the roadmap item and naming `PatchCatalog` there.
+6. Review BAJO — the round-1 delivery record was incomplete: slice 3 said four commits while the round
+   produced five, with the tooling commit `80e95ef` in none; and L3 item 10 justified the README edit
+   with "207 tests", a number the README never had and which was 213 from `461eda6` on. Both corrected.
