@@ -10,7 +10,8 @@ class InvalidPatchVersionError(DomainError):
 
 
 class InvalidValidityError(DomainError):
-    """Raised when a validity range is not a well-formed `[valid_from, valid_until)` interval."""
+    """Raised when a validity range is not a well-formed `[valid_from, valid_until)` interval
+    or `is_valid_at` receives an argument that is not a `PatchVersion`."""
 
 
 class InvalidEntityRefError(DomainError):
@@ -27,3 +28,8 @@ class InvalidModifierError(DomainError):
 
 class InvalidChunkError(DomainError):
     """Raised when a chunk is missing content or holds components of the wrong type."""
+
+
+class InvalidPatchCatalogError(DomainError):
+    """Raised when a patch catalog is empty, repeats a version, declares an unknown current patch
+    or holds a value that is not a `PatchVersion`."""

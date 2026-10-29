@@ -7,11 +7,13 @@ from poe2_rag.shared.domain.errors import (
     InvalidChunkError,
     InvalidEntityRefError,
     InvalidModifierError,
+    InvalidPatchCatalogError,
     InvalidPatchVersionError,
     InvalidSourceRefError,
     InvalidValidityError,
 )
 from poe2_rag.shared.domain.modifier import Modifier, ModifierKind
+from poe2_rag.shared.domain.patch_catalog import InMemoryPatchCatalog, PatchCatalog
 from poe2_rag.shared.domain.patch_version import PatchVersion
 from poe2_rag.shared.domain.source_ref import SourceRef
 from poe2_rag.shared.domain.validity import Validity
@@ -21,14 +23,17 @@ __all__ = [
     "Chunk",
     "DomainError",
     "EntityRef",
+    "InMemoryPatchCatalog",
     "InvalidChunkError",
     "InvalidEntityRefError",
     "InvalidModifierError",
+    "InvalidPatchCatalogError",
     "InvalidPatchVersionError",
     "InvalidSourceRefError",
     "InvalidValidityError",
     "Modifier",
     "ModifierKind",
+    "PatchCatalog",
     "PatchVersion",
     "SourceRef",
     "Validity",

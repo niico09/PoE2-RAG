@@ -2,9 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** diseño del MVP acordado; implementado el modelo de dominio compartido
-> (`src/poe2_rag/shared/domain/`) con su suite de tests unitarios. La ingesta, la consulta y la
-> evaluación siguen sin implementar.
+> **Estado:** en implementación. El modelo de dominio compartido y el catálogo de parches existen con tests unitarios y de contrato; ingesta, recuperación y generación todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -15,7 +13,7 @@ Los sistemas RAG convencionales (naive RAG basado únicamente en similitud vecto
 
 1. **Ambigüedad léxica vs. semántica:** Términos idénticos semánticamente tienen implicaciones matemáticas opuestas en el motor de cálculo del juego (por ejemplo, `+X% increased damage` es acumulativo aditivo, mientras que `+X% more damage` es multiplicativo). La búsqueda por embeddings densos tiende a mezclarlos sin distinción estricta.
 2. **Nombres propios y modificadores exactos:** Consultas sobre nodos pasivos, nombres de gemas (`Spark`, `Blight`) o modificadores de equipo requieren coincidencia léxica exacta, donde los embeddings sufren de falsos positivos semánticos.
-3. **Obsolescencia temporal de parches:** Una mecánica o valor de balance válido en la versión `0.1.0` puede ser obsoleto o haber sido eliminado en la `0.1.2`. El pipeline debe filtrar de manera obligatoria por metadatos de versión y vigencia.
+3. **Obsolescencia temporal de parches:** Una mecánica o valor de balance válido en la versión `0.1.0` puede ser obsoleto o haber sido eliminado en la `0.2.0`. El pipeline debe filtrar de manera obligatoria por metadatos de versión y vigencia.
 
 ---
 
@@ -65,6 +63,8 @@ Arquitectura hexagonal con dos flujos que solo se comunican a través de los ín
 
 ```text
 poe2-rag/
+├── config/
+│   └── patches.toml         # Catálogo de parches: cuáles existen y cuál es el actual
 ├── data/
 │   ├── raw/                 # Snapshots de las fuentes sin procesar
 │   └── processed/           # Chunks normalizados en JSON con metadatos
@@ -72,7 +72,9 @@ poe2-rag/
 │   ├── architecture.md      # Diseño del sistema
 │   └── adr/                 # Registro de decisiones de arquitectura
 ├── src/poe2_rag/
-│   ├── shared/domain/       # PatchVersion, Validity, Chunk, Modifier, ...
+│   ├── shared/
+│   │   ├── domain/          # PatchVersion, Validity, PatchCatalog, Chunk, Modifier, ...
+│   │   └── adapters/outbound/  # adaptadores compartidos (catálogo de parches)
 │   ├── ingestion/           # Fuentes, parsers, chunking e indexación
 │   ├── answering/           # Recuperación híbrida, RRF, reranking y generación
 │   ├── evaluation/          # Dataset y métricas (Hit@K, MRR, fidelidad, obsolescencia)
@@ -88,11 +90,15 @@ Cada capacidad se divide en `domain/`, `application/` y `adapters/`.
 
 La vigencia se expresa como un rango de parches, no como una marca de "parche actual": el catálogo de parches es el único que sabe cuál es el vigente. La identidad de la entidad (`active_gem:spark`) es independiente de la versión.
 
+El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[patches]]` por parche) y lo carga el adaptador `TomlPatchCatalog`; el puerto `PatchCatalog` es la única fuente de verdad de "parche actual".
+
+> Los valores de versión del ejemplo siguiente son ilustrativos: el parche actual autoritativo es `current` en `config/patches.toml`.
+
 ```json
 {
-  "chunk_id": "poe2db:active_gem:spark@0.1.2#description",
+  "chunk_id": "poe2db:active_gem:spark@0.1.1#description",
   "entity": { "kind": "active_gem", "slug": "spark", "name": "Spark" },
-  "validity": { "valid_from": "0.1.2", "valid_until": null },
+  "validity": { "valid_from": "0.1.1", "valid_until": null },
   "section": "description",
   "tags": ["Spell", "Lightning", "Projectile"],
   "modifiers": [
@@ -113,7 +119,7 @@ La vigencia se expresa como un rango de parches, no como una marca de "parche ac
 
 - [x] Diseño de arquitectura y decisiones del MVP.
 - [ ] Revisar términos de uso de poe2db y conseguir acceso autorizado a poe2wiki.net.
-- [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) con tests unitarios.
+- [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
