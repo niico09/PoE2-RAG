@@ -13,3 +13,7 @@ class InvalidStageScoresError(DomainError):
 
 class InvalidRetrievedChunkError(DomainError):
     """Raised when a retrieved chunk does not compose a `Chunk` with its `StageScores`."""
+
+
+class InvalidRankingError(DomainError):
+    """Raised when a fusion input is not a sequence of rankings of unique, non-blank chunk ids."""
