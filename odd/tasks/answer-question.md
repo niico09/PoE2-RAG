@@ -46,7 +46,7 @@ and gives every future adapter a contract to satisfy (§8).
 - **S4** — Application errors subclass a new `AnswerQuestionError` (not `DomainError`).
 - **S5** — `answering/application` may import `shared/domain` and `answering/domain` only. No third-party packages.
 - **S6** — TDD: tests first, observe RED, implement GREEN, refactor while green.
-- **S7** — Fakes live in `tests/` (`tests/unit/answering/application/fakes.py`), not in `src/`. They record
+- **S7** — Fakes live in `tests/` (`tests/unit/answering/application/answering_fakes.py`), not in `src/`. They record
   their calls so tests can assert order and arguments.
 - **S8** — Required tests: `version defaults to catalog.current(); unknown version rejected; both indexes
   receive the target version; a chunk present in only one ranking survives fusion; final_top_k is
@@ -110,6 +110,8 @@ and gives every future adapter a contract to satisfy (§8).
   review can take any one of them.
 - The harness slice warning counts authored lines against `origin/main` for the whole branch, not per
   task.
+- The round-1 fixes add `2499f96` (code and tests) plus the documentation commit that carries the round
+  record.
 
 ## Progress / Evidence
 - T1: branch `feat/answer-question` created from `main` (`7730db6`). Baseline on that base:
@@ -188,7 +190,7 @@ and gives every future adapter a contract to satisfy (§8).
     `InvalidRetrievalSettingsError` and `StaleChunkError` derive from it.
   - S5 ✅ see the import boundary above.
   - S6 ✅ RED observed before every implementation, then GREEN; counts per task above.
-  - S7 ✅ fakes in `tests/unit/answering/application/fakes.py`, sharing one `CallRecorder`.
+  - S7 ✅ fakes in `tests/unit/answering/application/answering_fakes.py`, sharing one `CallRecorder`.
   - S8 ✅ every required case is a named test: default and explicit version, unknown version, both
     indexes receiving the version, single-ranking survivor, `final_top_k`, empty retrieval skipping the
     model, undelivered citation, a stale chunk from each stage, zero citations.
@@ -202,6 +204,43 @@ and gives every future adapter a contract to satisfy (§8).
   rule it introduces has a test that fails without it.
 - No gate was skipped. The two lens findings (`import pytest` unresolved, import block "un-sorted") are
   analyzer defects documented in Tooling notes, with the commands that prove the files resolve and sort.
+
+## Round 1 — QA and review findings
+
+Ten findings from the round-1 QA and review passes, all applied on this branch in `2499f96`.
+
+- R1 (QA) The reranker could deliver a chunk that no index retrieved, and a citation to it counted as
+  supported. `execute` now requires the reranked ids to be a subset of the candidates it passed, raising
+  `UnretrievedChunkError` (two tests: within and beyond the budget). Being valid is not enough: the
+  delivered context must come from retrieval (D3).
+- R2 (QA) The documented order "guard before the `final_top_k` slice" had no test: slicing first left the
+  suite green. Two tests now put the offending chunk beyond the budget, one stale and one foreign.
+  Mutation-checked: moving `delivered = reranked[:k]` before `_require_reranked` fails both.
+- R3 (QA) Duplicate ids from one index escaped `execute` as the domain's `InvalidRankingError`, outside
+  the application taxonomy. Each index result and the reranker output are checked with `_require_distinct`
+  and `DuplicateChunkError`, before fusion.
+- R4 (QA) The ports promise each stage's score and nothing enforced it. Every stage result goes through
+  `_require_stage_score`; a missing `lexical`, `dense` or `rerank` score raises `MissingScoreError`, which
+  is what keeps the delivered context attributable for the §8 evaluation.
+- R5 (QA) `docs/architecture.md` §5.1 step 3 still said "en paralelo". It now states that the MVP runs
+  the two searches sequentially and that parallelism is an adapter decision.
+- R6 (QA) The fusion comment promised that equal `chunk_id` means the same chunk, but the id does not
+  cover text or `valid_until`. `_fuse` compares the two views and raises `ChunkMismatchError` when they
+  differ, instead of silently keeping the lexical one.
+- R7 (QA) `from fakes import ...` relied on pytest's `sys.path` insertion and would collide with the next
+  capability's `fakes.py`. The module is now `answering_fakes.py`, and its docstring says why.
+- R8 (review) `README.md` still described the pre-feature state. The status line and the roadmap now
+  mention `AnswerQuestion` and its ports.
+- R9 (review) The "model sees exactly the delivered slice" criterion was untested: passing `reranked`
+  instead of `delivered` kept the suite green. A test now asserts the `generate` context and that a
+  citation to the chunk cut by the budget raises `InvalidCitationError`; mutation-checked.
+- R10 (review) No test used a `rrf_k` other than 60, so `_fuse` could ignore the setting. A test with
+  `rrf_k=10` pins `fused=2/11`; mutation-checked.
+
+The eleven new tests live in `tests/unit/answering/application/test_answer_question.py`; the taxonomy test
+in `test_ports.py` now covers all seven `AnswerQuestionError` subclasses. Suite: 408 → **419 passed**.
+New errors: `UnretrievedChunkError`, `DuplicateChunkError`, `MissingScoreError`, `ChunkMismatchError`,
+all `AnswerQuestionError` subclasses.
 
 ## Next step
 The user's decision, not taken here: push `feat/answer-question` and open the PR against `main`. Nothing

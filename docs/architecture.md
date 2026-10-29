@@ -134,7 +134,7 @@ El esquema actual del README tiene dos problemas de diseño:
 
 1. **Análisis de la consulta:** detectar entidades (nombres de gemas), tipo de modificador mencionado y versión objetivo. Sin versión explícita, usar la actual del `PatchCatalog`.
 2. **Pre-filtrado por vigencia:** ambos índices reciben el filtro `is_valid_at(target_version)`. **El filtro se aplica antes de la fusión**, nunca después: si se filtra tarde, RRF ya mezcló rankings con datos obsoletos y el top-K queda con huecos. Si un índice devuelve un chunk que no es vigente para la versión objetivo, `AnswerQuestion` falla con `StaleChunkError` en vez de descartarlo: el contrato del índice está roto y descartar dejaría el mismo hueco.
-3. **Recuperación híbrida:** BM25 (top-N) y vectorial (top-N) en paralelo.
+3. **Recuperación híbrida:** BM25 (top-N) y vectorial (top-N). En el MVP las dos búsquedas corren en serie; paralelizarlas es una decisión del adaptador, no del caso de uso.
 4. **Fusión:** Reciprocal Rank Fusion sobre ambos rankings.
 5. **Reranking:** cross-encoder sobre el top-M fusionado → top-K final.
 6. **Construcción de contexto:** cada chunk se entrega al LLM con su `chunk_id` y versión.
