@@ -1,8 +1,10 @@
 """Shared domain model: value objects and entities with no external dependencies."""
 
+from poe2_rag.shared.domain.chunk import Chunk
 from poe2_rag.shared.domain.entity_ref import EntityRef
 from poe2_rag.shared.domain.errors import (
     DomainError,
+    InvalidChunkError,
     InvalidEntityRefError,
     InvalidModifierError,
     InvalidPatchVersionError,
@@ -15,8 +17,10 @@ from poe2_rag.shared.domain.source_ref import SourceRef
 from poe2_rag.shared.domain.validity import Validity
 
 __all__ = [
+    "Chunk",
     "DomainError",
     "EntityRef",
+    "InvalidChunkError",
     "InvalidEntityRefError",
     "InvalidModifierError",
     "InvalidPatchVersionError",

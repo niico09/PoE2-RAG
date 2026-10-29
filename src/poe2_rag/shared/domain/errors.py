@@ -23,3 +23,7 @@ class InvalidSourceRefError(DomainError):
 
 class InvalidModifierError(DomainError):
     """Raised when a modifier has a blank stat, a non-numeric value or an unknown kind."""
+
+
+class InvalidChunkError(DomainError):
+    """Raised when a chunk is missing content or holds components of the wrong type."""
