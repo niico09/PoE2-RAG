@@ -41,4 +41,4 @@ Patch validity and modifier semantics are the rules that, if wrong, no retriever
 - T5: RED → ImportError (`Chunk` not exported). GREEN → 99 passed (18 new). `chunk_id` uses `EntityRef.key`, so it reads `active_gem:spark@0.1.2#description` (architecture §4.3 example shows `gem:spark`, which does not match `entity.kind`; flagged for a doc fix). `dataclasses.replace` re-runs invariants. Commit `cf4162b`.
 
 ## Next step
-All tasks done. Fix the `chunk_id` example in `docs/architecture.md` §4.3 to `active_gem:spark@0.1.2#description`; then decide on delivery (push / PR) under repository policy.
+All tasks done. Doc examples fixed in `26a3c5b`. Review assessment (base `main`, committed-only): risk medium, `review_due=false` (`under_budget`). Next: delivery (push / PR) decision by the user.
