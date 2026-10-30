@@ -102,16 +102,13 @@ class ReindexCorpus:
         An index outside the batch is a broken contract: it would name a chunk that was never
         embedded, so the run stops before a writer turns it into a misleading report.
         """
-        ids: list[str] = []
-        seen: set[int] = set()
-        for index in self._document_embedder.overflowing_indices(texts):
+        # The port does not promise an order, so the report imposes the corpus one: the caller
+        # reads the ids as a list of chunks, not as a list of the embedder's internal positions.
+        positions = sorted({int(index) for index in self._document_embedder.overflowing_indices(texts)})
+        for index in positions:
             if not 0 <= index < len(chunks):
                 raise EmbedderContractError(
                     f"the embedder reported overflow at position {index}, "
                     f"outside the {len(chunks)} chunk texts it was given"
                 )
-            if index in seen:
-                continue
-            seen.add(index)
-            ids.append(chunks[index].chunk_id)
-        return tuple(ids)
+        return tuple(chunks[index].chunk_id for index in positions)

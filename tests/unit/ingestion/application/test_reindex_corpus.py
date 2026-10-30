@@ -116,6 +116,20 @@ class TestReport:
 
         assert harness.reindex.execute().truncated_chunk_ids == (chunks[1].chunk_id,)
 
+    def test_reports_truncated_chunks_in_corpus_order(self) -> None:
+        """The port does not promise an order, so the report imposes the corpus one."""
+        chunks = (
+            make_chunk("general-changes"),
+            make_chunk("skill-changes"),
+            make_chunk("bug-fixes"),
+        )
+        harness = make_reindex(chunks, overflowing=(2, 0))
+
+        assert harness.reindex.execute().truncated_chunk_ids == (
+            chunks[0].chunk_id,
+            chunks[2].chunk_id,
+        )
+
     def test_is_frozen(self) -> None:
         report = ReindexReport(1, REBUILT_AT)
 

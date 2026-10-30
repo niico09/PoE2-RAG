@@ -56,6 +56,7 @@ class _Model(Protocol):
     """The slice of `SentenceTransformer` this adapter uses, so a stub can stand in for it."""
 
     tokenizer: Any
+    max_seq_length: int
 
     def encode(
         self,
@@ -183,6 +184,9 @@ class BgeEmbedder:
         """Return the loaded model, loading it once and checking its width against the configuration."""
         if self._model_instance is None:
             model = _load_model(self._model_id, self._device)
+            # The model truncates at its own window, so the configured limit has to reach it:
+            # otherwise the overflow report compares against a number the model never used.
+            model.max_seq_length = self._max_sequence_length
             produced = model.get_embedding_dimension()
             if produced is not None and int(produced) != self._dimension:
                 raise EmbedderConfigurationError(

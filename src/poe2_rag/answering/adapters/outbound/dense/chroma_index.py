@@ -2,7 +2,13 @@
 
 The adapter is both a writer (`VectorIndexWriter`) and a reader (`VectorIndex`). Rebuilding creates
 a fresh Chroma collection and swaps a pointer file atomically; searching trusts only the pointer,
-so a failed rebuild leaves the previous collection answering.
+so a failed rebuild leaves the previous collection answering. The pointer replace is flushed with the
+directory entry before the previous collection is removed, so a lost rename cannot leave the pointer
+naming a collection that no longer exists.
+
+Chroma's `delete_collection` removes the catalog rows but leaves the collection's HNSW segment
+directory on disk, so a rebuild also reaps the segment directories no live collection references;
+without that, every reindex would leak one full copy of the vectors.
 
 The chunk codec is local to this module. The answering capability must not import an ingestion
 adapter, so the JSON layout is mirrored here rather than reused from the chunk repository.
@@ -13,6 +19,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+import shutil
+import sqlite3
 import tempfile
 import uuid
 from collections.abc import Sequence
@@ -24,9 +33,10 @@ from typing import Any, Protocol, runtime_checkable
 import chromadb
 from chromadb.api import ClientAPI
 from chromadb.config import Settings
-from chromadb.errors import ChromaError, NotFoundError
+from chromadb.errors import NotFoundError
 
 from poe2_rag.answering.adapters.outbound.dense.version_codec import (
+    VersionCodecError,
     encode_validity,
     encode_version,
 )
@@ -44,6 +54,10 @@ from poe2_rag.shared.domain import (
 DEFAULT_DIRECTORY = Path("data/index/chroma")
 DEFAULT_COLLECTION_NAME = "poe2_chunks"
 SCHEMA_VERSION = 1
+
+_SEGMENT_DIRECTORY = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 
 class VectorIndexError(ValueError):
@@ -171,15 +185,20 @@ class ChromaVectorIndex:
             seen.add(chunk.chunk_id)
 
         # Encode metadata before touching Chroma so a version-component overflow leaves nothing
-        # behind, and validate every vector while we are still safe to abort cleanly.
+        # behind, and normalize every vector while we are still safe to abort cleanly.
         records: list[tuple[str, list[float], dict[str, Any]]] = []
         for chunk, vector in zip(materialized_chunks, materialized_vectors, strict=True):
-            self._validate_vector(vector)
-            valid_from_code, valid_until_code = encode_validity(chunk.validity)
+            values = self._normalize_vector(vector)
+            try:
+                valid_from_code, valid_until_code = encode_validity(chunk.validity)
+            except VersionCodecError as exc:
+                raise VectorIndexError(
+                    f"cannot index chunk {chunk.chunk_id!r}: {exc}"
+                ) from exc
             records.append(
                 (
                     chunk.chunk_id,
-                    list(vector),
+                    values,
                     {
                         "chunk": json.dumps(_dump_chunk(chunk), ensure_ascii=False, sort_keys=True),
                         "valid_from_code": valid_from_code,
@@ -188,7 +207,10 @@ class ChromaVectorIndex:
                 )
             )
 
-        client = self._client_or_create()
+        try:
+            client = self._client_or_create(create_directory=True)
+        except Exception as exc:
+            raise VectorIndexWriteError(f"cannot open the vector store: {exc}") from exc
         new_collection_name = f"{self._collection_name}__{uuid.uuid4().hex}"
         try:
             collection = client.create_collection(
@@ -202,7 +224,7 @@ class ChromaVectorIndex:
                 },
                 embedding_function=None,
             )
-        except ChromaError as exc:
+        except Exception as exc:
             raise VectorIndexWriteError(
                 f"cannot create collection {new_collection_name}: {exc}"
             ) from exc
@@ -215,8 +237,9 @@ class ChromaVectorIndex:
                     embeddings=[record[1] for record in batch],
                     metadatas=[record[2] for record in batch],
                 )
-        except ChromaError as exc:
-            with suppress(ChromaError):
+        except Exception as exc:
+            # Any failure here leaves a collection nothing points at, whatever the exception type.
+            with suppress(Exception):
                 client.delete_collection(new_collection_name)
             raise VectorIndexWriteError(
                 f"cannot add records to collection {new_collection_name}: {exc}"
@@ -225,14 +248,19 @@ class ChromaVectorIndex:
         pointer = {"schema_version": SCHEMA_VERSION, "collection": new_collection_name}
         try:
             self._write_pointer(pointer)
-        except VectorIndexWriteError:
+        except Exception as exc:
             # The new collection was built but never promoted: drop it, so only the collection the
             # pointer still names survives and a later rebuild does not inherit orphans.
-            with suppress(ChromaError):
+            with suppress(Exception):
                 client.delete_collection(new_collection_name)
-            raise
+            if isinstance(exc, VectorIndexWriteError):
+                raise
+            raise VectorIndexWriteError(
+                f"cannot promote collection {new_collection_name}: {exc}"
+            ) from exc
 
         self._delete_stale_collections(client, new_collection_name)
+        self._reap_segment_directories()
 
     def search(
         self, vector: Sequence[float], version: PatchVersion, limit: int
@@ -244,21 +272,23 @@ class ChromaVectorIndex:
         not match this reader's embedder, the call fails loud. Validity filtering runs inside the
         Chroma query so the limit is applied after stale records are removed.
         """
-        self._validate_vector(vector)
+        values = self._normalize_vector(vector)
         if type(limit) is not int or limit <= 0:
             raise InvalidLimitError(f"limit must be a positive int, got {limit!r}")
         version_code = encode_version(version)
 
-        client = self._client_or_create()
+        # The pointer is read first, and the client is opened without creating anything: a reader
+        # must not materialize an index directory just because someone asked a question.
         pointer = self._read_pointer()
         collection_name = pointer["collection"]
         try:
+            client = self._client_or_create(create_directory=False)
             collection = client.get_collection(name=collection_name, embedding_function=None)
         except NotFoundError as exc:
             raise CollectionNotFoundError(
                 f"collection {collection_name!r} not found"
             ) from exc
-        except ChromaError as exc:
+        except Exception as exc:
             raise VectorIndexReadError(
                 f"cannot read collection {collection_name!r}: {exc}"
             ) from exc
@@ -267,10 +297,13 @@ class ChromaVectorIndex:
         self._check_schema(metadata)
         self._check_embedder(metadata)
 
+        # `limit` cannot be pushed into the query: Chroma breaks equal distances arbitrarily, so
+        # cutting there would let the storage decide the tie-break. The whole valid set is fetched,
+        # ordered by (-score, chunk_id) and cut here, which is the total order the port promises.
         try:
             raw = collection.query(
-                query_embeddings=[list(vector)],
-                n_results=limit,
+                query_embeddings=[values],
+                n_results=max(collection.count(), limit),
                 where={
                     "$and": [
                         {"valid_from_code": {"$lte": version_code}},
@@ -279,7 +312,7 @@ class ChromaVectorIndex:
                 },
                 include=["metadatas", "distances"],
             )
-        except ChromaError as exc:
+        except Exception as exc:
             raise VectorIndexReadError(f"query failed: {exc}") from exc
 
         raw_ids = raw["ids"]
@@ -315,28 +348,52 @@ class ChromaVectorIndex:
             scored.append((RetrievedChunk(chunk, StageScores(dense=score)), score, chunk_id))
 
         scored.sort(key=lambda item: (-item[1], item[2]))
-        return tuple(item[0] for item in scored)
+        return tuple(item[0] for item in scored[:limit])
 
-    def _validate_vector(self, vector: Sequence[float]) -> None:
-        """Reject a vector that is not a finite float sequence of exactly `embedder.dimension`."""
-        if isinstance(vector, (str, bytes)) or not isinstance(vector, Sequence):
+    def _normalize_vector(self, vector: object) -> list[float]:
+        """Return `vector` as plain floats, rejecting anything the index cannot compare.
+
+        The port types the argument as `Sequence[float]`, but the natural producer is
+        `SentenceTransformer.encode`, which returns an `ndarray` (not a `Sequence`) of `numpy`
+        scalars (not `float`). Converting here keeps the adapter on its own contract instead of
+        relying on a neighbouring adapter to hand it Python types.
+        """
+        if isinstance(vector, (str, bytes, bool)) or not hasattr(vector, "__iter__"):
             raise InvalidVectorError(
                 f"vector must be a sequence of numbers, got {type(vector).__name__}"
             )
-        if len(vector) != self._embedder.dimension:
+        try:
+            raw = list(vector)  # type: ignore[call-overload]
+        except TypeError as exc:
             raise InvalidVectorError(
-                f"vector must have dimension {self._embedder.dimension}, got {len(vector)}"
-            )
-        for value in vector:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise InvalidVectorError(f"vector values must be finite numbers, got {value!r}")
-            if not math.isfinite(value):
+                f"vector must be a sequence of numbers, got {type(vector).__name__}"
+            ) from exc
+        values: list[float] = []
+        for value in raw:
+            if isinstance(value, bool):
+                raise InvalidVectorError(f"vector values must be numbers, got {value!r}")
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise InvalidVectorError(f"vector values must be numbers, got {value!r}") from exc
+            if not math.isfinite(number):
                 raise InvalidVectorError(f"vector values must be finite, got {value!r}")
+            values.append(number)
+        if len(values) != self._embedder.dimension:
+            raise InvalidVectorError(
+                f"vector must have dimension {self._embedder.dimension}, got {len(values)}"
+            )
+        return values
 
-    def _client_or_create(self) -> ClientAPI:
-        """Return the cached client, creating a persistent one on first use."""
+    def _client_or_create(self, *, create_directory: bool) -> ClientAPI:
+        """Return the cached client, creating a persistent one on first use.
+
+        Only a rebuild may create the directory: a search that finds no index must not turn a
+        read-only process into an index writer.
+        """
         if self._client is None:
-            self._directory.mkdir(parents=True, exist_ok=True)
+            if create_directory:
+                self._directory.mkdir(parents=True, exist_ok=True)
             self._client = chromadb.PersistentClient(
                 path=str(self._directory),
                 settings=Settings(anonymized_telemetry=False),
@@ -392,6 +449,10 @@ class ChromaVectorIndex:
                 os.fsync(stream.fileno())
             os.replace(temporary, self._pointer_path())
             temporary = None
+            # Flush the directory entry too: the previous collection is deleted right after this
+            # call, so a rename that does not survive a crash would leave the pointer naming a
+            # collection that no longer exists, with no previous index to fall back to.
+            _fsync_directory(self._directory)
         except OSError as exc:
             raise VectorIndexWriteError(f"cannot write pointer: {exc}") from exc
         finally:
@@ -425,8 +486,52 @@ class ChromaVectorIndex:
         for collection in client.list_collections():
             name = collection.name
             if name.startswith(prefix) and name != keep:
-                with suppress(ChromaError):
+                with suppress(Exception):
                     client.delete_collection(name)
+
+    def _reap_segment_directories(self) -> None:
+        """Delete HNSW segment directories no live collection references.
+
+        `delete_collection` drops the catalog rows but leaves the collection's segment directory on
+        disk (chromadb 1.5.9), so every rebuild would otherwise leak one full copy of the vectors.
+        The live segment ids are read from the store's own catalog; when that read fails nothing is
+        deleted, because removing a directory the catalog still references would corrupt a live
+        index.
+        """
+        catalog = self._directory / "chroma.sqlite3"
+        try:
+            connection = sqlite3.connect(f"file:{catalog}?mode=ro", uri=True)
+            try:
+                referenced = {row[0] for row in connection.execute("SELECT id FROM segments")}
+            finally:
+                connection.close()
+        except sqlite3.Error:
+            return
+        if not referenced:
+            return
+        for child in self._directory.iterdir():
+            if (
+                child.is_dir()
+                and _SEGMENT_DIRECTORY.fullmatch(child.name)
+                and child.name not in referenced
+            ):
+                shutil.rmtree(child, ignore_errors=True)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry, so a rename inside it survives a crash (POSIX only)."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Directories cannot be flushed on every platform; the rename stays atomic regardless.
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def _dump_chunk(chunk: Chunk) -> dict[str, Any]:

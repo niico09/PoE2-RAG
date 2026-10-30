@@ -16,6 +16,7 @@ import pytest
 from poe2_rag.answering.adapters.outbound.dense import bge_embedder
 from poe2_rag.answering.adapters.outbound.dense.bge_embedder import (
     DEFAULT_DIMENSION,
+    DEFAULT_MAX_SEQUENCE_LENGTH,
     DEFAULT_MODEL_ID,
     QUERY_INSTRUCTION,
     BgeEmbedder,
@@ -53,6 +54,7 @@ class StubModel:
     def __init__(self, dimension: int = DEFAULT_DIMENSION) -> None:
         self.calls: list[EncodeCall] = []
         self.tokenizer = StubTokenizer()
+        self.max_seq_length = DEFAULT_MAX_SEQUENCE_LENGTH
         self._dimension = dimension
 
     def encode(
@@ -176,6 +178,12 @@ class TestDocumentSide:
         assert call.convert_to_numpy is True
         assert call.show_progress_bar is False
         assert call.batch_size == 8
+
+    def test_applies_the_sequence_limit_to_the_loaded_model(self, loader: Loader) -> None:
+        """The model truncates at its own window, so the injected limit must reach it."""
+        BgeEmbedder(max_sequence_length=64).embed("spark")
+
+        assert loader.model.max_seq_length == 64
 
     def test_an_empty_batch_returns_no_vector_and_loads_nothing(self, loader: Loader) -> None:
         assert BgeEmbedder().embed_documents(()) == ()

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 import chromadb
+import numpy
 import pytest
 from chromadb.config import Settings
 from chromadb.errors import InternalError
+from hashing_embedder import HashingEmbedder
 
 from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
     ChromaVectorIndex,
@@ -44,42 +48,6 @@ from poe2_rag.shared.domain import (
 THREAD_URL = "https://www.pathofexile.com/forum/view-thread/1234567"
 CAPTURED_AT = date(2026, 10, 29)
 TARGET = PatchVersion.parse("0.2.0")
-
-
-class _HashingEmbedder:
-    """Local deterministic fake embedder, mirroring `tests/contract/hashing_embedder.py`."""
-
-    model_id: str = "fake-hashed-bow"
-    dimension: int = 64
-
-    def embed(self, text: str) -> tuple[float, ...]:
-        return self._embed(text)
-
-    def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
-        return tuple(self._embed(text) for text in texts)
-
-    def overflowing_indices(self, texts: Sequence[str]) -> tuple[int, ...]:
-        return ()
-
-    def _embed(self, text: str) -> tuple[float, ...]:
-        import hashlib
-        import math
-        import re
-
-        vector = [0.0] * self.dimension
-        words = re.findall(r"[a-z0-9]+", text.lower())
-        for word in words:
-            first = hashlib.sha256(word.encode("utf-8")).digest()
-            second = hashlib.sha256(first).digest()
-            for index, byte in enumerate(first + second):
-                vector[index] += byte / 255.0
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0.0:
-            return tuple(vector)
-        return tuple(value / norm for value in vector)
-
-
-HashingEmbedder = _HashingEmbedder
 
 
 def make_chunk(
@@ -128,11 +96,22 @@ class TestPortSurface:
         assert isinstance(index, VectorIndex)
         assert isinstance(index, VectorIndexWriter)
 
-    def test_construction_is_lazy_and_does_not_touch_disk(self, tmp_path: Path) -> None:
-        index = ChromaVectorIndex(tmp_path, embedder=HashingEmbedder())
+    def test_construction_loads_nothing(self, tmp_path: Path) -> None:
+        directory = tmp_path / "chroma"
+
+        ChromaVectorIndex(directory, embedder=HashingEmbedder())
+
+        assert not directory.exists()
+
+    def test_a_search_that_finds_no_index_creates_nothing(self, tmp_path: Path) -> None:
+        """The read port must not grow the index directory; a read-only process stays read-only."""
+        directory = tmp_path / "chroma"
+        index = ChromaVectorIndex(directory, embedder=HashingEmbedder())
 
         with pytest.raises(CollectionNotFoundError):
             index.search(HashingEmbedder().embed("spark"), TARGET, 10)
+
+        assert not directory.exists()
 
 
 class TestSearch:
@@ -162,6 +141,30 @@ class TestSearch:
 
         assert chunk_ids(results) == [alpha.chunk_id, beta.chunk_id]
         assert results[0].scores.dense == pytest.approx(results[1].scores.dense)
+
+    @pytest.mark.parametrize("limit", [3, 5])
+    def test_a_tie_group_larger_than_the_limit_breaks_by_chunk_id(
+        self, tmp_path: Path, limit: int
+    ) -> None:
+        """Ten identical vectors tie on distance, so the cut must happen after the tie-break."""
+        chunks = tuple(make_chunk(f"s{index:02d}", text="Spark damage.") for index in range(10))
+        index = build(tmp_path, chunks)
+
+        results = index.search(HashingEmbedder().embed("Spark damage."), TARGET, limit)
+
+        assert chunk_ids(results) == [chunk.chunk_id for chunk in chunks[:limit]]
+
+    def test_an_ndarray_query_vector_is_accepted(self, tmp_path: Path) -> None:
+        """`SentenceTransformer.encode` returns an ndarray, which is not a `Sequence`."""
+        chunk = make_chunk()
+        index = build(tmp_path, (chunk,))
+        query = numpy.asarray(HashingEmbedder().embed(chunk.text), dtype=numpy.float32)
+
+        # The port types the vector as `Sequence[float]`; an ndarray is not one, but it is what the
+        # sentence-transformers adapter returns, so the index normalizes instead of refusing it.
+        (result,) = index.search(query, TARGET, 1)  # type: ignore[arg-type]
+
+        assert result.chunk == chunk
 
     def test_a_chunk_round_trips_every_field(self, tmp_path: Path) -> None:
         chunk = make_chunk(
@@ -204,6 +207,27 @@ class TestSearch:
 
 
 class TestPersistence:
+    def test_a_second_rebuild_reclaims_the_previous_segment_directory(self, tmp_path: Path) -> None:
+        """`delete_collection` drops the catalog rows but leaves the HNSW segment on disk."""
+        directory = tmp_path / "chroma"
+        build(directory, (make_chunk("first"),))
+        index = build(directory, (make_chunk("second", text="Lightning damage."),))
+
+        segment_directories = [child for child in directory.iterdir() if child.is_dir()]
+        assert len(segment_directories) == 1
+        assert index.search(HashingEmbedder().embed("Lightning damage."), TARGET, 1)
+
+    def test_a_broken_store_raises_a_read_error(self, tmp_path: Path) -> None:
+        """A store that cannot be opened must not leak a Chroma or sqlite exception."""
+        directory = tmp_path / "chroma"
+        build(directory, (make_chunk(),))
+        (directory / "chroma.sqlite3").write_bytes(b"not a database")
+
+        index = ChromaVectorIndex(directory, embedder=HashingEmbedder())
+
+        with pytest.raises(VectorIndexReadError):
+            index.search(HashingEmbedder().embed("Spark damage."), TARGET, 10)
+
     def test_persistence_round_trip_with_a_new_instance(self, tmp_path: Path) -> None:
         chunk = make_chunk()
         build(tmp_path, (chunk,))
@@ -351,11 +375,56 @@ class TestAtomicity:
         index.rebuild((good_chunk,), (embedder.embed(good_chunk.text),))
 
         bad_chunk = make_chunk("overflow", version="1000.0.0")
-        with pytest.raises(ValueError, match="999"):
+        with pytest.raises(VectorIndexError, match="999"):
             index.rebuild((bad_chunk,), (embedder.embed(bad_chunk.text),))
 
         results = index.search(embedder.embed(good_chunk.text), TARGET, 1)
         assert chunk_ids(results) == [good_chunk.chunk_id]
+
+    def test_any_add_failure_cleans_up_and_wraps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-Chroma exception must not leave the half-built collection behind."""
+        embedder = HashingEmbedder()
+        index = ChromaVectorIndex(tmp_path, embedder=embedder)
+        old_chunk = make_chunk("old", text="Spark damage.")
+        index.rebuild((old_chunk,), (embedder.embed(old_chunk.text),))
+
+        def failing_add(*args: object, **kwargs: object) -> None:
+            raise ValueError("injected non-chroma failure")
+
+        monkeypatch.setattr("chromadb.api.models.Collection.Collection.add", failing_add)
+
+        new_chunk = make_chunk("new", text="Lightning damage.")
+        with pytest.raises(VectorIndexWriteError, match="injected non-chroma failure"):
+            index.rebuild((new_chunk,), (embedder.embed(new_chunk.text),))
+
+        results = index.search(embedder.embed("Spark damage."), TARGET, 1)
+        assert chunk_ids(results) == [old_chunk.chunk_id]
+        client = chromadb.PersistentClient(
+            path=str(tmp_path), settings=Settings(anonymized_telemetry=False)
+        )
+        assert len(client.list_collections()) == 1
+
+    def test_the_pointer_replace_is_made_durable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lost rename would leave the pointer naming a collection already deleted."""
+        synced: list[bool] = []
+        real_fsync = os.fsync
+
+        def recording_fsync(fd: int) -> None:
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            real_fsync(fd)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                "poe2_rag.answering.adapters.outbound.dense.chroma_index.os.fsync",
+                recording_fsync,
+            )
+            build(tmp_path, (make_chunk(),))
+
+        assert True in synced
 
     def test_a_failed_add_leaves_the_previous_index_answering(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
