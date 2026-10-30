@@ -82,7 +82,7 @@ ingested chunks for the first time.
 - [x] T2 — `LexicalIndexWriter` port and its shape test. Route: inline. S1.
 - [x] T3 — `EmptyCorpusError`, `ReindexReport`, `ReindexCorpus`, ingestion fakes, tests. Route: inline.
   S2, S9.
-- [ ] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
+- [x] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
 - [ ] T5 — `Bm25Index` (rebuild, persistence, search), adapter unit tests and the reusable
   `LexicalIndex` contract suite. Route: inline. S4, S5, S6, S9, S10.
 - [ ] T6 — Documentation: `docs/architecture.md`. Route: inline. S11.
@@ -116,3 +116,16 @@ ingested chunks for the first time.
   - The blocker about `pytest` failing to resolve is environmental: pyright in this session does not
     see the project `.venv`, and the same warning appears on the pre-existing `bs4` imports. The real
     gate, `uv run pytest`, is green.
+- T4: RED → collection `ModuleNotFoundError: No module named 'poe2_rag.answering.adapters'`, 0 tests
+  run (18 written, 20 cases with the parametrized ones). First GREEN attempt caught a real bug:
+  `test_keeps_a_signed_percent_value_as_one_token` failed (1 failed, 19 passed) because the compound
+  split treated the leading `-` of `-20%` as a separator and emitted an empty part plus `20%`. Fixed
+  by requiring every part to be non-empty; 20 passed. Full suite **583 passed**.
+  - One regex alternation decides the token: numbers first (`[+-]?\d+(\.\d+)?%?`), so `1.5` and
+    `+10%` are never mistaken for compounds, then words that may join pieces with `.`, `-`, `_`.
+  - Numeric tokens are never split into parts; only words with `-`/`_` contribute parts alongside
+    the whole form, which is what makes `area-of-effect` and a query for `effect` meet.
+  - No stemming and no stopword list, documented with the D2 reason (`more`/`less`/`increased` are
+    mechanics, not noise); repeats survive for term frequency.
+  - `tests/unit/answering/adapters/**` holds the first adapter tests of the answering capability, so
+    the three package `__init__.py` files of `answering/adapters` were created with it.
