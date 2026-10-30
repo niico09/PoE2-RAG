@@ -17,10 +17,12 @@ from poe2_rag.answering.adapters.outbound.dense.bge_embedder import EmbedderErro
 from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
     VectorIndexError,
     VectorIndexReadError,
+    VectorIndexWriteError,
 )
 from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
     LexicalIndexError,
     LexicalIndexLoadError,
+    LexicalIndexWriteError,
 )
 from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     LanguageModelError,
@@ -31,6 +33,7 @@ from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     RerankScoringError,
 )
 from poe2_rag.answering.application import AnswerQuestionError
+from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.config import ConfigurationError
 from poe2_rag.ingestion.adapters.inbound import cli as ingest_cli
 from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
@@ -54,12 +57,18 @@ EXPECTED_ERRORS: tuple[type[Exception], ...] = (
     LocalSnapshotError,
     ChunkRepositoryLoadError,
     ChunkRepositoryWriteError,
-    # answering: retrieval, the indexes it reads and the model that scored the candidates
+    # answering: retrieval, the indexes it reads and the writes `ingest` performs through them.
+    # `InvalidQueryError` is the one domain error a user provokes with input — a blank question or a
+    # well-formed version the catalog does not know — so it is reported like any other expected
+    # failure; every other domain error is an invariant violation and still propagates.
     AnswerQuestionError,
+    InvalidQueryError,
     LexicalIndexError,
     LexicalIndexLoadError,
+    LexicalIndexWriteError,
     VectorIndexError,
     VectorIndexReadError,
+    VectorIndexWriteError,
     EmbedderError,
     RerankerError,
     RerankScoringError,

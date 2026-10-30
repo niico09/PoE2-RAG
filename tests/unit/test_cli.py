@@ -6,12 +6,22 @@ composition root unless the test is specifically exercising the default factory.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 from cli_fakes import FailingContainer, FakeContainer
 
+from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
+    VectorIndexWriteError,
+)
+from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
+    LexicalIndexWriteError,
+)
 from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     LanguageModelRefusedError,
 )
+from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.cli import main
 from poe2_rag.config import ConfigurationError, MissingApiKeyError
 from poe2_rag.ingestion.application import EmptyCorpusError
@@ -218,3 +228,99 @@ def test_a_configuration_error_from_the_default_factory_obeys_the_contract(
     assert captured.err.startswith("error: ")
     assert "POE2_RAG_LLM_MAX_TOKENS" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_an_invalid_query_prints_one_line_and_exits_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A question or a patch the use case rejects is a user error, not a crash.
+
+    `InvalidQueryError` is the one domain error a user provokes with input (a blank question, or a
+    well-formed version the catalog does not know), so it belongs to the same contract as any other
+    expected failure: one line, exit 1, no traceback.
+    """
+    container = FailingContainer(
+        answer_question=InvalidQueryError("version 9.9.9 is not a known patch")
+    )
+
+    assert main(["ask", "What changed?", "--patch", "9.9.9"], container=container) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert "9.9.9 is not a known patch" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        LexicalIndexWriteError("disk full while replacing bm25.json"),
+        VectorIndexWriteError("disk full while swapping the collection"),
+    ],
+    ids=["lexical", "dense"],
+)
+def test_an_index_write_failure_prints_one_line_and_exits_one(
+    capsys: pytest.CaptureFixture[str], failure: Exception
+) -> None:
+    """`ingest` rebuilds both indexes, so a failed rebuild is an expected failure of the command."""
+    container = FailingContainer(reindex_corpus=failure)
+
+    assert main(["ingest", "patch-notes", "data/raw/x.html"], container=container) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert str(failure) in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["ask", "What changed?", "--patch", "9.9.9"],
+        ["ask", "   "],
+    ],
+    ids=["unknown-patch", "blank-question"],
+)
+def test_a_rejected_question_is_one_line_through_the_real_use_case(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    """The end-to-end path the verifier reproduced: real use case, real catalog, no model loaded.
+
+    `Query.for_catalog` rejects the question before the embedder, either index or the reranker is
+    called, so this case also proves the boundary reports it instead of leaking a traceback.
+    """
+    import cli_e2e
+
+    from poe2_rag.answering.adapters.outbound.dense import bge_embedder
+    from poe2_rag.answering.adapters.outbound.rerank import cross_encoder_reranker
+    from poe2_rag.bootstrap import Container
+
+    def explode(*_: object, **__: object) -> object:
+        raise AssertionError("a rejected question must not load a model")
+
+    monkeypatch.setattr(bge_embedder, "_load_model", explode)
+    monkeypatch.setattr(cross_encoder_reranker, "_load_scorer", explode)
+
+    container = Container(
+        cli_e2e.build_config(tmp_path),
+        environ={"ANTHROPIC_API_KEY": "sk-ant-not-a-real-key"},
+        client_factory=_stub_client,
+    )
+
+    assert main(argv, container=container) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert captured.err.count("\n") == 1
+    assert "Traceback" not in captured.err
+
+
+class _StubClient:
+    """The only shape `ClaudeLanguageModel` validates, so the container wires without the SDK."""
+
+    beta = object()
+
+
+def _stub_client() -> Any:
+    """Build the stub through a factory, the way the composition root asks for a client."""
+    return _StubClient()
