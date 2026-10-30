@@ -13,6 +13,7 @@ from poe2_rag.answering.adapters.inbound.cli import AnswerQuestionRunner
 from poe2_rag.answering.application import NO_INFORMATION_TEXT
 from poe2_rag.answering.application.answer_question import AnswerResult
 from poe2_rag.answering.domain import Answer, Citation, RetrievedChunk, StageScores
+from poe2_rag.bootstrap import EXPECTED_ERRORS as CONTAINER_ERRORS
 from poe2_rag.ingestion.adapters.inbound.cli import (
     IngestSourceRunner,
     ReindexCorpusRunner,
@@ -74,7 +75,14 @@ class FakeAnswerQuestion:
 
 
 class FakeContainer:
-    """A container whose three runners are fakes, satisfying ``CliContainer`` structurally."""
+    """A container whose three runners are fakes, satisfying ``CliContainer`` structurally.
+
+    ``expected_errors`` is the composition root's real tuple: the point of these cases is that the
+    boundary reports what the container declares, so a fake that invented its own list would test the
+    wrong thing.
+    """
+
+    expected_errors: tuple[type[Exception], ...] = CONTAINER_ERRORS
 
     def __init__(
         self,
@@ -94,6 +102,8 @@ class FailingContainer:
     This lets the error-contract tests prove the CLI boundary without wiring a real
     adapter that would load models or need credentials.
     """
+
+    expected_errors: tuple[type[Exception], ...] = CONTAINER_ERRORS
 
     def __init__(
         self,

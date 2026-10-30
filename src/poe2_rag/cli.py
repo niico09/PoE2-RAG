@@ -1,8 +1,14 @@
-"""Top-level CLI: parse, dispatch and map expected errors to exit codes (S5, S6).
+"""Top-level CLI: parse, dispatch, and report expected failures as one line (§5, ADR-0006).
 
-This module owns no business logic. It wires the user's command-line arguments to the
-``ingest`` and ``ask`` inbound adapters, and turns the expected domain/application errors
-into one-line stderr messages with no traceback. Everything else propagates unchanged.
+This module owns no business logic and knows no adapter. It parses arguments, asks the composition root
+for the container, and hands the command to the inbound adapter that owns it.
+
+Which failures are *expected* belongs to the composition root as well: only it knows which adapters it
+wired, so it publishes the tuple this boundary reports (`Container.expected_errors`). Keeping the tuple
+there is what lets ADR-0006 hold in practice — the CLI receives its dependencies already built, a new
+adapter does not force an edit here, and importing the CLI does not drag in `chromadb`, the SDK or torch.
+The one failure this module does own is that of building the container at all, which happens before a
+container exists to ask.
 """
 
 from __future__ import annotations
@@ -13,73 +19,26 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from poe2_rag.answering.adapters.inbound import cli as ask_cli
-from poe2_rag.answering.adapters.outbound.dense.bge_embedder import EmbedderError
-from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
-    VectorIndexError,
-    VectorIndexReadError,
-    VectorIndexWriteError,
-)
-from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
-    LexicalIndexError,
-    LexicalIndexLoadError,
-    LexicalIndexWriteError,
-)
-from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
-    LanguageModelError,
-    LanguageModelRuntimeError,
-)
-from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
-    RerankerError,
-    RerankScoringError,
-)
-from poe2_rag.answering.application import AnswerQuestionError
-from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.config import ConfigurationError
 from poe2_rag.ingestion.adapters.inbound import cli as ingest_cli
-from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
-    ChunkRepositoryLoadError,
-    ChunkRepositoryWriteError,
-)
-from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import LocalSnapshotError
-from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import PatchNotesParseError
-from poe2_rag.ingestion.application import IngestionError
-from poe2_rag.shared.adapters.outbound.toml_patch_catalog import PatchCatalogLoadError
 from poe2_rag.shared.domain.errors import InvalidPatchVersionError
 from poe2_rag.shared.domain.patch_version import PatchVersion
 
-EXPECTED_ERRORS: tuple[type[Exception], ...] = (
-    # configuration: unusable values, an unreadable catalog file, the missing credential
-    ConfigurationError,
-    PatchCatalogLoadError,
-    # ingestion: the write path and the files it reads
-    IngestionError,
-    PatchNotesParseError,
-    LocalSnapshotError,
-    ChunkRepositoryLoadError,
-    ChunkRepositoryWriteError,
-    # answering: retrieval, the indexes it reads and the writes `ingest` performs through them.
-    # `InvalidQueryError` is the one domain error a user provokes with input — a blank question or a
-    # well-formed version the catalog does not know — so it is reported like any other expected
-    # failure; every other domain error is an invariant violation and still propagates.
-    AnswerQuestionError,
-    InvalidQueryError,
-    LexicalIndexError,
-    LexicalIndexLoadError,
-    LexicalIndexWriteError,
-    VectorIndexError,
-    VectorIndexReadError,
-    VectorIndexWriteError,
-    EmbedderError,
-    RerankerError,
-    RerankScoringError,
-    # generation: the adapter's own failures, refusal and truncation included
-    LanguageModelError,
-    LanguageModelRuntimeError,
-)
+BUILD_ERRORS: tuple[type[Exception], ...] = (ConfigurationError,)
+"""The only failures that can precede the container: reading the `POE2_RAG_*` environment."""
 
 
 class CliContainer(Protocol):
-    """The three runners the CLI needs, satisfied by ``bootstrap.Container`` or by fakes."""
+    """What the CLI needs from the composition root: three runners and the failures to report.
+
+    `bootstrap.Container` satisfies it structurally, and so does a fake: a command can be tested
+    without wiring an adapter, a model or a credential.
+    """
+
+    @property
+    def expected_errors(self) -> tuple[type[Exception], ...]:
+        """The failures the wired adapters declare as operational, reported as one line."""
+        ...
 
     @property
     def ingest_source(self) -> ingest_cli.IngestSourceRunner:
@@ -98,10 +57,11 @@ class CliContainer(Protocol):
 
 
 def _default_container() -> CliContainer:
-    """Build the production container lazily.
+    """Build the production container on demand.
 
-    Importing the composition root pulls ``chromadb`` and the Anthropic SDK, so this
-    function is only called when a real command (not ``--help``) needs it.
+    The import lives here so that importing this module — which `--help` does — stays free of the
+    composition root and everything it pulls in. The container reduces the environment to what the
+    adapters need; this function only asks for it.
     """
     from poe2_rag import bootstrap
 
@@ -113,7 +73,7 @@ def _patch_version(raw: str) -> PatchVersion:
 
     A malformed version is the user mistyping the command, so it exits 2 through argparse. A
     well-formed version the catalog does not know is a different failure: it reaches
-    ``AnswerQuestion`` and comes back through ``EXPECTED_ERRORS`` with exit 1.
+    ``AnswerQuestion`` and comes back through the container's expected errors with exit 1.
     """
     try:
         return PatchVersion.parse(raw)
@@ -130,16 +90,17 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest = subparsers.add_parser("ingest", help="ingest a source and rebuild the indexes")
+    # No `metavar` here: the choices are the point, so argparse renders `{patch-notes}` and the list
+    # grows into `{patch-notes,poe2db,...}` by itself when another source adapter is added.
     ingest.add_argument(
         "source",
         choices=ingest_cli.SOURCES,
-        metavar="source",
         help="source type to ingest",
     )
     ingest.add_argument(
         "locator",
         metavar="path",
-        help="path or URL of the source document",
+        help="path of the source snapshot, relative paths resolve against POE2_RAG_RAW_DIR",
     )
 
     ask = subparsers.add_parser("ask", help="ask a question about the corpus")
@@ -174,22 +135,34 @@ def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
         )
 
 
-def main(argv: Sequence[str] | None = None, *, container: CliContainer | None = None) -> int:
-    """Parse ``argv`` and run the requested command.
+def _report(error: Exception) -> int:
+    """Write `error` as the single stderr line the contract promises, and return the exit code.
 
-    Expected errors print one line on stderr and return 1. argparse usage errors raise
-    ``SystemExit`` with code 2, and ``--help`` raises ``SystemExit`` with code 0.
-    Unexpected exceptions propagate unchanged.
+    Collapsing whitespace keeps a multi-line message a line: the contract is "one line on stderr", and
+    a message that wrapped would read like a traceback.
+    """
+    print(f"error: {' '.join(str(error).split())}", file=sys.stderr)
+    return 1
+
+
+def main(argv: Sequence[str] | None = None, *, container: CliContainer | None = None) -> int:
+    """Parse ``argv`` and run the requested command, returning the exit code.
+
+    Expected failures print one line on stderr and return 1: those of building the container, and those
+    the container declares in `expected_errors`. argparse usage errors raise ``SystemExit`` with code 2,
+    ``--help`` raises it with code 0, and anything else propagates untouched — an unexpected exception is
+    a bug, and a traceback is the honest thing to show for it.
     """
     args = _build_parser().parse_args(argv)
 
     try:
-        # Building the container reads the documented POE2_RAG_* variables, so it belongs inside the
-        # handler: a bad value is exactly the configuration failure this contract reports.
-        _dispatch(args, container if container is not None else _default_container())
-    except EXPECTED_ERRORS as exc:
-        message = str(exc).replace("\n", " ").strip()
-        print(f"error: {message}", file=sys.stderr)
-        return 1
+        runtime = container if container is not None else _default_container()
+    except BUILD_ERRORS as exc:
+        return _report(exc)
+
+    try:
+        _dispatch(args, runtime)
+    except tuple(runtime.expected_errors) as exc:
+        return _report(exc)
 
     return 0

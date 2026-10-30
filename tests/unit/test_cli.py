@@ -6,6 +6,8 @@ composition root unless the test is specifically exercising the default factory.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -60,23 +62,58 @@ def test_ask_without_patch_passes_none() -> None:
     assert fake.answer_question.calls == [("How much mana?", None)]
 
 
-def test_invalid_patch_is_usage_error_and_unknown_version_reaches_fake(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A malformed patch string exits 2; a well-formed unknown patch reaches the runner."""
-    fake = FakeContainer()
-
+def test_a_malformed_patch_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """`--patch 0.1` is the user mistyping the command, so argparse exits 2."""
     with pytest.raises(SystemExit) as exc_info:
-        main(["ask", "q", "--patch", "0.1"], container=fake)
+        main(["ask", "q", "--patch", "0.1"], container=FakeContainer())
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert "argument --patch" in captured.err
     assert "0.1" in captured.err
 
-    result = main(["ask", "q", "--patch", "9.9.9"], container=fake)
-    assert result == 0
+
+def test_a_well_formed_patch_reaches_the_runner_without_being_resolved() -> None:
+    """argparse checks the shape only; whether the catalog knows the version is the use case's call.
+
+    The fake accepts `9.9.9`, which is the point: the boundary must not resolve patches. What the real
+    path does with an unknown version is pinned separately, by
+    `test_a_rejected_question_is_one_line_through_the_real_use_case`.
+    """
+    fake = FakeContainer()
+
+    assert main(["ask", "q", "--patch", "9.9.9"], container=fake) == 0
     assert fake.answer_question.calls[-1] == ("q", PatchVersion(9, 9, 9))
+
+
+def test_ingest_help_shows_the_closed_source_set(capsys: pytest.CaptureFixture[str]) -> None:
+    """The closed choice of S3 has to be discoverable from the CLI, not only from the README."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["ingest", "--help"])
+
+    assert exc_info.value.code == 0
+    assert "{patch-notes}" in capsys.readouterr().out
+
+
+def test_importing_the_cli_pulls_in_no_adapter_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0006: the boundary receives a container, so importing it loads no adapter library.
+
+    A subprocess is the honest way to assert this: the suite itself has long since imported chromadb and
+    the SDK, so `sys.modules` here says nothing about what the module alone drags in.
+    """
+    code = (
+        "import sys, poe2_rag.cli;"
+        "print(sorted(m for m in ('chromadb', 'anthropic', 'torch') if m in sys.modules))"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
 
 
 def test_unknown_source_is_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
