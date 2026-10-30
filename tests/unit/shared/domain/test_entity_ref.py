@@ -37,7 +37,7 @@ def test_rejects_non_slug_kind(kind: str) -> None:
         EntityRef(kind, "spark", "Spark")
 
 
-@pytest.mark.parametrize("kind", ["active_gem", "support_gem", "mechanic", "item"])
+@pytest.mark.parametrize("kind", ["active_gem", "support_gem", "mechanic", "item", "patch_notes"])
 def test_accepts_closed_kind_vocabulary(kind: str) -> None:
     assert EntityRef(kind, "spark", "Spark").kind == kind
 
