@@ -92,7 +92,7 @@ states.
 - [x] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
 - [x] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
 - [x] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
-- [ ] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: inline. S6, S7.
+- [x] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: delegated to `gentle-ai-worker`, reviewed inline. S6, S7.
 - [ ] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
 - [ ] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
 
@@ -150,7 +150,27 @@ states.
   - Missing files, non-UTF-8 bytes and directories raise `LocalSnapshotError(RuntimeError)`, the same
     environment-failure boundary as the catalog and repository load errors. An empty file is fetched,
     not rejected: the parser owns the "empty document" rule.
-- T6: pending.
+- T6: route changed from inline to delegated (`gentle-ai-worker`, a bounded writer) because the parser,
+  its fixtures and its tests were the largest unit left; the parent reviewed the result and hardened it.
+  Worker RED → 18 failed, 2 passed against its stub (`NotImplementedError`); worker GREEN → 20 passed;
+  full suite **528 passed**. Parent review then added two behaviours test-first: a title-only staff post
+  must raise instead of returning no chunks, and nested bullets must stay separate lines even when the
+  HTML has no whitespace between the item text and the nested `<ul>` (the fixture is deliberately
+  minified there). Review RED → 2 failed, 19 passed; review GREEN → 21 passed; full suite **529 passed**.
+  The main fixture now mirrors the downloaded snapshot one step closer: the repeated post title and the
+  sections are `<h3>` (the observed post used `<h3>`), the nested heading is `<h4>`, and the community
+  row is a plain `<tr>` like the real page.
+  - URL recovery: an absolute locator wins; otherwise the first `/forum/post-reply/<id>` link is
+    preferred over `/forum/view-thread/<id>`, because the real page lists other threads in its
+    navigation and only the reply links reliably identify the current one.
+  - Multiple staff posts are concatenated in document order; nested lists render as flat bullet lines
+    (no indentation) and blank sections are dropped. Duplicate headings are emitted, not merged:
+    `IngestSource` owns the duplicate `chunk_id` rejection (S2).
+  - `beautifulsoup4==4.15.0` (with `html.parser`, no lxml) is the only third-party import, and `grep`
+    shows `bs4` only in the parser adapter.
+  - Error classes stay outside `DomainError` and `IngestionError`: a page that does not match the forum
+    shape is an environment/content failure, so `PatchNotesParseError(RuntimeError)` is the boundary,
+    matching `PatchCatalogLoadError` and `LocalSnapshotError`.
 - T7: pending.
 - T8: pending.
 
@@ -163,6 +183,8 @@ states.
 - Slice 2: T3 (use case, errors, fakes and tests).
 - Slice 3: T4 (JSON repository, contract suite and adapter tests).
 - Slice 4: T5 (local snapshot fetcher).
+- Slice 5: T6 (patch notes parser, fixtures and the beautifulsoup4 dependency); the delegated writer did not
+  commit, so the slice is one parent commit.
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
