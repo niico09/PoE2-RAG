@@ -14,6 +14,9 @@ dependencies = [
     "torch>=2.15.0",
 ]
 
+[project.scripts]
+poe2-rag = "poe2_rag.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
