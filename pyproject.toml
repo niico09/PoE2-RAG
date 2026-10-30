@@ -33,9 +33,10 @@ torch = [{ index = "pytorch-cpu" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "-m", "not integration"]
+addopts = ["-ra", "-m", "not integration and not live"]
 markers = [
-    "integration: needs the real embedding model or network access; opt in with '-m integration'",
+    "integration: needs the real embedding or reranking model, or network access; opt in with '-m integration'",
+    "live: calls the real Claude API, costs money and needs ANTHROPIC_API_KEY; opt in with '-m live'",
 ]
 
 [tool.ruff.lint.isort]
