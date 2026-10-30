@@ -80,7 +80,7 @@ ingested chunks for the first time.
 - [x] T1 — Branch `feat/reindex-lexical`, feature doc, Engram mirror, `data/index/` in `.gitignore`.
   Route: inline. S7, S13, S14.
 - [x] T2 — `LexicalIndexWriter` port and its shape test. Route: inline. S1.
-- [ ] T3 — `EmptyCorpusError`, `ReindexReport`, `ReindexCorpus`, ingestion fakes, tests. Route: inline.
+- [x] T3 — `EmptyCorpusError`, `ReindexReport`, `ReindexCorpus`, ingestion fakes, tests. Route: inline.
   S2, S9.
 - [ ] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
 - [ ] T5 — `Bm25Index` (rebuild, persistence, search), adapter unit tests and the reusable
@@ -101,3 +101,18 @@ ingested chunks for the first time.
   - Its docstring carries the rule the adapter and the use case share: `rebuild` replaces the whole
     index, must not leave a truncated one behind, and only receives a non-empty corpus because
     `ReindexCorpus` rejects the empty case first.
+- T3: RED → collection `ImportError: cannot import name 'EmptyCorpusError' from
+  'poe2_rag.ingestion.application'`, 0 tests run (11 written). GREEN → 11 passed; full suite **563
+  passed**.
+  - The corpus is read once into an immutable tuple and the writer receives that snapshot, so both
+    indexes of the next task describe one corpus instead of racing two reads. The happy-path journal
+    is exactly `all, rebuild`.
+  - An empty corpus raises `EmptyCorpusError` before any writer runs: the previous index survives and
+    the run never reports a rebuild it did not do. A writer failure propagates unchanged, so no report
+    is returned for a half-rebuilt index.
+  - `rebuilt_at` comes from an injected `clock` (default `datetime.now(UTC)`), which keeps the test
+    deterministic and the report timezone-aware. The vector writer seam is a documented comment at
+    the exact insertion point, not an unused parameter.
+  - The blocker about `pytest` failing to resolve is environmental: pyright in this session does not
+    see the project `.venv`, and the same warning appears on the pre-existing `bs4` imports. The real
+    gate, `uv run pytest`, is green.

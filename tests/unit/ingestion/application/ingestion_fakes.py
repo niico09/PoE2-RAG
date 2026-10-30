@@ -115,3 +115,23 @@ class FakeChunkRepository:
     def all(self) -> tuple[Chunk, ...]:
         self._recorder.record("all")
         return tuple(self._by_id.values())
+
+
+class FakeLexicalIndexWriter:
+    """Records every rebuild with the exact chunks it received and keeps the last snapshot."""
+
+    def __init__(self, recorder: CallRecorder, error: Exception | None = None) -> None:
+        self._recorder = recorder
+        self._error = error
+        self._chunks: tuple[Chunk, ...] = ()
+
+    def rebuild(self, chunks: Sequence[Chunk]) -> None:
+        self._recorder.record("rebuild", tuple(chunks))
+        if self._error is not None:
+            raise self._error
+        self._chunks = tuple(chunks)
+
+    @property
+    def chunks(self) -> tuple[Chunk, ...]:
+        """The chunks the last successful rebuild received."""
+        return self._chunks
