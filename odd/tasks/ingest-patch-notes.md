@@ -87,8 +87,8 @@ states.
 - Import order, as used by the repository: `uvx ruff check --select I src/poe2_rag/ingestion tests/unit/ingestion`.
 
 ## Tasks
-- [ ] T1 — Branch `feat/ingest`, feature doc, Engram mirror. Route: inline. S12.
-- [ ] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
+- [x] T1 — Branch `feat/ingest`, feature doc, Engram mirror. Route: inline. S12.
+- [x] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
 - [ ] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
 - [ ] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
 - [ ] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
@@ -100,7 +100,20 @@ states.
 - T1: branch `feat/ingest` reset to `main` (`c907558`; the old local branch sat at `b8e19af` with no work
   of its own). Baseline on that base: `uv run pytest -q` → 419 passed. No RED applicable (documentation
   only).
-- T2: pending.
+- T2: RED → collection `ModuleNotFoundError: No module named 'poe2_rag.ingestion'`, 0 tests run (22
+  written). GREEN → 22 passed in the focused file; full suite **441 passed**. The first full-suite run
+  exposed an import collision: `tests/unit/answering/application/test_ports.py` and
+  `tests/unit/ingestion/application/test_ports.py` share a basename, and pytest's default prepend import
+  mode names modules by basename, so the ingestion file was renamed `test_ingestion_ports.py` (the same
+  rule the answering feature applied to `answering_fakes.py`).
+  - `RawDocument` validates shape only: blank locator or source type, non-string content and a fetch time
+    that is not a `datetime` (a `date` is rejected because it cannot carry the capture time) raise
+    `InvalidRawDocumentError`. Content may be empty: the parser owns the "empty document" rule, so a
+    fetcher never has to invent one.
+  - The three protocols are `runtime_checkable`, so the contract suite can assert conformance, and a test
+    pins that a partial implementation is not accepted.
+  - `fetched_at` is documented as the capture moment, not the read moment, which is what makes it a
+    citation date instead of a pipeline timestamp.
 - T3: pending.
 - T4: pending.
 - T5: pending.
