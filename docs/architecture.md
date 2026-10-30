@@ -147,11 +147,12 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 
 ### 5.2 Flujo de `IngestSource`
 
-1. **Fetch:** el `SourceFetcher` devuelve un `RawDocument` con el contenido, el locator, la fecha de captura y el tipo de fuente.
-2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento.
+1. **Fetch:** el `SourceFetcher` devuelve un `RawDocument` con el contenido, el locator, la fecha de captura (en el snapshot local, la del sidecar de metadatos, nunca el mtime) y el tipo de fuente.
+2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento. El parser de notas de parche lee solo el primer post de staff y fusiona las secciones que resuelven al mismo slug.
 3. **Vigencia conocida:** un chunk cuyo `valid_from` no está en el `PatchCatalog` aborta la corrida con `UnknownPatchError`; no se descarta, porque un chunk fuera de la línea de tiempo haría que el corpus afirmara un parche que el sistema no reconoce (D1).
-4. **Identidad única:** dos chunks con el mismo `chunk_id` en un documento abortan con `DuplicateChunkIdError`; guardar el último dejaría el corpus en silencio con una sola sección.
-5. **Upsert:** se leen los chunks ya persistidos y solo se escriben los nuevos o cambiados. Un documento ya ingestado no reescribe el corpus y reporta sus chunks como `skipped`.
+4. **Identidad única:** si un documento produce dos chunks con el mismo `chunk_id`, `DuplicateChunkIdError` aborta antes de escribir; guardar el último dejaría el corpus en silencio con una sola sección.
+5. **Identidad por documento:** un `chunk_id` ya almacenado desde otra URL de origen aborta con `ChunkIdentityConflictError`; pisarlo movería la cita del primer hilo al segundo. Una recaptura de la misma URL sí es un update.
+6. **Upsert:** se leen los chunks ya persistidos y solo se escriben los nuevos o cambiados. Un documento ya ingestado no reescribe el corpus y reporta sus chunks como `skipped`. Las secciones que desaparecen de la fuente no se podan: el chunk viejo sigue en el corpus con su vigencia (deuda explícita hasta que el puerto exprese el alcance de un documento).
 
 Las notas de parche son la primera fuente implementada; el modelo de vigencia que usan se registra en §10.1.
 
@@ -249,8 +250,10 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Las fuentes cambian de formato y rompen los parsers | Guardar snapshots completos en `data/raw/` (gitignored, [ADR-0002](adr/0002-fuentes-de-datos-mvp.md)); los tests de parser corren sobre fixtures mínimas escritas a mano y versionadas en `tests/fixtures/`. |
 | Las notas de parche describen cambios, no estados completos | En el MVP cada hilo se indexa como su propia entidad `patch_notes`, con una sección por encabezado y vigencia abierta desde su parche (§10.1). Aplicarlas como transiciones que cierran el `valid_until` de chunks de gemas requiere poe2db primero y queda fuera de este corte. |
 | El título del hilo puede traer una versión con sufijo (`0.5.5e`) que `PatchVersion` no representa | El parser falla con `PatchVersionUnparseableError` en vez de mapearla a otro parche; si el MVP necesita esos parches, se amplía `PatchVersion` con una decisión explícita. |
-| Encabezados repetidos en un mismo documento producen el mismo `chunk_id` | `IngestSource` rechaza el documento con `DuplicateChunkIdError` antes de escribir; si aparece en datos reales, se parte el documento o se desambigua la sección. |
-| Un snapshot local no conserva la URL del hilo, que la cita necesita | El parser la recupera de los enlaces `/forum/post-reply/<id>` del propio documento; cuando el locator ya es una URL absoluta, esa gana. |
+| Encabezados repetidos, o dos encabezados que slugifican igual, producen un `chunk_id` repetido | El parser fusiona las secciones con el mismo slug en orden de documento, incluido el `overview` sintético; `IngestSource` conserva el rechazo con `DuplicateChunkIdError` como red de seguridad. |
+| Dos hilos del mismo parche reclaman el mismo `chunk_id` (el id no incluye la URL) | `IngestSource` rechaza con `ChunkIdentityConflictError` un id ya almacenado desde otra URL; una recaptura de la misma URL es un update. |
+| Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
+| Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |
 | El LLM inventa valores numéricos | Validación de citas y regla de "sin respaldo" en el dominio |
 | Sobreingeniería antes de tener datos reales | Implementar primero un corte vertical mínimo (una fuente, un índice, un LLM) y medir |
 

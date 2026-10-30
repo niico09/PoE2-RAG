@@ -208,6 +208,7 @@ states.
   commit, so the slice is one parent commit.
 - Slice 6: T7 (architecture decisions, one documentation commit).
 - Slice 7: T8 (close: one documentation commit with the final evidence and per-spec verdict).
+- Round 1: `f4f6757` parser hardening, `8a784da` snapshot identity and corpus guards, `94b6198` pipeline composition test, plus the documentation commit that carries this record. The parser commit is one reviewable unit above 400 lines because its fixtures and the tests that pin them are the same behavior.
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
@@ -216,11 +217,18 @@ states.
   also cannot resolve `import pytest` (its analysis loads no project configuration, documented in
   `odd/tasks/answer-question.md`) and emits `no-sql-in-code-execute` advisories on `.execute` method
   calls, a documented false-positive class: this repository has no SQL, cursor or database call.
+- Round 1 re-verified that defect: `effective_config` reports `documents: []` (the analyzer loads no
+  project configuration), the system `/usr/bin/python3` has no pytest while `.venv` does, and
+  `uvx pyright==1.1.414 --project pyrightconfig.json` reports 0 errors. The `pytest` import in
+  `tests/unit/shared/domain/test_entity_ref.py` was marked false-positive with `lens_diagnostic_mark`,
+  not suppressed in code. The automated pass also replayed T3 RED snapshots (unknown symbols that exist
+  and pass) and the SQL advisories; the only variable that still triggered the latter was renamed from
+  `source` to `ingest` in the test that calls `.execute`.
 
 ## Close
-- Final `uv run pytest -q` → **530 passed** (baseline before the feature: 419; **+111 tests**).
+- Final `uv run pytest -q` → **550 passed** (baseline before the feature: 419; **+131 tests**: 130 ingestion cases plus the `EntityRef` kind case).
 - `<command>: <observed result>`:
-  - `uv run pytest -q`: `530 passed in 0.23s`.
+  - `uv run pytest -q`: `550 passed in 0.29s`.
   - `uvx pyright==1.1.414`: `0 errors, 0 warnings, 0 informations` (best effort, not a gate).
   - `uvx ruff check --select I src/poe2_rag/ingestion tests/unit/ingestion tests/contract/test_chunk_repository_contract.py`: `All checks passed`.
   - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'`: `0`.
@@ -228,21 +236,58 @@ states.
   - `grep -rn "requests\|httpx\|urlopen\|urllib.request" tests`: no matches.
 - Per-spec verdict:
   - S1 ✅ `SourceFetcher`, `DocumentParser` and `ChunkRepository` are runtime-checkable protocols, with the frozen `RawDocument` (22 tests).
-  - S2 ✅ `IngestSource.execute` runs fetch → parse → unknown patch → duplicate id → read → upsert and returns `IngestReport(locator, chunk_ids, skipped)` (16 tests).
-  - S3 ✅ `IngestionError(ValueError)` with `InvalidRawDocumentError`, `UnknownPatchError` and `DuplicateChunkIdError`.
-  - S4 ✅ `JsonChunkRepository`: `schema_version: 1`, one `chunks.json`, atomic temp-file replace, production default `data/processed/`; the same contract runs against it and the in-memory fake (24 cases + 14 adapter tests).
-  - S5 ✅ `LocalFileFetcher` reads a UTF-8 snapshot and uses its mtime as `fetched_at` (12 tests).
-  - S6 ✅ `PatchNotesParser`: version from the thread title, one chunk per top-level section, `SourceRef("patch_notes", <thread url>, <fetched_at date>)`, bullets as lines and inline markup stripped; `beautifulsoup4` only in the adapter (22 tests).
-  - S7 ✅ eleven hand-written fixtures in `tests/fixtures/patch_notes/`, no network in any test, one reference thread downloaded manually into the gitignored `data/raw/` (checked).
+  - S2 ✅ `IngestSource.execute` runs fetch → parse → unknown patch → duplicate id → read → same-source check → upsert and returns `IngestReport(locator, chunk_ids, skipped)`; a `chunk_id` claimed by another source URL raises `ChunkIdentityConflictError` (19 tests).
+  - S3 ✅ `IngestionError(ValueError)` with `InvalidRawDocumentError`, `UnknownPatchError`, `DuplicateChunkIdError` and `ChunkIdentityConflictError`.
+  - S4 ✅ `JsonChunkRepository`: `schema_version: 1`, one `chunks.json`, atomic temp-file replace, duplicate `chunk_id` rejected on load, production default `data/processed/`; the same contract runs against it and the in-memory fake (24 cases + 15 adapter tests).
+  - S5 ✅ `LocalFileFetcher` reads a UTF-8 snapshot and its required `<snapshot>.meta.json` capture metadata (`captured_at`, ISO 8601 with timezone); the mtime is ignored and missing or malformed metadata fails loud (19 tests).
+  - S6 ✅ `PatchNotesParser`: version from the first parseable title token, first staff post only, one chunk per top-level section with same-slug merging, `SourceRef("patch_notes", <thread url>, <fetched_at date>)`, bullets and table rows as lines and inline markup stripped; `beautifulsoup4` only in the adapter (29 tests).
+  - S7 ✅ seventeen hand-written fixtures in `tests/fixtures/patch_notes/`, no network in any test, one reference thread downloaded manually into the gitignored `data/raw/` (checked).
   - S8 ✅ `patch_notes` entity kind, open validity and section slugs; the modeling decision is recorded in `docs/architecture.md` §10.1 and L2.
-  - S9 ✅ RED and GREEN observed and recorded per task; every required case has a named test (the per-task evidence lists them).
+  - S9 ✅ RED and GREEN observed and recorded per task and per round-1 finding; every required case has a named test, including the round-1 cross-document, duplicate-slug, table, sidecar and composition cases.
   - S10 ✅ code, tests, this document and every commit message are English; `docs/architecture.md` stays Spanish by the documented precedent (answer-question L2.7).
   - S11 ✅ no HTTP fetcher, poe2db/poe2wiki adapters, `ReindexCorpus`, indexes or `ingest` CLI.
-  - S12 ✅ `feat/ingest` reset to `main` at `c907558`; one Conventional Commit per task plus this closing commit; no attribution; nothing pushed or opened.
+  - S12 ✅ `feat/ingest` reset to `main` at `c907558`; one Conventional Commit per task, plus the round-1 fix/test commits and the closing/documentation commits; no attribution; nothing pushed or opened.
   - S13 ✅ the commands and counts above.
-- Branch totals before this closing commit: `git diff --shortstat main..HEAD -- . ':(exclude)uv.lock'` → 32 files changed, **2509 insertions(+), 11 deletions(-)**, including this feature document. Per-commit authored lines: T1 236, T2 260, T3 456, T4 638, T5 164, T6 757 (35 of them `uv.lock`), T7 46. T3, T4 and T6 are over the ~400-line review slice; each commit is green on its own, so native review can take them one at a time.
-- `Risk: none`. The feature adds modules, ports and adapters and only touches shared code by adding one value to the closed `EntityRef` kind vocabulary, an additive change no consumer can break (the only enumeration, a test, was extended). It changes no stored data, credential, guard or existing contract, adds no concurrency and no delivery path, and every rule it introduces has a test that fails without it. `data/processed/` is gitignored working data that any snapshot can rebuild.
+- Branch totals before the round-1 documentation commit: `git diff --shortstat main..HEAD -- . ':(exclude)uv.lock'` → 40 files changed, **3173 insertions(+), 11 deletions(-)**, including this feature document. Per-commit authored lines: T1 236, T2 260, T3 456, T4 638, T5 164, T6 757 (35 of them `uv.lock`), T7 46; round 1: `f4f6757` 451+/123-, `8a784da` 259+/53-, `94b6198` 80+. T3, T4, T6 and the round-1 parser commit are over the ~400-line review slice; each commit is green on its own, so native review can take them one at a time.
+- `Risk: item 5 (production dependency)` for the whole slice: `beautifulsoup4>=4.15.0` changes the install environment. Everything else adds modules, ports and adapters and only touches shared code by adding one value to the closed `EntityRef` kind vocabulary, an additive change no consumer can break (the only enumeration, a test, was extended). It changes no stored corpus format, credential, guard or existing contract, adds no concurrency and no delivery path, and every rule it introduces has a test that fails without it. `data/processed/` is gitignored working data that any snapshot can rebuild. The round-1 sidecar convention is new for the local fetcher but has no other consumer yet.
+- Explicit decisions and debts: patch titles with a suffix (`0.5.5e`) remain unparseable until `PatchVersion` gains suffix support (an ADR-level decision); sections removed from a source are not pruned because the repository port does not express document scope. Both are recorded in §10.
 - No check was skipped. Push and PR remain the user's decision, not taken here.
+
+## Round 1 — QA and review findings
+
+Every finding was reproduced against the shipped code before changing anything. Reproduced, fixed and
+pinned by a named test unless the entry says otherwise.
+
+### QA findings
+
+1. **Cross-document silent overwrite** (media). Two threads of the same patch share `chunk_id` because the id omits the URL, so the second overwrote the first with `skipped=0`. Fixed: `IngestSource` reads the corpus and rejects a `chunk_id` already stored from another source URL with the new `ChunkIdentityConflictError`; a recapture of the same URL remains a normal update. Tests: `test_rejects_a_chunk_id_claimed_by_another_source`, `test_allows_a_recapture_of_the_same_thread`.
+2. **The title became a section** (media). The repeated-title skip only looked at the first child, so a later title or a title after the intro produced `0-2-0-patch-notes`. Fixed: the parser reads only the first staff post and drops every heading whose normalized text equals the thread title anywhere in the body. Tests: `test_title_heading_after_an_intro_is_not_a_section`, and `test_repeated_title_heading_is_dropped` now asserts `.section`, not only `.text`.
+3. **Later staff posts were ingested as notes** (media). Fixed: `_extract_body` returns the first staff `.content`; later staff posts are conversation. Test: `test_later_staff_posts_are_not_notes` with `two_staff_posts_thread.html`.
+4. **Tables and nested blocks were flattened without separators** (media). Fixed: block-aware rendering; table rows render as `Skill | Before | After` lines, nested paragraphs keep their boundaries, and a block is never joined to the previous word. Test: `test_renders_tables_and_nested_blocks_as_lines`.
+5. **Capture date came from the mtime** (media). Fixed: `LocalFileFetcher` requires a sidecar `<snapshot>.meta.json` with `captured_at` as an ISO 8601 datetime with timezone and fails loud when it is missing, malformed, date-only or timezone-free; the mtime is ignored. Tests: `TestCaptureMetadata` (7 cases).
+6. **An empty heading aborted the document** (low). Fixed: empty, `&nbsp;`-only and punctuation-only headings are skipped instead of raising. Test: `test_empty_headings_are_skipped`.
+7. **The JSON repository returned duplicate ids** (low). Fixed: the loader rejects a repeated `chunk_id` with `ChunkRepositoryLoadError` naming it. Test: `test_rejects_duplicate_chunk_ids`.
+8. **README said ingestion did not exist** (low). Fixed: the status line and roadmap now name the first ingestion slice and the still-pending HTTP fetcher.
+9. **No composition test** (low). Fixed: `tests/unit/ingestion/test_ingest_patch_notes_pipeline.py` wires the real `LocalFileFetcher`, `PatchNotesParser`, `JsonChunkRepository` and `InMemoryPatchCatalog` over `full_020_thread.html`, asserts the three catalog-approved chunks and their `captured_at`, and pins that a second run is a byte-identical no-op.
+10. **The Risk line omitted the new dependency** (low). Fixed: the close record now classifies the slice as `Risk: item 5` for the production dependency `beautifulsoup4>=4.15.0`.
+
+### Review findings
+
+1. **Duplicate section slugs aborted the whole document** (high). Fixed: the parser merges sections that resolve to the same slug in document order, including the synthetic `overview` with a real `Overview` heading; deeper headings still stay inside their section. `IngestSource` keeps `DuplicateChunkIdError` as a safety net. Tests: `test_duplicate_sections_are_merged`, covering repeated headings and two headings that slugify alike.
+2. **Nested blocks and tables were concatenated** (media). Same fix as QA-4; the table fixture pins the exact line text.
+3. **Version detection took the first numeric token** (media). Fixed: `_extract_version` tries every candidate and keeps the first that `PatchVersion.parse` accepts, so `Path of Exile 2 – 0.5.0 Patch Notes` detects `0.5.0`; when none parses, the first candidate is reported and `0.5.5e` remains unparseable. Test: `test_finds_the_patch_version_after_another_number`.
+4. **The real 0.5.5e snapshot is not ingestable** (media, scope). Decision recorded instead of widened silently: suffix support is out of scope for this slice because ordering `0.5.5d` < `0.5.5e` needs an explicit ADR-level model, not a mapping that merges distinct patches. §10 keeps the risk and the next task targets numeric threads.
+5. **Multiple staff posts were documented but untested** (media). Fixed by making the behavior explicit and testing it: only the first staff post is the notes, and the second is ignored (`two_staff_posts_thread.html`).
+6. **Removed sections are never pruned** (media-low). Accepted as explicit debt, not silently fixed: the repository port expresses upsert, not document scope, so a purge would be a destructive product decision. §5.2 step 6 and §10 record it.
+7. **The parser ignored `source_type`** (low). Fixed: `UnsupportedSourceTypeError` rejects any type other than `patch_notes`. Test: `TestSourceType`.
+8. **mtime made citations fragile** (low). Fixed by the sidecar (QA-5).
+
+### Decisions that supersede L2
+
+- L2 said multiple staff posts are concatenated; round 1 changed the model to **first staff post only** after QA-3 and review-5.
+- L2 said `LocalFileFetcher` uses the mtime as `fetched_at`; round 1 replaced it with the **required sidecar** after QA-5 and review-8.
+- L2 said duplicate section slugs are emitted and left to `IngestSource`; round 1 makes the parser **merge** them (review-1/high), with the application guard as a safety net.
+- The suffix-version limitation remains an explicit non-goal and a §10 risk; extending `PatchVersion` is a separate decision.
 
 ## Log
 

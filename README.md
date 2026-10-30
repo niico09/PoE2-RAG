@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches y el caso de uso `AnswerQuestion` con sus puertos de consulta existen con tests unitarios (con *fakes*); los adaptadores de recuperación y generación, la ingesta y la CLI todavía no.
+> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta y el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, los adaptadores de recuperación y generación y la CLI todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -122,6 +122,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [ ] Conseguir acceso autorizado a poe2wiki.net.
 - [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
+- [x] Primer corte de ingesta: notas de parche oficiales → chunks validados y persistidos (`IngestSource`, `ChunkRepository` JSON, fetcher de snapshots con metadatos y parser del foro) con fixtures mínimas. La ingesta HTTP queda pendiente.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
