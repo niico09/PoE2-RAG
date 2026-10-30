@@ -42,6 +42,13 @@ DEFAULT_LLM_MODEL = "claude-sonnet-5-5"
 DEFAULT_LLM_MAX_TOKENS = 1024
 DEFAULT_LLM_EFFORT = "medium"
 
+LLM_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+"""The reasoning depths the generation adapter accepts. Validated here so a typo fails at startup.
+
+`tests/unit/test_config.py` pins this set to the adapter's own `_EFFORTS`: the adapter is the authority
+on what the API takes, and a drift between the two must break a test instead of a first `ask`.
+"""
+
 _PATHS = ("raw_dir", "processed_dir", "index_dir", "patch_catalog_path")
 _TEXT_FIELDS = ("embedder_model_id", "reranker_model_id", "llm_model", "llm_effort")
 
@@ -88,6 +95,10 @@ class AppConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or is_blank(value):
                 raise ConfigurationError(f"{name} must be a non-blank string, got {value!r}")
+        if self.llm_effort not in LLM_EFFORTS:
+            raise ConfigurationError(
+                f"llm_effort must be one of {sorted(LLM_EFFORTS)}, got {self.llm_effort!r}"
+            )
         max_tokens = self.llm_max_tokens
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ConfigurationError(f"llm_max_tokens must be a positive int, got {max_tokens!r}")
@@ -113,7 +124,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> AppConfig:
         reranker_model_id=_text(source, RERANKER_MODEL_VARIABLE, DEFAULT_RERANKER_MODEL),
         llm_model=_text(source, LLM_MODEL_VARIABLE, DEFAULT_LLM_MODEL),
         llm_max_tokens=_positive_int(source, LLM_MAX_TOKENS_VARIABLE, DEFAULT_LLM_MAX_TOKENS),
-        llm_effort=_text(source, LLM_EFFORT_VARIABLE, DEFAULT_LLM_EFFORT),
+        llm_effort=_choice(source, LLM_EFFORT_VARIABLE, DEFAULT_LLM_EFFORT, LLM_EFFORTS),
     )
 
 
@@ -122,6 +133,23 @@ def _text(source: Mapping[str, str], variable: str, default: str) -> str:
     value = source.get(variable)
     if value is None or is_blank(value):
         return default
+    return value
+
+
+def _choice(
+    source: Mapping[str, str], variable: str, default: str, allowed: frozenset[str]
+) -> str:
+    """Return the override for `variable` when it is one of `allowed`, or `default` when it is unset.
+
+    The check runs here *and* in `AppConfig.__post_init__` on purpose: this path can name the variable
+    the operator typed, which is the message that actually helps, while the value object still refuses
+    an unusable value built by hand.
+    """
+    value = _text(source, variable, default)
+    if value not in allowed:
+        raise ConfigurationError(
+            f"{variable} must be one of {sorted(allowed)}, got {value!r}"
+        )
     return value
 
 

@@ -21,7 +21,7 @@ from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
 from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     DEFAULT_MODEL_NAME,
 )
-from poe2_rag.config import AppConfig, ConfigurationError, load_config
+from poe2_rag.config import LLM_EFFORTS, AppConfig, ConfigurationError, load_config
 
 PROJECT_ROOT = Path("/srv/poe2-rag")
 
@@ -152,12 +152,35 @@ def test_direct_construction_resolves_relative_paths_against_the_project_root() 
     assert config.patch_catalog_path == PROJECT_ROOT / "config/patches.toml"
 
 
-@pytest.mark.parametrize(("field", "value"), [("llm_max_tokens", 0), ("llm_effort", "")])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("llm_max_tokens", 0), ("llm_effort", ""), ("llm_effort", "medium-high")],
+)
 def test_direct_construction_validates_every_value_it_was_given(field: str, value: object) -> None:
     with pytest.raises(ConfigurationError) as raised:
         AppConfig(**values(**{field: value}))  # type: ignore[arg-type]
 
     assert field in str(raised.value)
+
+
+def test_an_unknown_llm_effort_names_the_variable() -> None:
+    """A typo in the depth must fail while the configuration is read, naming what was typed.
+
+    The adapter would reject it later anyway, but by then the operator is three stages away from the
+    variable they edited; validating here is what S1 asks for.
+    """
+    with pytest.raises(ConfigurationError) as raised:
+        resolve(POE2_RAG_LLM_EFFORT="medium-high")
+
+    assert "POE2_RAG_LLM_EFFORT" in str(raised.value)
+    assert "medium-high" in str(raised.value)
+
+
+def test_the_effort_set_matches_the_adapter_that_has_to_accept_it() -> None:
+    """One closed set, two readers: the adapter owns it, this configuration must not drift from it."""
+    from poe2_rag.answering.adapters.outbound.llm.claude_language_model import _EFFORTS
+
+    assert LLM_EFFORTS == frozenset(_EFFORTS)
 
 
 def test_the_configuration_is_frozen() -> None:
