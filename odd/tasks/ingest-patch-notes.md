@@ -91,7 +91,7 @@ states.
 - [x] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
 - [x] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
 - [x] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
-- [ ] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
+- [x] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
 - [ ] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: inline. S6, S7.
 - [ ] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
 - [ ] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
@@ -140,7 +140,16 @@ states.
     file is removed, and a failed first write leaves the directory empty.
   - Insertion order and the position of an updated `chunk_id` are part of the contract, so a JSON diff
     stays stable across upserts.
-- T5: pending.
+- T5: RED → 1 collection error, `ModuleNotFoundError: No module named
+  'poe2_rag.ingestion.adapters.outbound.local_file_fetcher'`, 0 tests run (12 written). GREEN → 12
+  passed; full suite **508 passed**.
+  - `fetched_at` comes from the snapshot's mtime in UTC, pinned by `os.utime`, so the citation date is
+    the capture date instead of the read date.
+  - The locator is echoed verbatim: the parser needs the original path for its report and recovers the
+    thread URL from the document when the locator is not a URL.
+  - Missing files, non-UTF-8 bytes and directories raise `LocalSnapshotError(RuntimeError)`, the same
+    environment-failure boundary as the catalog and repository load errors. An empty file is fetched,
+    not rejected: the parser owns the "empty document" rule.
 - T6: pending.
 - T7: pending.
 - T8: pending.
@@ -153,6 +162,7 @@ states.
   deliverable; each commit is green on its own, so native review can take either one.
 - Slice 2: T3 (use case, errors, fakes and tests).
 - Slice 3: T4 (JSON repository, contract suite and adapter tests).
+- Slice 4: T5 (local snapshot fetcher).
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
