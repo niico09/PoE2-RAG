@@ -90,7 +90,7 @@ states.
 - [x] T1 — Branch `feat/ingest`, feature doc, Engram mirror. Route: inline. S12.
 - [x] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
 - [x] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
-- [ ] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
+- [x] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
 - [ ] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
 - [ ] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: inline. S6, S7.
 - [ ] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
@@ -127,7 +127,19 @@ states.
     `src/poe2_rag/shared/domain/entity_ref.py`, outside the prompt's edit surfaces; the shared test that
     enumerates that vocabulary gained the matching value. Without it the modelling decision of S8 cannot
     be represented at all.
-- T4: pending.
+- T4: RED → 2 collection errors, `ModuleNotFoundError: No module named
+  'poe2_rag.ingestion.adapters.outbound.json_chunk_repository'`, 0 tests run (38 cases written: 24
+  contract, 14 adapter). GREEN → 38 passed; full suite **496 passed**.
+  - The in-memory implementation inside the contract file is the executable specification: the same 12
+    scenarios run against both it and `JsonChunkRepository` (24 cases). The round-trip chunk carries text
+    with a newline, an em dash and quotes, tags, two modifiers and a closed validity range, so equality
+    of the frozen dataclass proves every field survived.
+  - `save` reads the corpus before merging: a corrupt file stops the write instead of dropping the chunks
+    it could not decode. An empty `save` is a true no-op (no read, no rewrite).
+  - Atomicity is proven by patching `os.replace`: the previous file keeps its exact bytes, the temporary
+    file is removed, and a failed first write leaves the directory empty.
+  - Insertion order and the position of an updated `chunk_id` are part of the contract, so a JSON diff
+    stays stable across upserts.
 - T5: pending.
 - T6: pending.
 - T7: pending.
@@ -140,6 +152,15 @@ states.
   the ~400-line review slice because the user's rule is one commit per task and the plan is a required
   deliverable; each commit is green on its own, so native review can take either one.
 - Slice 2: T3 (use case, errors, fakes and tests).
+- Slice 3: T4 (JSON repository, contract suite and adapter tests).
+
+## Tooling notes
+- The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
+  the suite is green). The authoritative checks in this worktree are `uv run pytest -q`, bare
+  `uvx pyright==1.1.414 <paths>` and `uvx ruff check --select I`; all three are run at close. The lens
+  also cannot resolve `import pytest` (its analysis loads no project configuration, documented in
+  `odd/tasks/answer-question.md`) and emits `no-sql-in-code-execute` advisories on `.execute` method
+  calls, a documented false-positive class: this repository has no SQL, cursor or database call.
 
 ## Close
 - Pending.
