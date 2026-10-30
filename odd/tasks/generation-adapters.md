@@ -79,15 +79,15 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
 - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with'` → 0.
 
 ## Tasks
-- [ ] T1 — Branch `feat/generation-adapters`, feature doc, `uv add anthropic`, verify the installed
+- [x] T1 — Branch `feat/generation-adapters`, feature doc, `uv add anthropic`, verify the installed
   SDK shapes and the documented custom-http-client injection. Route: inline. S2, S5, S8, S9.
 - [x] T2 — `CrossEncoderReranker` unit tests then the adapter. Route: inline. S1, S10.
 - [x] T3 — `ClaudeLanguageModel` unit tests then the adapter. Route: inline. S2–S7, S9.
-- [ ] T4 — Integration reranker test and the `live` Claude test (written, never run). Route: inline.
+- [x] T4 — Integration reranker test and the `live` Claude test (written, never run). Route: inline.
   S11, S12.
-- [ ] T5 — Docs: `docs/adr/0005-llm-por-api.md`, `docs/architecture.md` §5.1 steps 5–8, pytest
+- [x] T5 — Docs: `docs/adr/0005-llm-por-api.md`, `docs/architecture.md` §5.1 steps 5–8, pytest
   markers. Route: inline. S14.
-- [ ] T6 — Full suite, integration run, close the record. Route: inline. S13, S15, S16.
+- [x] T6 — Full suite, integration run, close the record. Route: inline. S13, S15, S16.
 
 ## Log
 - **L1 (user request, verbatim):**
@@ -250,13 +250,185 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
     type imports come from `anthropic.types.beta`.
   - Error mapping is asserted through `__cause__`: a 401, a 429, a 400 and a 500 each become their own
     adapter error class wrapping the SDK exception, and a `httpx2.ConnectError` raised by the transport
-    becomes `LanguageModelConnectionError` wrapping `anthropic.APIConnectionError`. Refusal wins over
-    truncation when both could apply.
+    becomes `LanguageModelConnectionError` wrapping `anthropic.APIConnectionError`. The refusal-before-
+    truncation order is structural (two ordered `if`s) and not exercisable from a response, since a
+    response carries one `stop_reason`; the case that pretended to prove it was removed in the QA round.
   - The system prompt is pinned by the rules it must state (documents only, cite every claim, the fixed
     sentence, no outside knowledge), not by a byte-for-byte copy of itself: the first attempt copied
     the text and failed on whitespace, which is exactly the fragility the rule-based assertions avoid.
   - `NO_INFORMATION_TEXT` is imported from the application layer, so the model's "no information"
     sentence and the use case's unsupported answer are the same string (see L3).
+- T4: the integration suite found a **real defect** on its first run (`2 failed, 7 passed`):
+  `CrossEncoder.predict` returns a `numpy.ndarray` of `float32`, which is iterable but is **not** a
+  `collections.abc.Sequence`, so the adapter's guard rejected the one shape the real model produces.
+  RED was observed before the fix with a unit case that feeds a `dtype=float32` array through a stub
+  that returns it untouched (`1 failed, 32 passed`); the fix accepts anything iterable and converts each
+  value with `float` (rejecting `str`, `bytes` and `bool` first), plus a case for a non-iterable return.
+  Reranker unit suite → **36 passed**.
+  - Second integration run: `8 passed, 1 failed`, and the failure was the test, not the adapter: it
+    pinned the exact order of the two chunks that are unrelated to the question. Narrowed to "the
+    obviously relevant chunk is first and the other two are the rest", because where two irrelevant
+    chunks land is the model's business and pinning it would fail on a model update for no reason.
+    Third run: `uv run pytest -q -m integration` → **9 passed, 905 deselected in 10.64s** (first run
+    downloaded the model).
+  - The `live` suite is written and collected but never executed: `uv run pytest -q -m live
+    --collect-only` → **1 test collected, 913 deselected**. It skips itself when `ANTHROPIC_API_KEY` is
+    absent, generates one real cited answer and closes the loop through `Answer.build`.
+  - `pyproject.toml` now excludes both markers by default (`-m "not integration and not live"`) and
+    registers `live`; `pytest -m integration` and `pytest -m live` still override that, which the runs
+    above prove.
+- T5: documentation only, no RED applicable. `docs/adr/0005-llm-por-api.md`: the "pendiente al
+  implementar" consequence is gone, replaced by the verified shapes (custom content document, citations
+  on all documents or none, `content_block_location` fields, the Sonnet 5.5 fallback scope, no sampling
+  controls, `effort` instead of `temperature`, citations incompatible with structured output).
+  `docs/architecture.md` §5.1 steps 5–8 now describe the implemented reranker and generation rules
+  (including the shared "no information" sentence and the adapter-level response error), §7 shows
+  `rerank/` and `llm/` and states the import boundary for the three outbound folders, and §8 records the
+  real-SDK-with-fake-transport strategy plus the three test levels (default, `integration`, `live`).
+  The `docs/` prose stays Spanish because the whole file and every ADR are Spanish: an English section
+  inside a Spanish document would hurt the reader more than it serves the rule (see the report).
+
+## Delivery slices
+The delivery strategy for this feature is fixed by the user: **one Conventional Commit per task**, so a
+task is not split to fit the ~400-line heuristic. Recorded boundaries:
+
+- slice 1 — setup and reranker: T1 `7f5e4c5`, T2 `3436978` (828 authored lines with lock files excluded).
+- slice 2 — Claude adapter: T3 `c19e617` (910 authored lines).
+- slice 3 — model and API suites: T4.
+- slice 4 — documentation: T5, closing with T6.
 - **L4 (decision, parent):** the adapter raises its own errors for a refused, truncated or malformed
   response before `GeneratedAnswer` is constructed, so an application-layer
   `InvalidGeneratedAnswerError` never leaks out of an adapter.
+
+- T6: close. Final verification, all commands from the repository root:
+  - `uv run pytest -q` → **904 passed, 10 deselected in 2.21s** (baseline on `main`: 823 passed,
+    **+81**; 36 reranker + 45 Claude cases).
+  - `uv run pytest -q -m integration` → **9 passed, 905 deselected in 10.72s** (6 pre-existing dense
+    cases + 3 reranker cases).
+  - `uv run pytest -q -m live --collect-only` → **1 test collected, 913 deselected**; the live suite was
+    written and never executed (S12).
+  - `uvx ruff check --select I src tests` → `All checks passed.`
+  - `uvx pyright==1.1.414` (whole workspace, repo config) → `0 errors, 0 warnings, 0 informations`. The
+    two `cast`s in `_require_scores` exist for that: `hasattr(raw, "__iter__")` narrows nothing for a
+    type checker, and the values are `numpy.float32`-shaped, not `float`.
+  - Import boundary: `grep -rl "anthropic\|sentence_transformers" src` → the three adapter modules and
+    nothing else (`dense/bge_embedder.py` and `rerank/cross_encoder_reranker.py` import
+    `sentence_transformers` lazily, `llm/claude_language_model.py` imports `anthropic`). The same grep
+    over `answering/domain`, `answering/application`, `ingestion` and `shared/domain` → empty.
+  - Secrets: `grep -rn "os.environ\|getenv\|api_key\|print(\|logging" src/poe2_rag/answering/adapters/`
+    → empty. The adapters never read the environment and never log a request.
+  - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with'` → `0`.
+  - `git ls-remote --heads origin feat/generation-adapters` → nothing; nothing was pushed and no PR was
+    opened.
+  - Environment note, same class the dense feature recorded: the editor analyzer keeps reporting
+    unresolved `poe2_rag` imports and an import-order error for the new test files from its session
+    cache. Proof they are stale: `lens_diagnostics source=lsp scope=paths` over the four files →
+    `clean=4, findings=0`; `uv run pytest` imports and runs every one of them; `uvx ruff check --select I`
+    passes; `uvx pyright` over the workspace reports 0 errors.
+
+## Deviations from the request
+1. **`docs/` stays Spanish**, even though the request asked for docs in English: `docs/adr/*.md` and
+   `docs/architecture.md` are Spanish end to end, and an English section inside them would read worse
+   than the rule it breaks. The feature record, the module docstrings, the test docstrings and every
+   commit message are in English as asked.
+2. **The installed SDK is `anthropic` 2.3.0, not 1.x.** The request's note said 1.x on httpx2; the
+   installed version is 2.3.0 and still on httpx2 (never `httpx`). Every name the adapter uses was read
+   from the installed package before being used: `fallbacks` and `betas` on
+   `client.beta.messages.create`, `BetaMessage` at `anthropic.types.beta`, `output_config.effort` in
+   `low|medium|high|xhigh|max`, and the error classes used for the mapping.
+3. **One extra `fix` commit** (`88eddeb`): the integration suite proved the adapter rejected the
+   `numpy.ndarray` the real `CrossEncoder` returns. It was fixed test-first, with RED observed, as
+   recorded in T4. Six tasks, seven commits.
+4. **`CrossEncoderReranker` takes an optional `scorer=` keyword** beyond the requested signature, so
+   the default suite can inject a fake scorer (S10) without monkeypatching a private loader. The lazy
+   `_load_scorer` path is still exercised by its own case and by the integration suite.
+5. **The live test was not run**, as instructed: it exists, is marked `live`, is excluded by `addopts`
+   and skips itself without `ANTHROPIC_API_KEY`.
+
+## Per-spec verdict
+- S1 ✅ `CrossEncoderReranker(model_name="BAAI/bge-reranker-base", device="cpu", batch_size=32)` loads
+  `CrossEncoder` lazily, scores `(text, chunk.text)` pairs in candidate order, returns the best `limit`
+  with `scores.rerank` added and the earlier stages preserved, breaks ties by ascending `chunk_id`,
+  returns `()` for no candidates without touching the model and raises on `limit <= 0`. 36 cases plus 3
+  against the real model.
+- S2 ✅ `ClaudeLanguageModel(client, model="claude-sonnet-5-5", max_tokens=1024, effort="medium")`, client
+  injected, no environment access anywhere in the module.
+- S3 ✅ One custom content document per delivered chunk in context order, `title` = `chunk_id`,
+  `context` = entity name + patch validity + source URL, one text block per non-empty line, question last.
+- S4 ✅ `SYSTEM_PROMPT` is a frozen module constant stating documents-only, cite-every-claim, the fixed
+  `NO_INFORMATION_TEXT` sentence and no outside knowledge; the request sends exactly it.
+- S5 ✅ `fallbacks="default"` and `betas=["server-side-fallback-2026-07-01"]`; no `temperature`, `top_p`,
+  `top_k`, `thinking`, and no `output_config.format`. Asserted on the serialized body.
+- S6 ✅ Refusal then `max_tokens` then assembly; text blocks concatenated, thinking and fallback blocks
+  ignored, citations mapped by `document_index` to `chunk_id` with `cited_text` as `quoted_text`; unknown
+  types, out-of-range indexes and empty quotes raise `LanguageModelResponseError`; nothing is filtered.
+- S7 ✅ Authentication, rate limit, other API status and connection map to four adapter errors under
+  `LanguageModelError`, asserted through `__cause__`, with no retry of the adapter's own.
+- S8 ✅ `uv add anthropic` (`anthropic==2.3.0`, `sniffio`, `jiter`, `docstring-parser`); domain and
+  application import no third-party package.
+- S9 ✅ Real `anthropic.Anthropic` over `httpx2.MockTransport` with `max_retries=0`; every requested case
+  is covered (cited mapping, concatenation, thinking, unsupported answer, refusal, `max_tokens`, unknown
+  citation type, out-of-range index, SDK error mapping) plus the request-shape cases.
+- S10 ✅ Injected fake scorer: ordering, tie-break, limit, preserved scores, scoring pairs and batch size.
+- S11 ✅ `uv run pytest -q -m integration` → 9 passed; the real cross-encoder ranks the obviously relevant
+  chunk first and its scores are finite and ordered.
+- S12 ✅ The live suite exists, is collected under `-m live`, and was never run.
+- S13 ✅ RED observed for both adapters before writing them; the numpy defect was reproduced with a
+  failing unit case before the fix; nothing in the adapters logs or prints a body or a key.
+- S14 ✅ ADR-0005's pending consequence is gone and the verified facts are recorded.
+- S15 ✅ English artifacts (except the `docs/` prose, see Deviation 1); ~400 lines was a heuristic only.
+- S16 ✅ Out of scope stayed out: no `bootstrap.py`, CLI, `.env`, prompt caching or evaluation change.
+
+## QA round 1 — findings applied
+- **ALTO, malformed 200 body leaked raw `AttributeError`/`TypeError`.** Reproduced with the real client
+  and `httpx2.MockTransport`. Three different things were happening, and each now maps to
+  `LanguageModelResponseError`:
+  - the SDK hands back whatever non-object sits in `content` (an `int`, a `str`), so a block without a
+    `type` is no longer skipped as "not text": `_block_type` rejects it;
+  - the SDK iterates the body while parsing, so a missing `content` array raises a raw `TypeError`
+    inside `create()`; `_send` now translates `TypeError`/`AttributeError` from that call;
+  - the SDK leaves a malformed `content` alone when it is a string; `_content_blocks` requires a
+    sequence, and a `text` that is not a `str` raises.
+  The suite covers five shapes (`string`, `missing`, `int-block`, `list-text`, `sole-int`) plus the
+  non-sequence citations guard. `_send` also gained the catch-all the finding asked for:
+  `anthropic.APIResponseValidationError` (which is an `APIError`, not an `APIStatusError`) →
+  `LanguageModelResponseError`, and any other `anthropic.APIError` → `LanguageModelAPIError`, so no raw
+  SDK error can escape the adapter.
+- **ALTO, a citation could lend one chunk's words to another.** `Answer.build` only compares `chunk_id`
+  against the delivered set, so an in-range `document_index` with a foreign `cited_text` produced
+  `supported=True`. The adapter now refuses to build a `Citation` whose `cited_text` is not the text of
+  the chunk its index names (`_quotes_chunk`), which raises `LanguageModelResponseError`. The comparison
+  removes every whitespace character from both sides, because the API joins the cited block range and
+  the separators between blocks are the API's, not the chunk's: exact about the words, tolerant about
+  the join. Two cases pin it — a foreign quote is rejected, a multi-line quote joined with `\n` is
+  accepted — and the docstring of `generate` states the rule.
+- **MEDIO, error taxonomy.** `LanguageModelError` is a `ValueError` again, like `DomainError`,
+  `AnswerQuestionError`, `EmbedderError`, `VectorIndexError`, `LexicalIndexError` and `RerankerError`,
+  and the upstream failures hang from a sibling `LanguageModelRuntimeError(RuntimeError)` exactly like
+  `RerankScoringError`. `LanguageModelConfigurationError` and `LanguageModelRequestError` are `ValueError`
+  subclasses again; refusal, truncation, response, authentication, rate limit, API and connection are
+  `RuntimeError` subclasses. Two parametrized cases assert both sides of the split.
+- **BAJO, `_lines` stripped text it promised to keep exact.** `line.strip()` is gone: only
+  whitespace-only lines are dropped, so the block carries the chunk's own text and `cited_text` stays a
+  substring of it (which is what the new citation check compares against). The unit case now expects
+  `"  Chains to 2 enemies.  "` verbatim.
+- **BAJO, `llm/` had no `__init__.py`.** Added with the same kind of docstring as `dense/` and `rerank/`.
+- **BAJO, T1 was unchecked in a closed record.** Marked `[x]`; the commit it points at is `7f5e4c5`.
+- **BAJO, `httpx2` was only a transitive dependency.** Declared in `[dependency-groups].dev`
+  (`httpx2>=2.16.0`), so the suite does not depend on `anthropic`'s transport choice to import it.
+- **BAJO, two tests did not prove their names.** (1) `test_a_refusal_is_reported_before_a_truncation`
+  fed a single `stop_reason`, so it only repeated the refusal case: removed, and the record now says the
+  precedence is structural. (2) The integration case asserted
+  `first > second > 0 or first < second < 0`, which any two distinct scores satisfy: it now asserts the
+  whole ranking is strictly decreasing (`ordered == sorted(ordered, reverse=True)` and no repeated
+  values).
+- **BAJO, the last commit mixed docs and production code.** `f21ab04` carried a typing-only change
+  (`Iterable` import plus `cast(Iterable[Any], raw)`). It was split out as its own
+  `refactor(answering): ...` commit before the record commit, so the history can still be read by type.
+
+Re-verified after the round:
+- `uv run pytest -q` → **919 passed, 10 deselected in 2.27s**.
+- `uv run pytest -q -m integration` → **9 passed, 920 deselected in 10.84s**.
+- `uvx ruff check --select I src tests` → `All checks passed.`
+- `uvx pyright==1.1.414` → `0 errors, 0 warnings, 0 informations`.
+- The live suite still exists, is collected by `-m live` and was never executed.
