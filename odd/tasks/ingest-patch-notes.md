@@ -208,7 +208,7 @@ states.
   commit, so the slice is one parent commit.
 - Slice 6: T7 (architecture decisions, one documentation commit).
 - Slice 7: T8 (close: one documentation commit with the final evidence and per-spec verdict).
-- Round 1: `f4f6757` parser hardening, `8a784da` snapshot identity and corpus guards, `94b6198` pipeline composition test, plus the documentation commit that carries this record. The parser commit is one reviewable unit above 400 lines because its fixtures and the tests that pin them are the same behavior.
+- Round 1: `f4f6757` parser hardening, `8a784da` snapshot identity and corpus guards, `94b6198` pipeline composition test, `0d9c562` heading-map cleanup, plus the documentation commit that carries this record. The parser commit is one reviewable unit above 400 lines because its fixtures and the tests that pin them are the same behavior.
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
@@ -223,7 +223,9 @@ states.
   `tests/unit/shared/domain/test_entity_ref.py` was marked false-positive with `lens_diagnostic_mark`,
   not suppressed in code. The automated pass also replayed T3 RED snapshots (unknown symbols that exist
   and pass) and the SQL advisories; the only variable that still triggered the latter was renamed from
-  `source` to `ingest` in the test that calls `.execute`.
+  `source` to `ingest` in the test that calls `.execute`. The canonical `lsp` / `Pyright:reportMissingImports`
+  mark is the one that matched the strict anchor; the earlier `Pyright` / `reportMissingImports` spelling did
+  not. The `int()` advisory on the parser was removed with the heading-level map.
 
 ## Close
 - Final `uv run pytest -q` → **550 passed** (baseline before the feature: 419; **+131 tests**: 130 ingestion cases plus the `EntityRef` kind case).
@@ -256,7 +258,8 @@ states.
 ## Round 1 — QA and review findings
 
 Every finding was reproduced against the shipped code before changing anything. Reproduced, fixed and
-pinned by a named test unless the entry says otherwise.
+pinned by a named test unless the entry says otherwise. The round is four behavior/test commits plus a
+small heading-level map cleanup.
 
 ### QA findings
 
