@@ -234,3 +234,19 @@ def test_an_injected_language_model_replaces_the_sdk_entirely(
 def test_the_default_retrieval_budget_is_monotone() -> None:
     """The budgets are wiring, not policy: `final_top_k` may never exceed `rerank_top_m`."""
     assert DEFAULT_RETRIEVAL_SETTINGS.final_top_k <= DEFAULT_RETRIEVAL_SETTINGS.rerank_top_m
+
+
+def test_no_field_of_the_container_retains_the_api_key(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """The environment must not be kept, only the fact that the key was there.
+
+    Keeping the mapping would put the credential in an attribute of the object every command holds,
+    one `repr`, one log line or one traceback frame away from a terminal. The container therefore
+    reduces the environment to a presence flag while it is being built.
+    """
+    container = build(config, environ={"ANTHROPIC_API_KEY": API_KEY})
+    _ = container.answer_question
+
+    for slot in Container.__slots__:
+        assert API_KEY not in repr(getattr(container, slot)), slot

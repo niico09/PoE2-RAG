@@ -83,7 +83,7 @@ class Container:
         "_client_factory",
         "_config",
         "_embedder",
-        "_environ",
+        "_has_api_key",
         "_ingest_source",
         "_language_model",
         "_lexical_index",
@@ -102,8 +102,10 @@ class Container:
         language_model: LanguageModel | None = None,
     ) -> None:
         self._config = config
-        # Only the presence of the key is ever consulted; the value is never read, copied or logged.
-        self._environ = os.environ if environ is None else environ
+        # The environment is reduced to one flag while the container is built: the mapping itself is
+        # not retained, so the credential cannot travel in an attribute that a repr, a log line or a
+        # traceback frame would print. Only presence is ever consulted; the value is never read.
+        self._has_api_key = not is_blank((os.environ if environ is None else environ).get(API_KEY_VARIABLE))
         self._client_factory = (
             _default_anthropic_client if client_factory is None else client_factory
         )
@@ -223,11 +225,11 @@ class Container:
     def _require_api_key(self) -> None:
         """Fail before retrieval when generation has no credential, and never echo the value.
 
-        Asking for the answer is what needs the key, so the check runs here and not at construction:
-        `ingest` has to work on a machine that never calls the API. Raising before the first port call
-        keeps a missing key from paying for an embedding, two index scans and a rerank.
+        Asking for the answer is what needs the key, so the presence flag is *checked* here and not at
+        construction: `ingest` has to work on a machine that never calls the API. Raising before the
+        first port call keeps a missing key from paying for an embedding, two index scans and a rerank.
         """
-        if is_blank(self._environ.get(API_KEY_VARIABLE)):
+        if not self._has_api_key:
             raise MissingApiKeyError(
                 f"{API_KEY_VARIABLE} is not set. Export it, or pass it with "
                 f"`uv run --env-file .env ...` (see .env.example)."
