@@ -15,31 +15,74 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from poe2_rag.answering.adapters.outbound.dense.bge_embedder import BgeEmbedder
-from poe2_rag.answering.adapters.outbound.dense.chroma_index import ChromaVectorIndex
-from poe2_rag.answering.adapters.outbound.lexical.bm25_index import Bm25Index
+from poe2_rag.answering.adapters.outbound.dense.bge_embedder import (
+    BgeEmbedder,
+    EmbedderError,
+)
+from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
+    ChromaVectorIndex,
+    VectorIndexError,
+    VectorIndexReadError,
+    VectorIndexWriteError,
+)
+from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
+    Bm25Index,
+    LexicalIndexError,
+    LexicalIndexLoadError,
+    LexicalIndexWriteError,
+)
 from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     ClaudeLanguageModel,
+    LanguageModelError,
+    LanguageModelRuntimeError,
 )
 from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     CrossEncoderReranker,
+    RerankerError,
+    RerankScoringError,
 )
 from poe2_rag.answering.application import (
     AnswerQuestion,
+    AnswerQuestionError,
     LanguageModel,
     RetrievalSettings,
 )
-from poe2_rag.config import API_KEY_VARIABLE, AppConfig, MissingApiKeyError, load_config
+from poe2_rag.answering.domain.errors import InvalidQueryError
+from poe2_rag.config import (
+    API_KEY_VARIABLE,
+    AppConfig,
+    ConfigurationError,
+    MissingApiKeyError,
+    load_config,
+)
 from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
+    ChunkRepositoryLoadError,
+    ChunkRepositoryWriteError,
     JsonChunkRepository,
 )
-from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import LocalFileFetcher
-from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import PatchNotesParser
-from poe2_rag.ingestion.application import IngestSource, ReindexCorpus
-from poe2_rag.shared.adapters.outbound.toml_patch_catalog import TomlPatchCatalog
-from poe2_rag.shared.domain import is_blank
+from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import (
+    LocalFileFetcher,
+    LocalSnapshotError,
+)
+from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
+    PatchNotesParseError,
+    PatchNotesParser,
+)
+from poe2_rag.ingestion.application import (
+    IngestionError,
+    IngestSource,
+    RawDocument,
+    ReindexCorpus,
+    SourceFetcher,
+)
+from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
+    PatchCatalogLoadError,
+    TomlPatchCatalog,
+)
+from poe2_rag.shared.domain import PatchCatalog, is_blank
 
 if TYPE_CHECKING:
     from anthropic import Anthropic
@@ -53,10 +96,53 @@ DEFAULT_RETRIEVAL_SETTINGS = RetrievalSettings(
     rerank_top_m=20,
     final_top_k=5,
 )
-"""Per-stage budgets for the MVP: wide enough for both indexes, small enough for a cheap prompt.
+"""Per-stage budgets for the MVP: 50 lexical and 50 dense candidates, 20 fused and reranked, 5 delivered.
 
-No configuration variable exposes them yet, because the request that wired the CLI did not name one and
-a budget is policy rather than wiring. `RetrievalSettings` still validates the invariant.
+These are a policy choice, not a consequence of the wiring: they decide how much of the corpus the
+prompt can see, and the CLI feature was not allowed to invent a budget *variable*. They live here only
+because the composition root is the one place that must choose concrete values to build `AnswerQuestion`,
+and `tests/unit/test_bootstrap.py` pins each number so a change is a decision rather than an edit.
+`RetrievalSettings` independently validates the `final_top_k <= rerank_top_m` invariant.
+"""
+
+EXPECTED_ERRORS: tuple[type[Exception], ...] = (
+    # configuration: unusable values, an unreadable catalog file, the missing credential
+    ConfigurationError,
+    PatchCatalogLoadError,
+    # ingestion: the write path and the files it reads
+    IngestionError,
+    PatchNotesParseError,
+    LocalSnapshotError,
+    ChunkRepositoryLoadError,
+    ChunkRepositoryWriteError,
+    # answering: retrieval, the index rebuilds `ingest` performs through it, and the model that scored
+    # the candidates. `InvalidQueryError` is caught on purpose even though it also covers type
+    # invariants (`catalog must be a PatchCatalog`): its user-facing cases — a blank question or a
+    # well-formed version the catalog does not know — are the most likely input errors, and the domain
+    # offers no finer split yet. Every other domain error stays out and still propagates.
+    AnswerQuestionError,
+    InvalidQueryError,
+    LexicalIndexError,
+    LexicalIndexLoadError,
+    LexicalIndexWriteError,
+    VectorIndexError,
+    VectorIndexReadError,
+    VectorIndexWriteError,
+    EmbedderError,
+    RerankerError,
+    RerankScoringError,
+    # generation: the adapter's own failures, refusal and truncation included
+    LanguageModelError,
+    LanguageModelRuntimeError,
+)
+"""Every failure the wired adapters declare as operational, in one place the CLI can ask for.
+
+It lives in the composition root, not in the CLI, because only this module knows which adapters exist:
+a new adapter adds its errors here, and the inbound boundary keeps receiving a container instead of a
+list of hierarchies (ADR-0006, §7). A model that cannot load is deliberately *not* here: `BgeEmbedder`
+lets the loader's `OSError` escape, and catching `OSError` at the boundary would report a permission or
+disk fault as if it were a model problem. Closing that needs the loader wrapped in a dedicated adapter
+error first.
 """
 
 ClientFactory = Callable[[], "Anthropic"]
@@ -126,6 +212,11 @@ class Container:
         return self._config
 
     @property
+    def expected_errors(self) -> tuple[type[Exception], ...]:
+        """The failures the wired adapters declare as operational: what the CLI reports as one line."""
+        return EXPECTED_ERRORS
+
+    @property
     def patch_catalog(self) -> TomlPatchCatalog:
         """The patches `config/patches.toml` declares, and which one is current."""
         if self._patch_catalog is None:
@@ -188,7 +279,7 @@ class Container:
         """Fetch a local snapshot, parse it and upsert the chunks it produces."""
         if self._ingest_source is None:
             self._ingest_source = IngestSource(
-                fetcher=LocalFileFetcher(),
+                fetcher=_RawDirectoryFetcher(self._config.raw_dir, LocalFileFetcher()),
                 parser=PatchNotesParser(),
                 repository=self.chunk_repository,
                 catalog=self.patch_catalog,
@@ -234,6 +325,28 @@ class Container:
                 f"{API_KEY_VARIABLE} is not set. Export it, or pass it with "
                 f"`uv run --env-file .env ...` (see .env.example)."
             )
+
+
+class _RawDirectoryFetcher:
+    """Read a snapshot from the configured raw directory, so `POE2_RAG_RAW_DIR` is not a dead knob.
+
+    `LocalFileFetcher` reads the locator it is handed, relative to the working directory. Where snapshots
+    live is configuration, so it is resolved here in the composition root rather than in the adapter:
+    `ingest patch-notes patch-notes-0.1.1.html` finds the file under the configured raw directory from
+    any working directory, an absolute locator keeps working exactly as given, and the report echoes the
+    path that was actually read.
+    """
+
+    __slots__ = ("_fetcher", "_root")
+
+    def __init__(self, root: Path, fetcher: SourceFetcher) -> None:
+        self._root = root
+        self._fetcher = fetcher
+
+    def fetch(self, locator: str) -> RawDocument:
+        """Fetch `locator`, resolving a relative path against the raw directory."""
+        path = Path(locator)
+        return self._fetcher.fetch(str(path if path.is_absolute() else self._root / path))
 
 
 def _default_anthropic_client() -> Anthropic:

@@ -8,6 +8,8 @@ smallest shapes the wired adapters validate, not stand-ins for the pipeline.
 
 from __future__ import annotations
 
+import json
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -18,15 +20,18 @@ import pytest
 from poe2_rag.answering.adapters.outbound.dense import bge_embedder
 from poe2_rag.answering.adapters.outbound.rerank import cross_encoder_reranker
 from poe2_rag.answering.application import AnswerQuestion, LanguageModel
-from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, Container
+from poe2_rag.answering.domain.errors import InvalidQueryError
+from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, EXPECTED_ERRORS, Container
 from poe2_rag.config import AppConfig, MissingApiKeyError
 from poe2_rag.ingestion.application import (
+    EmptyCorpusError,
     IngestSource,
     LexicalIndexWriter,
     ReindexCorpus,
     VectorIndexWriter,
 )
 
+CLI_FIXTURES = Path(__file__).parents[1] / "fixtures" / "cli"
 HEAVY_MODULES = ("torch", "sentence_transformers")
 API_KEY = "sk-ant-not-a-real-key"
 
@@ -139,14 +144,25 @@ def test_building_the_container_loads_no_model_and_imports_no_heavy_package(
 
 
 def test_the_two_halves_share_one_adapter_per_port(config: AppConfig, no_model_load: None) -> None:
-    """`ReindexCorpus` writes and `AnswerQuestion` reads through the same instances."""
+    """`ReindexCorpus` writes and `AnswerQuestion` reads through the container's own instances.
+
+    The claim is about the collaborators the two use cases were built with, so the case reads those
+    slots. Asserting `container.embedder is container.embedder` would only prove that a property
+    memoizes: a `ReindexCorpus` built with its own `BgeEmbedder(...)` would still pass.
+    """
     container = build(config)
 
-    assert container.embedder is container.embedder
-    assert container.lexical_index is container.lexical_index
-    assert container.vector_index is container.vector_index
-    assert container.reindex_corpus is container.reindex_corpus
-    assert container.answer_question is container.answer_question
+    reindex = container.reindex_corpus
+    answer = container.answer_question
+
+    assert reindex._document_embedder is container.embedder
+    assert reindex._lexical_writer is container.lexical_index
+    assert reindex._vector_writer is container.vector_index
+    assert answer._embedder is container.embedder
+    assert answer._lexical_index is container.lexical_index
+    assert answer._vector_index is container.vector_index
+    assert answer._language_model is container.language_model
+    assert reindex is container.reindex_corpus and answer is container.answer_question
 
 
 def test_the_container_wires_the_configured_paths(config: AppConfig, no_model_load: None) -> None:
@@ -231,9 +247,51 @@ def test_an_injected_language_model_replaces_the_sdk_entirely(
     assert factory.calls == 0
 
 
-def test_the_default_retrieval_budget_is_monotone() -> None:
-    """The budgets are wiring, not policy: `final_top_k` may never exceed `rerank_top_m`."""
-    assert DEFAULT_RETRIEVAL_SETTINGS.final_top_k <= DEFAULT_RETRIEVAL_SETTINGS.rerank_top_m
+def test_the_retrieval_budget_pins_the_mvp_numbers() -> None:
+    """The budgets are a documented policy choice, so every number is pinned here.
+
+    A monotonicity assertion would be tautological: `RetrievalSettings.__post_init__` already refuses
+    `final_top_k > rerank_top_m`, so a violated value could not even be imported.
+    """
+    settings = DEFAULT_RETRIEVAL_SETTINGS
+
+    assert (settings.lexical_top_n, settings.dense_top_n) == (50, 50)
+    assert (settings.rerank_top_m, settings.final_top_k) == (20, 5)
+
+
+def test_the_expected_errors_are_the_operational_families_only() -> None:
+    """The boundary's contract is a selective list, never a base class that would swallow bugs."""
+    assert RuntimeError not in EXPECTED_ERRORS
+    assert ValueError not in EXPECTED_ERRORS
+    assert OSError not in EXPECTED_ERRORS
+    for family in (MissingApiKeyError, EmptyCorpusError, InvalidQueryError):
+        assert issubclass(family, EXPECTED_ERRORS)
+
+
+def test_a_relative_locator_resolves_against_the_raw_directory(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """`POE2_RAG_RAW_DIR` is a real knob, not a documented no-op.
+
+    `LocalFileFetcher` reads what it is handed, relative to the working directory; the composition root
+    resolves a relative locator against the configured raw directory, so a snapshot name works from any
+    directory and the report echoes the path that was actually read.
+    """
+    config.raw_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = config.raw_dir / "patch-notes-0.1.1.html"
+    shutil.copyfile(CLI_FIXTURES / "patch-notes-0.1.1.html", snapshot)
+    snapshot.with_name(snapshot.name + ".meta.json").write_text(
+        json.dumps({"captured_at": "2026-10-30T12:00:00+00:00"}), encoding="utf-8"
+    )
+
+    report = build(config).ingest_source.execute("patch-notes-0.1.1.html")
+
+    # The report echoes the locator as the operator wrote it; the run only succeeds because the
+    # snapshot was found under `raw_dir`, since no file of that name exists in the working directory.
+    assert report.locator == "patch-notes-0.1.1.html"
+    assert report.chunk_ids
+    assert snapshot.is_file()
+    assert not Path("patch-notes-0.1.1.html").exists()
 
 
 def test_no_field_of_the_container_retains_the_api_key(
