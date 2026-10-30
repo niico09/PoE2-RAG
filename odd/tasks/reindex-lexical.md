@@ -84,9 +84,10 @@ ingested chunks for the first time.
   S2, S9.
 - [x] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
 - [x] T5 — `Bm25Index` (rebuild, persistence, search), adapter unit tests and the reusable
-  `LexicalIndex` contract suite. Route: inline. S4, S5, S6, S9, S10.
+  `LexicalIndex` contract suite. Route: module delegated to `gentle-ai-worker`, tests and review inline.
+  S4, S5, S6, S9, S10.
 - [x] T6 — Documentation: `docs/architecture.md`. Route: inline. S11.
-- [ ] T7 — Close: full suite, import boundary, evidence, per-spec verdict. Route: inline. S9, S15.
+- [x] T7 — Close: full suite, import boundary, evidence, per-spec verdict. Route: inline. S9, S15.
 
 ## Delivery slices
 - The slice unit is one task (S14). T5 lands as one commit although it exceeds the ~400-line planning
@@ -188,3 +189,91 @@ ingested chunks for the first time.
   §5.1 step 2 now states that the BM25 adapter filters on domain objects while the integer encoding stays a
   Chroma detail, so the document no longer implies both adapters share one encoding. The document stays
   Spanish because the whole file is (same precedent as the previous feature).
+- T7: close. Final `uv run pytest -q` → **651 passed** (baseline on `main`: 550; **+101**: 99 cases in the
+  new suites plus the two port-conformance cases of T2). Per suite: `ReindexCorpus` 11, tokenizer 20,
+  BM25 adapter 40, `LexicalIndex` contract 28 (14 scenarios × 2 implementations), ingestion ports 24 (22
+  before).
+  - Integration sanity check (throwaway script, not committed): a real `JsonChunkRepository` file →
+    `ReindexCorpus` → `Bm25Index` used as the lexical index of `AnswerQuestion`, with stub embedder, vector
+    index, reranker and model. Report `2 chunks, UTC`; the answer was supported and the delivered context
+    held only the current chunk (`lexical ≈ 0.1823`) although the stale chunk repeated `spark` three times,
+    so the adapter satisfies the read contract the use case enforces (`StaleChunkError`, `MissingScoreError`,
+    `DuplicateChunkError` all stay quiet).
+  - `uvx pyright==1.1.414` (whole workspace, repo config, best effort, not a gate) → `0 errors, 0 warnings,
+    0 informations`. `uvx ruff check --select I` over the touched source and test trees → `All checks
+    passed`.
+  - Import boundary: `grep` over `ingestion/application` and `answering/application` shows only
+    `__future__` and the standard library; the lexical adapter imports only the standard library, the
+    domain, the tokenizer and the two ports. `grep` for `rank_bm25|numpy|scipy|bs4|requests|httpx` over the
+    new source → none; `git diff main..HEAD -- pyproject.toml uv.lock` is empty, so no dependency was added.
+  - Scope: `git diff --name-only main..HEAD` lists only the allowed surfaces, with no Chroma, `VectorIndex`,
+    `bootstrap.py`, CLI or embedder file. `git ls-files data` is empty and `data/index/bm25.json` is ignored.
+  - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'` → `0`. The branch is
+    local only: `git ls-remote --heads origin feat/reindex-lexical` returns nothing.
+
+## Per-spec verdict
+- S1 ✅ `LexicalIndexWriter.rebuild(chunks) -> None` in `ingestion/application/ports.py`, exported,
+  `runtime_checkable`, conformance and rejection pinned; `LexicalIndex` unchanged.
+- S2 ✅ `ReindexCorpus(repository, lexical_writer).execute()` returns `ReindexReport(chunk_count, rebuilt_at)`;
+  empty corpus raises `EmptyCorpusError(IngestionError)` before any writer; the vector-writer seam is a
+  documented insertion point, not dead code.
+- S3 ✅ lowercase, punctuation split, `+10%`/`1.5`/`-20%` whole, `area-of-effect`/`cast_on_crit` whole plus
+  parts, no stemming and no stopwords with the D2 reason documented; 20 cases.
+- S4 ✅ `Bm25Index(directory, k1=1.5, b=0.75)` implements both ports, pure Python, no third-party BM25; a
+  test pins that `k1` and `b` change scoring.
+- S5 ✅ rebuild tokenizes text + entity name + section, computes statistics and persists one JSON file
+  atomically with `schema_version`, `corpus_fingerprint` and the chunk data needed to return a
+  `RetrievedChunk`; two rebuilds in opposite order are byte-identical.
+- S6 ✅ lazy load; `is_valid_at` before scoring and before `limit`; idf over the whole corpus; zero scores
+  excluded; ties by ascending `chunk_id`; only `scores.lexical` set; missing file, unknown schema, corrupt
+  file, blank text and `limit <= 0` each raise their own error.
+- S7 ✅ `data/index/` in `.gitignore`, with the ADR-0002 reason.
+- S8 ✅ stdlib only, no dependency change, verified by import grep and an empty `pyproject.toml`/`uv.lock`
+  diff.
+- S9 ✅ test-first in every task, RED and GREEN recorded above; every required unit test exists.
+- S10 ✅ `tests/contract/test_lexical_index_contract.py` holds the five validity boundaries as reusable
+  data plus a stale-top-hit case, an in-memory executable specification and a factory over two
+  implementations.
+- S11 ✅ `docs/architecture.md` updated (state header, §5.1 note, §5.3, §5.4, §6, §7, §8, §10).
+- S12 ✅ no Chroma, embeddings, `VectorIndex`, reranker, LLM, `bootstrap.py` or CLI.
+- S13 ✅ code, tests, feature document and commit messages in English; `docs/architecture.md` stays Spanish
+  by the precedent recorded in the previous features (deviation noted in the report).
+- S14 ✅ branch `feat/reindex-lexical` from `main`, one Conventional Commit per task, no attribution, no push
+  and no PR.
+- S15 ✅ 651 passed; RED/GREEN counts per task above; the heuristic is documented in Delivery slices and T5
+  explains why it lands whole.
+
+## Close
+All tasks are done. Open follow-ups, deliberately out of scope: the vector writer from the same snapshot,
+comparing the persisted fingerprint against the corpus to detect a stale index, and wiring both halves in
+`bootstrap.py`.
+
+## Deviations from the brief
+- `docs/architecture.md` was updated in Spanish. The brief asks for documentation in English, but this
+document is written in Spanish throughout and the two previous features kept it that way; code, tests, the
+feature document and commit messages are English.
+- Two additions the brief did not name: `LexicalIndexWriteError` for a failed atomic replace (an inline
+  error would make the atomicity test vacuous) and `EmptyRebuildError` so the adapter also refuses an empty
+  corpus if called outside `ReindexCorpus` (defense in depth; the use case still owns the rule).
+- The chunk encoder/decoder duplicates the layout of `data/processed/chunks.json` instead of importing it:
+  the answering capability must not depend on an ingestion adapter (§7), and the round-trip test pins the
+  equality that `AnswerQuestion` relies on.
+- Tokenizer detail beyond the examples: `.` joins a word without producing parts, while `-` and `_` produce
+  one token plus its parts; numbers are never split, so `-20%` stays whole instead of yielding an empty
+  leading part.
+- T5 was routed to one bounded writer for the module after the parent authored both test suites; the parent
+  reviewed the file, corrected two of its own test expectations and refactored the scoring loop while green.
+
+## Key Learnings
+1. In this repository each test module basename must be globally unique (pytest's prepend import mode), so
+every new suite is named after its subject rather than after the layer it tests.
+2. BM25's length normalization cancels only when all indexed documents have the same token length; because
+the index also tokenizes the entity name and the section, a hand-computed corpus must count those tokens
+(seven per document here) or the expected scores drift.
+3. Lucene-style idf `ln(1 + (N - df + 0.5) / (df + 0.5))` is always positive, so "exclude zero-score chunks"
+reduces to "exclude documents with no query term", and computing `df` over the whole corpus keeps a term's
+score identical on every patch filter.
+4. Atomic persistence needs `mkstemp` in the target's own directory, `fsync` before `os.replace` and temp
+cleanup in `finally`; patching `os.replace` to fail is what proves the previous index survives byte for byte.
+5. Sorting documents by `chunk_id` and serializing maps with sorted keys makes a rebuild byte-deterministic,
+so the same corpus in any input order produces one identical file and a stable corpus fingerprint.
