@@ -19,7 +19,7 @@ but fusion ranked first stays visible instead of lost. The order is total — sc
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from typing import Any, Protocol, cast
 
@@ -186,7 +186,9 @@ def _require_scores(raw: object, expected: int) -> list[float]:
     if isinstance(raw, (str, bytes)) or not hasattr(raw, "__iter__"):
         raise RerankScoringError(f"the scorer must return iterable scores, got {raw!r}")
     try:
-        values = list(raw)
+        # `hasattr` narrows nothing for a type checker, so the iterable is asserted here: the
+        # `list` call is what actually rejects a non-iterable, and its `TypeError` is translated.
+        values = list(cast(Iterable[Any], raw))
     except TypeError as exc:
         raise RerankScoringError(f"the scorer must return iterable scores, got {raw!r}") from exc
     if len(values) != expected:
