@@ -15,6 +15,10 @@ just because some chunks are stale.
 The write is atomic (temporary file in the same directory plus `os.replace`) so a failed rebuild
 never leaves a truncated index: the previous file survives or no file is written.
 
+The file records the rules it was built with: the tokenizer version and the BM25 parameters. One file
+therefore ranks identically for every reader, and a file built by other tokenization rules is refused
+instead of answering with terms that no longer match the query.
+
 The chunk encoder is local to this module. The answering capability must not import an ingestion
 adapter (architecture §7), so the JSON layout is mirrored here rather than reused from the chunk
 repository.
@@ -34,7 +38,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from poe2_rag.answering.adapters.outbound.lexical.tokenizer import tokenize
+from poe2_rag.answering.adapters.outbound.lexical.tokenizer import (
+    TOKENIZER_VERSION,
+    tokenize,
+)
 from poe2_rag.answering.domain import RetrievedChunk, StageScores
 from poe2_rag.shared.domain import (
     Chunk,
@@ -56,6 +63,9 @@ DEFAULT_B = 0.75
 _ROOT_KEYS = frozenset(
     {
         "schema_version",
+        "tokenizer_version",
+        "k1",
+        "b",
         "corpus_fingerprint",
         "chunk_count",
         "average_length",
@@ -87,6 +97,15 @@ class EmptyRebuildError(LexicalIndexError):
     """Raised when rebuild receives an empty sequence."""
 
 
+class DuplicateIndexEntryError(LexicalIndexError):
+    """Raised when rebuild receives two chunks with the same `chunk_id`.
+
+    The index is keyed by identity: storing one chunk twice would make `search` return it twice and
+    the query flow reject the whole result (`DuplicateChunkError`). The corpus is rejected instead,
+    before anything is written.
+    """
+
+
 class LexicalIndexLoadError(RuntimeError):
     """Base class for environment failures when reading the persisted index."""
 
@@ -108,9 +127,14 @@ class LexicalIndexWriteError(RuntimeError):
 
 
 class Bm25Index:
-    """Persisted BM25 keyword index with patch-validity filtering inside the adapter."""
+    """Persisted BM25 keyword index with patch-validity filtering inside the adapter.
 
-    __slots__ = ("_path", "_k1", "_b", "_cache")
+    `k1` and `b` configure the BM25 formula that `rebuild` records in the file; `search` scores with
+    the recorded values, so every reader of one file ranks identically and a reader's constructor
+    arguments can never silently re-rank an index somebody else built.
+    """
+
+    __slots__ = ("_path", "_k1", "_b", "_cache", "_cache_stamp")
 
     def __init__(
         self,
@@ -127,6 +151,7 @@ class Bm25Index:
         self._k1 = float(k1)
         self._b = float(b)
         self._cache: dict[str, Any] | None = None
+        self._cache_stamp: tuple[int, int, int] | None = None
 
     @property
     def path(self) -> Path:
@@ -137,21 +162,32 @@ class Bm25Index:
         """Replace the persisted index with `chunks`, atomically.
 
         The corpus is sorted by `chunk_id` before serialization so two rebuilds of the same corpus
-        in different orders produce byte-identical files.
+        in different orders produce byte-identical files. The input is materialized first, so an
+        empty iterable is rejected the same way an empty sequence is, and a repeated `chunk_id`
+        stops the run before anything is written: the index is keyed by identity.
         """
-        if not chunks:
+        documents: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for chunk in sorted(chunks, key=lambda chunk: chunk.chunk_id):
+            if chunk.chunk_id in seen:
+                raise DuplicateIndexEntryError(
+                    f"the corpus holds chunk_id {chunk.chunk_id!r} more than once"
+                )
+            seen.add(chunk.chunk_id)
+            documents.append(_make_document(chunk))
+        if not documents:
             raise EmptyRebuildError("cannot rebuild the lexical index from an empty corpus")
-        documents = tuple(
-            _make_document(chunk) for chunk in sorted(chunks, key=lambda chunk: chunk.chunk_id)
-        )
-        fingerprint = _fingerprint_documents(documents)
-        total_length = sum(document["length"] for document in documents)
-        average_length = total_length / len(documents)
+        fingerprint = _fingerprint_documents(tuple(documents))
+        # A chunk always indexes at least its section, so the average length is positive.
+        average_length = sum(document["length"] for document in documents) / len(documents)
         document_frequencies = Counter[str]()
         for document in documents:
             document_frequencies.update(document["term_frequencies"].keys())
         payload = {
             "schema_version": SCHEMA_VERSION,
+            "tokenizer_version": TOKENIZER_VERSION,
+            "k1": self._k1,
+            "b": self._b,
             "corpus_fingerprint": fingerprint,
             "chunk_count": len(documents),
             "average_length": average_length,
@@ -160,6 +196,7 @@ class Bm25Index:
         }
         self._write(payload)
         self._cache = None
+        self._cache_stamp = None
 
     def search(self, text: str, version: PatchVersion, limit: int) -> tuple[RetrievedChunk, ...]:
         """Return up to `limit` chunks matching `text`, best first, with only `scores.lexical` set.
@@ -179,8 +216,9 @@ class Bm25Index:
         documents = data["documents"]
         document_frequencies = data["document_frequencies"]
         average_length = data["average_length"]
-        k1 = self._k1
-        b = self._b
+        # The file's parameters, not this instance's: one index, one ranking (see the class docstring).
+        k1 = data["k1"]
+        b = data["b"]
         corpus_size = len(documents)
         scored: list[tuple[RetrievedChunk, float]] = []
         for document in documents:
@@ -202,11 +240,16 @@ class Bm25Index:
         return tuple(item[0] for item in scored[:limit])
 
     def _load(self) -> dict[str, Any]:
-        """Read and decode the persisted index, caching the result."""
-        if self._cache is not None:
+        """Read and decode the persisted index, reloading it when another writer replaced it.
+
+        The decoded corpus is cached, but the file's identity is re-checked on every search: the
+        composition root may wire the writer and the reader as two instances, and a reindex from
+        another process must never leave this reader answering with the previous index. Only a
+        `stat` runs while the cache is warm; the file is read again only when it changed.
+        """
+        stamp = self._stamp()
+        if self._cache is not None and self._cache_stamp == stamp:
             return self._cache
-        if not self._path.exists():
-            raise IndexNotFoundError(f"lexical index not found: {self._path}")
         try:
             text = self._path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -217,8 +260,21 @@ class Bm25Index:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
             raise IndexCorruptError(f"{self._path} is not valid JSON: {exc}") from exc
-        self._cache = _build_index(self._path, data)
-        return self._cache
+        decoded = _build_index(self._path, data)
+        self._cache = decoded
+        self._cache_stamp = stamp
+        return decoded
+
+    def _stamp(self) -> tuple[int, int, int]:
+        """Identify the current file version, or raise when the index does not exist."""
+        try:
+            details = self._path.stat()
+        except FileNotFoundError as exc:
+            raise IndexNotFoundError(f"lexical index not found: {self._path}") from exc
+        except OSError as exc:
+            raise IndexCorruptError(f"cannot read {self._path}: {exc}") from exc
+        # A replaced file gets a new inode and modification time, so this changes on every rebuild.
+        return (details.st_mtime_ns, details.st_size, details.st_ino)
 
     def _write(self, payload: dict[str, Any]) -> None:
         """Serialize `payload` to a temporary file and replace the index with it atomically."""
@@ -285,10 +341,8 @@ def _score_document(
 ) -> float:
     """Compute the BM25 Okapi score of one document for the distinct query terms."""
     term_frequencies = document["term_frequencies"]
-    # A corpus made only of punctuation has no tokens, so no query can match it; the guard keeps a
-    # hand-edited file from dividing by zero instead of adding an error path nobody can trigger.
-    normalized_length = document["length"] / average_length if average_length else 0.0
-    normalization = k1 * (1 - b + b * normalized_length)
+    # `average_length` is validated positive by the loader, so the normalization always divides.
+    normalization = k1 * (1 - b + b * (document["length"] / average_length))
     score = 0.0
     for term in query_terms:
         tf = term_frequencies.get(term)
@@ -343,14 +397,26 @@ def _build_index(path: Path, data: object) -> dict[str, Any]:
     if type(version) is not int or version != SCHEMA_VERSION:
         raise UnsupportedIndexSchemaError(f"{path}: unsupported schema_version {version!r}")
     _require_keys(path, data, _ROOT_KEYS, "the file")
+    tokenizer_version = data["tokenizer_version"]
+    if type(tokenizer_version) is not int or tokenizer_version != TOKENIZER_VERSION:
+        raise UnsupportedIndexSchemaError(
+            f"{path}: index built with tokenizer version {tokenizer_version!r}, this reader "
+            f"tokenizes with version {TOKENIZER_VERSION}; rebuild the index"
+        )
     try:
         chunk_count = data["chunk_count"]
         if type(chunk_count) is not int:
             raise IndexCorruptError(f"{path}: 'chunk_count' must be an int, got {chunk_count!r}")
-        average_length = data["average_length"]
-        if isinstance(average_length, bool) or not isinstance(average_length, (int, float)):
+        k1 = _require_number(path, data["k1"], "k1")
+        if k1 < 0:
+            raise IndexCorruptError(f"{path}: 'k1' must be non-negative, got {k1!r}")
+        b = _require_number(path, data["b"], "b")
+        if not 0 <= b <= 1:
+            raise IndexCorruptError(f"{path}: 'b' must be between 0 and 1, got {b!r}")
+        average_length = _require_number(path, data["average_length"], "average_length")
+        if average_length <= 0:
             raise IndexCorruptError(
-                f"{path}: 'average_length' must be a number, got {average_length!r}"
+                f"{path}: 'average_length' must be positive, got {average_length!r}"
             )
         corpus_fingerprint = data["corpus_fingerprint"]
         if not isinstance(corpus_fingerprint, str):
@@ -360,6 +426,12 @@ def _build_index(path: Path, data: object) -> dict[str, Any]:
         document_frequencies = _require_int_string_map(
             path, data["document_frequencies"], "document_frequencies"
         )
+        for term, frequency in document_frequencies.items():
+            if not 0 <= frequency <= chunk_count:
+                raise IndexCorruptError(
+                    f"{path}: 'document_frequencies[{term!r}]' must be between 0 and "
+                    f"{chunk_count}, got {frequency}"
+                )
         documents = _require_list(path, data["documents"], "documents")
         if len(documents) != chunk_count:
             raise IndexCorruptError(
@@ -369,13 +441,17 @@ def _build_index(path: Path, data: object) -> dict[str, Any]:
         decoded_documents = tuple(
             _build_document(path, index, document) for index, document in enumerate(documents)
         )
+        _require_distinct_chunks(path, decoded_documents)
     except (KeyError, TypeError, ValueError) as exc:
         raise IndexCorruptError(f"{path}: {exc}") from exc
     return {
         "schema_version": version,
+        "tokenizer_version": tokenizer_version,
+        "k1": k1,
+        "b": b,
         "corpus_fingerprint": corpus_fingerprint,
         "chunk_count": chunk_count,
-        "average_length": float(average_length),
+        "average_length": average_length,
         "document_frequencies": document_frequencies,
         "documents": decoded_documents,
     }
@@ -391,9 +467,21 @@ def _build_document(path: Path, index: int, data: object) -> dict[str, Any]:
         length = data["length"]
         if type(length) is not int:
             raise IndexCorruptError(f"{where}: 'length' must be an int, got {length!r}")
+        if length < 0:
+            raise IndexCorruptError(f"{where}: 'length' must be non-negative, got {length}")
         term_frequencies = _require_int_string_map(
             path, data["term_frequencies"], f"documents[{index}].term_frequencies"
         )
+        for term, count in term_frequencies.items():
+            if count < 1:
+                raise IndexCorruptError(
+                    f"{where}: term_frequencies[{term!r}] must be positive, got {count}"
+                )
+        counted = sum(term_frequencies.values())
+        if counted != length:
+            raise IndexCorruptError(
+                f"{where}: 'length' ({length}) does not match its term frequencies ({counted})"
+            )
         chunk = _build_chunk(path, index, data["chunk"])
     except (KeyError, TypeError, ValueError) as exc:
         raise IndexCorruptError(f"{where}: {exc}") from exc
@@ -491,3 +579,22 @@ def _require_int_string_map(path: Path, value: object, where: str) -> dict[str, 
             raise IndexCorruptError(f"{path}: '{where}' values must be ints, got {count!r}")
         result[key] = count
     return result
+
+
+def _require_number(path: Path, value: object, where: str) -> float:
+    """Return `value` as a finite number or raise a load error that names `where`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise IndexCorruptError(f"{path}: '{where}' must be a number, got {value!r}")
+    if not math.isfinite(value):
+        raise IndexCorruptError(f"{path}: '{where}' must be finite, got {value!r}")
+    return float(value)
+
+
+def _require_distinct_chunks(path: Path, documents: tuple[dict[str, Any], ...]) -> None:
+    """Reject a file that stores one `chunk_id` twice, so the index stays keyed by identity."""
+    seen: set[str] = set()
+    for document in documents:
+        chunk_id = document["chunk"].chunk_id
+        if chunk_id in seen:
+            raise IndexCorruptError(f"{path}: duplicate chunk_id {chunk_id!r}")
+        seen.add(chunk_id)

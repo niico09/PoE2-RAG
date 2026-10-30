@@ -16,6 +16,7 @@ from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
     SCHEMA_VERSION,
     BlankQueryError,
     Bm25Index,
+    DuplicateIndexEntryError,
     EmptyRebuildError,
     IndexCorruptError,
     IndexNotFoundError,
@@ -25,6 +26,7 @@ from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
     LexicalIndexWriteError,
     UnsupportedIndexSchemaError,
 )
+from poe2_rag.answering.adapters.outbound.lexical.tokenizer import TOKENIZER_VERSION
 from poe2_rag.answering.application import LexicalIndex
 from poe2_rag.answering.domain import RetrievedChunk
 from poe2_rag.ingestion.application import LexicalIndexWriter
@@ -225,10 +227,48 @@ class TestParameters:
         assert saturated[0].scores.lexical == pytest.approx(saturated[1].scores.lexical)
         assert saturated[0].scores.lexical == pytest.approx(IDF_SPARK)
 
+    def test_a_reader_scores_with_the_parameters_the_index_recorded(self, tmp_path: Path) -> None:
+        """One file, one ranking: the recorded parameters win over the reader's defaults."""
+        corpus = (make_chunk("short", "spark"), make_chunk("long", "spark " + "filler " * 7))
+        build(tmp_path, corpus, b=0.0)
+
+        results = Bm25Index(tmp_path).search("spark", START, 10)
+
+        assert sections(results) == ["long", "short"]
+        assert results[0].scores.lexical == pytest.approx(results[1].scores.lexical)
+
     @pytest.mark.parametrize(("k1", "b"), [(-0.1, 0.75), (1.5, -0.1), (1.5, 1.1)])
     def test_rejects_invalid_parameters(self, tmp_path: Path, k1: float, b: float) -> None:
         with pytest.raises(LexicalIndexError, match="k1|b"):
             Bm25Index(tmp_path, k1=k1, b=b)
+
+
+class TestRebuildInput:
+    def test_rejects_a_corpus_with_a_repeated_chunk_id(self, tmp_path: Path) -> None:
+        """One identity, one document: two copies would surface as a duplicate in the query flow."""
+        chunk = make_chunk()
+        index = Bm25Index(tmp_path)
+
+        with pytest.raises(DuplicateIndexEntryError, match="chunk_id"):
+            index.rebuild((chunk, chunk))
+
+        assert not (tmp_path / FILE_NAME).exists()
+
+    def test_accepts_any_iterable_of_chunks(self, tmp_path: Path) -> None:
+        index = Bm25Index(tmp_path)
+
+        index.rebuild(chunk for chunk in (make_chunk("alpha", "spark damage"),))  # type: ignore[arg-type]
+
+        assert sections(index.search("spark", START, 10)) == ["alpha"]
+
+    def test_rejects_an_empty_iterable(self, tmp_path: Path) -> None:
+        """An iterable has no truth value, so the guard has to look at what it produced."""
+        index = Bm25Index(tmp_path)
+
+        with pytest.raises(EmptyRebuildError):
+            index.rebuild(chunk for chunk in ())  # type: ignore[arg-type]
+
+        assert not (tmp_path / FILE_NAME).exists()
 
 
 class TestPersistence:
@@ -261,6 +301,15 @@ class TestPersistence:
         (result,) = Bm25Index(tmp_path).search("spark", START, 1)
 
         assert result.chunk == chunk
+
+    def test_records_the_tokenizer_version_and_the_scoring_parameters(self, tmp_path: Path) -> None:
+        build(tmp_path, hand_computed_corpus(), k1=2.0, b=0.25)
+
+        payload = payload_of(tmp_path)
+
+        assert payload["tokenizer_version"] == TOKENIZER_VERSION
+        assert payload["k1"] == 2.0
+        assert payload["b"] == 0.25
 
     def test_two_rebuilds_of_one_corpus_produce_the_same_bytes(self, tmp_path: Path) -> None:
         first = build(tmp_path / "first", hand_computed_corpus())
@@ -323,6 +372,67 @@ class TestLoadErrors:
         with pytest.raises(IndexCorruptError):
             Bm25Index(tmp_path).search("spark", START, 10)
 
+    def test_a_negative_average_length_is_corrupt(self, tmp_path: Path) -> None:
+        build(tmp_path, (make_chunk(),))
+        payload = payload_of(tmp_path)
+        payload["average_length"] = -3.0
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(IndexCorruptError, match="average_length"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
+    def test_a_zero_average_length_is_corrupt(self, tmp_path: Path) -> None:
+        build(tmp_path, (make_chunk(),))
+        payload = payload_of(tmp_path)
+        payload["average_length"] = 0.0
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(IndexCorruptError, match="average_length"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
+    def test_a_document_frequency_above_the_corpus_size_is_corrupt(
+        self, tmp_path: Path
+    ) -> None:
+        """A df above N makes idf negative and would drop a real match into an empty result."""
+        build(tmp_path, (make_chunk(),))
+        payload = payload_of(tmp_path)
+        payload["document_frequencies"]["spark"] = 99
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(IndexCorruptError, match="document_frequencies"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
+    def test_a_document_length_that_disagrees_with_its_frequencies_is_corrupt(
+        self, tmp_path: Path
+    ) -> None:
+        build(tmp_path, (make_chunk(),))
+        payload = payload_of(tmp_path)
+        payload["documents"][0]["length"] += 1
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(IndexCorruptError, match="length"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
+    def test_a_repeated_chunk_id_in_the_file_is_corrupt(self, tmp_path: Path) -> None:
+        build(tmp_path, (make_chunk("alpha", "spark damage"),))
+        payload = payload_of(tmp_path)
+        payload["documents"].append(payload["documents"][0])
+        payload["chunk_count"] = 2
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(IndexCorruptError, match="chunk_id"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
+    def test_rejects_an_index_built_with_another_tokenizer_version(self, tmp_path: Path) -> None:
+        """Terms stored by other tokenization rules must not answer queries tokenized by these."""
+        build(tmp_path, (make_chunk(),))
+        payload = payload_of(tmp_path)
+        payload["tokenizer_version"] = TOKENIZER_VERSION + 1
+        write_payload(tmp_path, payload)
+
+        with pytest.raises(UnsupportedIndexSchemaError, match="tokenizer"):
+            Bm25Index(tmp_path).search("spark", START, 10)
+
     def test_load_errors_are_environment_failures(self) -> None:
         assert issubclass(LexicalIndexLoadError, RuntimeError)
         for error in (IndexNotFoundError, UnsupportedIndexSchemaError, IndexCorruptError):
@@ -358,6 +468,19 @@ class TestInputErrors:
             assert issubclass(error, LexicalIndexError)
 
 
+class TestCache:
+    def test_another_instance_rebuild_is_visible_to_this_reader(self, tmp_path: Path) -> None:
+        """A reindex from another instance must not leave this reader answering with the old index."""
+        build(tmp_path, (make_chunk("alpha", "spark damage"),))
+        reader = Bm25Index(tmp_path)
+        assert sections(reader.search("spark", START, 10)) == ["alpha"]
+
+        build(tmp_path, (make_chunk("beta", "zebra"),))
+
+        assert reader.search("spark", START, 10) == ()
+        assert sections(reader.search("zebra", START, 10)) == ["beta"]
+
+
 class TestAtomicWrite:
     def test_a_failed_replace_keeps_the_previous_index(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -387,6 +510,11 @@ class TestAtomicWrite:
             Bm25Index(tmp_path).rebuild((make_chunk(),))
 
         assert list(tmp_path.iterdir()) == []
+
+
+def payload_of(directory: Path) -> dict[str, Any]:
+    """Return the payload an index wrote, so a test can corrupt exactly one detail of it."""
+    return json.loads((directory / FILE_NAME).read_text(encoding="utf-8"))
 
 
 def write_payload(directory: Path, payload: dict[str, Any]) -> None:
