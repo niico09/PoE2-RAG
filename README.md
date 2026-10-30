@@ -85,6 +85,15 @@ Sin `--patch` se responde para el parche `current` de `config/patches.toml`. La 
 
 Códigos de salida: `0` éxito, `1` error esperado (una línea en stderr, sin traza) y `2` error de uso de la línea de comandos.
 
+> **Salvedad conocida:** un modelo local que no se puede cargar —sin red en la primera corrida, o con un id de modelo mal escrito— todavía sale como traza de `sentence-transformers`, porque el adaptador no envuelve ese error. Entra al contrato en cuanto `BgeEmbedder` lo traduzca a un error propio; envolverlo es un cambio del adaptador, no del borde, y capturar `OSError` en el borde taparía también fallas de permisos y de disco.
+
+### Presupuesto de recuperación
+
+El MVP recupera 50 candidatos léxicos y 50 densos, fusiona y rerordena 20 y entrega 5 al modelo. Son
+valores fijos, elegidos para que el prompt vea poco y la recuperación sea ancha; todavía no hay variable
+de entorno que los ajuste y por eso no figuran en la tabla siguiente. Un error de modelo se resuelve
+reindexando, no cambiando estos números.
+
 ### Configuración por entorno
 
 Todo se puede ajustar por variables de entorno; un valor vacío usa el default y `.env.example` lista los nombres sin valores.
@@ -93,7 +102,7 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | credencial de `ask`; la lee el SDK |
 | `POE2_RAG_PROJECT_ROOT` | directorio de trabajo | raíz de la que cuelgan los defaults |
-| `POE2_RAG_RAW_DIR` | `data/raw` | snapshots crudos de las fuentes |
+| `POE2_RAG_RAW_DIR` | `data/raw` | raíz de los snapshots; una ruta relativa en `ingest` se resuelve acá |
 | `POE2_RAG_PROCESSED_DIR` | `data/processed` | corpus procesado (`chunks.json`) |
 | `POE2_RAG_INDEX_DIR` | `data/index` | índices derivados (`bm25.json` y `chroma/`) |
 | `POE2_RAG_PATCH_CATALOG` | `config/patches.toml` | catálogo de parches |
