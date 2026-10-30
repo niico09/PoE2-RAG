@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido) y el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido, ambos reconstruidos por `ReindexCorpus`) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el reranker, el LLM y la CLI todavía no.
+> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI. Todavía no: el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el comando `eval` y la evaluación de §8.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -59,6 +59,52 @@ Arquitectura hexagonal con dos flujos que solo se comunican a través de los ín
 
 ---
 
+## 🚀 Uso
+
+Requisitos: Python ≥ 3.12 y [`uv`](https://docs.astral.sh/uv/). Los artefactos derivados (`data/raw/`, `data/processed/`, `data/index/`) se generan en local y están fuera de control de versiones ([ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md)).
+
+### Ingesta
+
+```bash
+# Ingiere un snapshot local de notas de parche y reconstruye los dos índices
+uv run poe2-rag ingest patch-notes data/raw/patch-notes-0.1.1.html
+```
+
+El snapshot necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. `patch-notes` es la única fuente disponible por ahora: `poe2db` y `poe2wiki.net` se suman al mismo comando cuando existan sus adaptadores, sin cambiar la forma del comando. La ingesta necesita la clave solo para reconstruir el índice denso del modelo de embeddings local, nunca la de Claude.
+
+### Consulta
+
+La generación usa la API de Claude ([ADR-0005](docs/adr/0005-llm-por-api.md)): la key se lee del entorno, la lee el SDK y nunca se guarda en la configuración ni se imprime. Copiá `.env.example` a `.env`, completá `ANTHROPIC_API_KEY` y corré los comandos con `--env-file`:
+
+```bash
+uv run --env-file .env poe2-rag ask "How much mana does Spark cost?"
+uv run --env-file .env poe2-rag ask "What changed for Spark?" --patch 0.1.0
+```
+
+Sin `--patch` se responde para el parche `current` de `config/patches.toml`. La salida trae la respuesta, la versión usada y las citas numeradas (chunk, texto citado y URL de la fuente); si el contexto recuperado no alcanza, se imprime la respuesta fija de "sin información" con la aclaración de que ninguna cita la respalda.
+
+Códigos de salida: `0` éxito, `1` error esperado (una línea en stderr, sin traza) y `2` error de uso de la línea de comandos.
+
+### Configuración por entorno
+
+Todo se puede ajustar por variables de entorno; un valor vacío usa el default y `.env.example` lista los nombres sin valores.
+
+| Variable | Default | Qué define |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | credencial de `ask`; la lee el SDK |
+| `POE2_RAG_PROJECT_ROOT` | directorio de trabajo | raíz de la que cuelgan los defaults |
+| `POE2_RAG_RAW_DIR` | `data/raw` | snapshots crudos de las fuentes |
+| `POE2_RAG_PROCESSED_DIR` | `data/processed` | corpus procesado (`chunks.json`) |
+| `POE2_RAG_INDEX_DIR` | `data/index` | índices derivados (`bm25.json` y `chroma/`) |
+| `POE2_RAG_PATCH_CATALOG` | `config/patches.toml` | catálogo de parches |
+| `POE2_RAG_EMBEDDER_MODEL` | `BAAI/bge-base-en-v1.5` | modelo de embeddings local |
+| `POE2_RAG_RERANKER_MODEL` | `BAAI/bge-reranker-base` | cross-encoder de reranking |
+| `POE2_RAG_LLM_MODEL` | `claude-sonnet-5-5` | modelo de generación |
+| `POE2_RAG_LLM_MAX_TOKENS` | `1024` | tope de tokens de la respuesta |
+| `POE2_RAG_LLM_EFFORT` | `medium` | profundidad de razonamiento del modelo |
+
+---
+
 ## 📂 Estructura del Repositorio (objetivo)
 
 ```text
@@ -79,6 +125,8 @@ poe2-rag/
 │   ├── ingestion/           # Fuentes, parsers, chunking e indexación
 │   ├── answering/           # Recuperación híbrida, RRF, reranking y generación
 │   ├── evaluation/          # Dataset y métricas (Hit@K, MRR, fidelidad, obsolescencia)
+│   ├── cli.py               # CLI (`ingest`, `ask`): argparse, despacho y contrato de errores
+│   ├── config.py            # AppConfig: rutas, modelos y presupuesto del LLM desde el entorno
 │   └── bootstrap.py         # Composition root
 └── tests/                   # Unitarios, de contrato y de evaluación
 ```
@@ -129,11 +177,12 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
   pre-filtrado por vigencia, tokenizador determinista y tests unitarios, de contrato y de integración.
 - [x] Índice denso: embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido, con pre-filtrado
   por vigencia dentro de la consulta, identidad del modelo persistida e informe de textos truncados.
-- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia: falta la fusión con RRF en un
-  adaptador de entrada.
-- [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
-- [ ] Generación con citas nativas y CLI.
-- [ ] Dataset de evaluación y métricas.
+- [x] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia, fusionado con RRF dentro de
+  `AnswerQuestion` y expuesto por el comando `ask`.
+- [x] Reranking con Cross-Encoder (`bge-reranker-base`).
+- [x] Generación con citas nativas, composition root (`bootstrap.py`), configuración (`AppConfig`) y
+  CLI (`ingest`, `ask`).
+- [ ] Comando `eval` y dataset de evaluación con métricas.
 - [ ] Comparar Nemotron 3.5 Lightning como generador local.
 - [ ] Modelado del árbol de habilidades pasivas mediante grafos de conocimiento (GraphRAG).
 - [ ] Soporte para balance de armas y cálculo de tiers de modificadores.

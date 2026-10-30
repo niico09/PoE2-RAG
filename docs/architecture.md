@@ -1,13 +1,17 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado; ingesta, recuperación léxica y recuperación densa implementadas**.
+> Estado: **diseño del MVP acordado; ingesta, recuperación léxica, recuperación densa, reranking,
+> generación y CLI implementados**.
 > Implementados el modelo de dominio de §4, el puerto `PatchCatalog` con su adaptador TOML, el caso de uso
 > `AnswerQuestion` de §5.1 con sus puertos de consulta (probado con *fakes*), el primer corte de ingesta de
 > §5.2: `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de
-> parche, y los dos índices de §5.3 a §5.5: `ReindexCorpus`, el tokenizador determinista, el adaptador BM25
-> Okapi, el embedder local `bge-base-en-v1.5` y el índice vectorial sobre Chroma embebido, probados con fakes,
-> con un embedder determinista y, de punta a punta, sobre el repositorio JSON del corpus. Todavía no: el
-> fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el reranker, el LLM, la CLI y la evaluación de §8.
+> parche, los dos índices de §5.3 a §5.5: `ReindexCorpus`, el tokenizador determinista, el adaptador BM25
+> Okapi, el embedder local `bge-base-en-v1.5` y el índice vectorial sobre Chroma embebido, el reranker
+> cross-encoder y el adaptador de Claude con citas nativas, todos probados con fakes, con un embedder
+> determinista y, de punta a punta, sobre el repositorio JSON del corpus. La configuración (`config.py`), el
+> composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI de [ADR-0006](adr/0006-cli-como-interfaz.md)
+> cierran el recorrido de §5. Todavía no: el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el
+> comando `eval` y la evaluación de §8.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -130,9 +134,15 @@ El esquema actual del README tiene dos problemas de diseño:
 | Caso de uso | Flujo | Entrada → Salida |
 |---|---|---|
 | `IngestSource` | Ingesta | Identificador de fuente → chunks persistidos en `data/processed/` |
-| `ReindexCorpus` | Ingesta | Corpus procesado → índices reconstruidos (hoy, el léxico) |
+| `ReindexCorpus` | Ingesta | Corpus procesado → índices reconstruidos (el léxico y el denso) |
 | `AnswerQuestion` | Consulta | `(texto, versión)` → `AnswerResult`: `Answer` con citas + chunks entregados |
 | `RunEvaluation` | Evaluación | Dataset de evaluación → reporte de métricas |
+
+La CLI de [ADR-0006](adr/0006-cli-como-interfaz.md) es el **adaptador de entrada** de los tres primeros:
+`ingest <fuente> <ruta>` encadena `IngestSource` y `ReindexCorpus`, y `ask "<pregunta>" [--patch <versión>]`
+llama a `AnswerQuestion`. No contiene lógica de negocio: traduce argumentos, presenta el resultado y traduce
+los errores esperados a una línea y un código de salida. `config.py` resuelve la configuración desde el
+entorno y `bootstrap.py` es el composition root: el único módulo que arma los adaptadores (§7).
 
 ### 5.1 Flujo de `AnswerQuestion`
 
@@ -286,6 +296,7 @@ Organizada por capacidad (*screaming architecture*) y, dentro de cada una, por c
 
 ```text
 src/poe2_rag/
+├── config.py                # AppConfig: rutas, modelos y presupuesto del LLM, resueltos del entorno
 ├── shared/                  # núcleo compartido por ingesta y consulta
 │   ├── domain/              # PatchVersion, Validity, PatchCatalog, EntityRef, Chunk, SourceRef, Modifier
 │   └── adapters/outbound/   # adaptadores de puertos que usan ambas capacidades (config/patches.toml)
@@ -314,7 +325,7 @@ tests/
 └── eval/                    # dataset de preguntas con respuestas esperadas
 ```
 
-**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Las bibliotecas externas de la recuperación y la generación —`chromadb` y `sentence-transformers` en `dense/` y `rerank/`, `anthropic` en `llm/`— solo pueden importarse desde `answering/adapters/outbound/`: ni el dominio ni los casos de uso las ven, y el suite por defecto las evita salvo por el adaptador de Chroma y el transporte falso del SDK de Claude. Las tres carpetas de adaptador están separadas porque el reranker y el LLM no comparten nada con el índice denso: cargar el cross-encoder no debe arrastrar el cliente vectorial ni al revés. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` y `VectorIndexWriter` son la excepción deliberada: los consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/` porque implementa también el puerto de lectura y ambos comparten el almacenamiento; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`, con `bm25.json` y el directorio `chroma/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta; el adaptador de Chroma copia el mismo codificador de chunk por la misma razón.
+**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. `config.py` es un value object de arranque: no conoce adaptadores ni lee credenciales. La CLI es un adaptador de entrada más y recibe el contenedor ya armado, así que un test de los comandos usa *fakes* y no un sistema completo. Las bibliotecas externas de la recuperación y la generación —`chromadb` y `sentence-transformers` en `dense/` y `rerank/`, `anthropic` en `llm/`— solo pueden importarse desde `answering/adapters/outbound/`: ni el dominio ni los casos de uso las ven, y el suite por defecto las evita salvo por el adaptador de Chroma y el transporte falso del SDK de Claude. Las tres carpetas de adaptador están separadas porque el reranker y el LLM no comparten nada con el índice denso: cargar el cross-encoder no debe arrastrar el cliente vectorial ni al revés. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` y `VectorIndexWriter` son la excepción deliberada: los consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/` porque implementa también el puerto de lectura y ambos comparten el almacenamiento; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`, con `bm25.json` y el directorio `chroma/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta; el adaptador de Chroma copia el mismo codificador de chunk por la misma razón.
 
 RRF vive en el dominio de `answering` porque es una función pura sobre rankings, no depende de ninguna librería.
 
@@ -343,6 +354,15 @@ marcado `integration` que el `addopts` excluye (`uv run pytest -q -m integration
 Así la descarga del modelo y su costo de CPU no entran en cada corrida, pero la prueba de que el modelo real
 produce vectores de 768 dimensiones y rankea un chunk relevante arriba de uno ajeno queda escrita y se puede
 ejecutar cuando se quiera.
+
+El composition root y la CLI se prueban **sin modelos ni red**: `Container` se arma con las fábricas del
+cargador de modelos reemplazadas por una que falla, así un caso que pasa demuestra que construir el contenedor
+no carga `torch`; el cliente del SDK se inyecta como fábrica, y la única llamada a `anthropic.Anthropic()` es
+la que ocurre cuando `ask` la necesita. Los comandos se prueban contra un contenedor falso que devuelve
+`IngestReport`, `ReindexReport` y `AnswerResult` reales, así que lo único simulado son los puertos. La prueba de
+que `ingest` y `ask` ven **los mismos artefactos** es de integración: el caso ingiere en directorios de
+`tmp_path` y responde desde un contenedor recién construido, con los índices leídos del disco y solo la
+generación simulada.
 
 El adaptador de Claude se prueba **contra el SDK real con el transporte HTTP falso**
 (`anthropic.Anthropic(..., http_client=httpx2.Client(transport=httpx2.MockTransport(...)))`, con
