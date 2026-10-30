@@ -6,3 +6,6 @@ __pycache__/
 # Scraped corpus (CC BY-NC-SA content, not redistributed; see ADR-0002)
 data/raw/
 data/processed/
+
+# Indexes rebuilt from that corpus: derived from it, so they carry the same licence (ADR-0002)
+data/index/

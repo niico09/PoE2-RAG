@@ -13,6 +13,7 @@ from poe2_rag.ingestion.application import (
     DocumentParser,
     IngestionError,
     InvalidRawDocumentError,
+    LexicalIndexWriter,
     RawDocument,
     SourceFetcher,
 )
@@ -53,6 +54,13 @@ class InlineRepository:
 
     def all(self) -> Sequence[Chunk]:
         return ()
+
+
+class InlineLexicalIndexWriter:
+    """Minimal stand-in that matches `LexicalIndexWriter` without any storage."""
+
+    def rebuild(self, chunks: Sequence[Chunk]) -> None:
+        return None
 
 
 class TestRawDocument:
@@ -108,6 +116,18 @@ class TestProtocols:
 
     def test_chunk_repository_conformance_is_checkable(self) -> None:
         assert isinstance(InlineRepository(), ChunkRepository)
+
+    def test_lexical_index_writer_conformance_is_checkable(self) -> None:
+        assert isinstance(InlineLexicalIndexWriter(), LexicalIndexWriter)
+
+    def test_a_reader_is_not_a_lexical_index_writer(self) -> None:
+        """The write port is `rebuild`; a class that only knows `search` is the read port."""
+
+        class OnlySearch:
+            def search(self, text: str, version: object, limit: int) -> Sequence[Chunk]:
+                return ()
+
+        assert not isinstance(OnlySearch(), LexicalIndexWriter)
 
     def test_a_partial_implementation_is_not_a_port(self) -> None:
         class OnlySave:

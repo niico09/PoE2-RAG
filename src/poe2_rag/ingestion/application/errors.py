@@ -39,3 +39,13 @@ class ChunkIdentityConflictError(IngestionError):
     threads of the same patch with a section of the same name would resolve to one identity. The run
     stops instead of overwriting the first document's text and moving its citation to the second URL.
     """
+
+
+class EmptyCorpusError(IngestionError):
+    """Raised when a reindex runs over a corpus with no chunks (driver D1).
+
+    An index rebuilt from nothing answers every question with "no information", which is
+    indistinguishable from a corpus that genuinely lacks the answer. The run stops before any writer
+    is called, so the index of the previous rebuild survives untouched instead of being replaced by
+    an empty one.
+    """
