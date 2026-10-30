@@ -85,7 +85,7 @@ ingested chunks for the first time.
 - [x] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
 - [x] T5 — `Bm25Index` (rebuild, persistence, search), adapter unit tests and the reusable
   `LexicalIndex` contract suite. Route: inline. S4, S5, S6, S9, S10.
-- [ ] T6 — Documentation: `docs/architecture.md`. Route: inline. S11.
+- [x] T6 — Documentation: `docs/architecture.md`. Route: inline. S11.
 - [ ] T7 — Close: full suite, import boundary, evidence, per-spec verdict. Route: inline. S9, S15.
 
 ## Delivery slices
@@ -176,3 +176,15 @@ ingested chunks for the first time.
     every test file, including untouched ones, because it does not apply `pyrightconfig.json`. The
     repository's own checks do resolve them: `uvx ruff check --select I` → `All checks passed` and
     `uvx pyright==1.1.414` over the new files → `0 errors, 0 warnings, 0 informations`.
+- T6: documentation only, no RED applicable. `docs/architecture.md` gained: the updated state header
+  (ingestion and lexical retrieval implemented; vector index, embedder, reranker, LLM, CLI and evaluation
+  still pending); the `ReindexCorpus` row of §5 narrowed to the indexes that exist today plus a new §5.3
+  with its five steps and the fail-loud rule; a new §5.4 recording the tokenizer rules, the filter-before-
+  ranking order, corpus-wide IDF, total ordering, atomicity and explicit failures; the `LexicalIndexWriter`
+  row and the BM25 adapter in §6, with the note that the query flow never acquires write capability; the
+  `data/index/` rule and the no-cross-capability-import note in §7; the reusable `VALIDITY_CASES` contract
+  in §8; and, in §10, three risks: an index stale against the corpus (fingerprint recorded, comparison is
+  next), an empty-corpus rebuild (rejected before writing) and the deliberate absence of stemming (D2).
+  §5.1 step 2 now states that the BM25 adapter filters on domain objects while the integer encoding stays a
+  Chroma detail, so the document no longer implies both adapters share one encoding. The document stays
+  Spanish because the whole file is (same precedent as the previous feature).
