@@ -38,7 +38,8 @@ from poe2_rag.shared.domain import (
 
 _SOURCE_TYPE = "patch_notes"
 _VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)*[A-Za-z]?")
-_HEADING_TAGS = frozenset({"h2", "h3", "h4", "h5", "h6"})
+_HEADING_LEVELS = {"h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+_HEADING_TAGS = frozenset(_HEADING_LEVELS)
 _BLOCK_TAGS = frozenset(
     {
         "address",
@@ -254,8 +255,11 @@ def _shallowest_heading_level(nodes: Sequence[PageElement]) -> str | None:
     """Return the lowest-numbered heading tag (h2 < h3) left in the body."""
     levels: list[int] = []
     for node in nodes:
-        if isinstance(node, Tag) and node.name in _HEADING_TAGS and node.name is not None:
-            levels.append(int(node.name[1]))
+        if not isinstance(node, Tag) or node.name is None:
+            continue
+        level = _HEADING_LEVELS.get(node.name)
+        if level is not None:
+            levels.append(level)
     if not levels:
         return None
     return f"h{min(levels)}"
