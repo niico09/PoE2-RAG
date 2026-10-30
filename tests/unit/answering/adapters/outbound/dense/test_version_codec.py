@@ -141,6 +141,16 @@ class TestBounds:
         assert not matches("0.2.0")
         assert not matches("0.0.9")
 
+    @pytest.mark.parametrize("value", ["0.1.0", None, (1_000, 2_000)])
+    def test_rejects_a_non_validity(self, value: object) -> None:
+        with pytest.raises(VersionCodecError):
+            encode_validity(value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("code", ["1000", None, 1_000.0, True])
+    def test_rejects_a_non_integer_bound(self, code: object) -> None:
+        with pytest.raises(VersionCodecError):
+            decode_bound(code)  # type: ignore[arg-type]
+
 
 class TestErrors:
     def test_codec_errors_are_value_errors(self) -> None:
