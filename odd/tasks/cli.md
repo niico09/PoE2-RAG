@@ -431,3 +431,62 @@ verbatim request included (L1).
 - S14 ✅ English artifacts except the `docs/` prose (Deviation 2); ~400 lines stayed a heuristic (2).
 - S15 ✅ Out of scope stayed out: no `eval`, no HTTP fetcher, no poe2db or wiki adapter, no prompt caching,
   no streaming.
+
+## Verification round (independent verifier)
+
+`gentle-ai-verify` reviewed the branch read-only and returned three real defects, two items it could not
+verify in its sandbox, and one scoping artifact. What was fixed, what was not, and why:
+
+- **S2 FAIL — the container retained the environment mapping. Fixed.** `Container` stored the whole
+  mapping in `_environ`, so the key sat in an attribute of the object every command holds: one `repr`, log
+  line or traceback frame away from a terminal. The verifier is right, and its smallest fix was the correct
+  one: the mapping is reduced to a presence flag while the container is built and never stored. The check
+  is still *evaluated* at `language_model`, so `ingest` keeps working on a machine that never calls the API.
+  Regression case added and observed RED first (`{'ANTHROPIC_API_KEY': 'sk-ant-not-a-real-key'}` inside a
+  slot repr), then GREEN. Commit `fix(bootstrap)`.
+- **S6 FAIL — `InvalidQueryError` was missing from the contract. Fixed.** Deviation 4 in this record
+  claimed a well-formed unknown patch exits 1 as an answering error; it did not, it raised a traceback.
+  The claim was wrong, the code was wrong, and both are now right: `InvalidQueryError` (blank question, or a
+  version the catalog does not know) is the one **domain** error a user provokes with input, so it joins
+  `EXPECTED_ERRORS` while every other `DomainError` keeps propagating as an invariant violation. Five new
+  cases, two of them through the real use case with the model loaders patched to raise, plus the probes the
+  verifier reproduced through the real binary:
+  `ask "What changed?" --patch 9.9.9` → exit 1, one line `error: version 9.9.9 is not a known patch`;
+  `ask "   "` → exit 1, one line `error: text must be a non-blank string`; neither prints stdout or a
+  traceback.
+- **S6 FAIL — index write failures were missing. Fixed.** `ingest` rebuilds both indexes, so
+  `LexicalIndexWriteError` and `VectorIndexWriteError` (disk full during either rebuild) join the contract;
+  two cases, one per index.
+- **S6 FAIL — model-load failures still surface as a raw `OSError`. Not fixed, reported.** The verifier's
+  own prescription is "expose model-load failure as a dedicated adapter error and catch that type — do not
+  catch generic `OSError`". That error does not exist: `bge_embedder._load_model` lets whatever
+  `sentence-transformers` raises escape, and `answering/adapters/outbound/**` is **outside this feature's
+  edit surfaces** (L1 lists them; `config.py`, `bootstrap.py`, `cli.py`, `__main__.py`, the two inbound
+  packages and the tests are what this feature may touch). Catching `OSError` at the CLI would swallow
+  permission and disk failures as if they were model problems, which is exactly what the verifier warns
+  against. Disposition: a missing or unloadable local model still produces a traceback, and closing that
+  needs a small follow-up in `bge_embedder` (wrap the loader in a dedicated error) plus one entry in
+  `EXPECTED_ERRORS`. Reported, not patched.
+- **S8 "not verified" — not a defect; verified here.** Its independent run went offline with an isolated
+  model cache (`7 failed, 2 passed, 2 errors`) because `bge-base-en-v1.5` and `bge-reranker-base` were not
+  in its `HOME`. In the repository's normal environment the suite is `11 passed, 979 deselected`, and the
+  end-to-end stdout in T6 shows a real chunk id and a real source URL from a second container.
+- **S10 FAIL — the README said ingestion needs the key. Fixed.** It contradicted
+  `test_ingest_needs_no_api_key` and the bootstrap path: the dense index is built by a local model, so
+  `ingest` needs no credential at all. The sentence now says so explicitly.
+- **S13 FAIL — evidence missing from its seven-commit scope.** A scoping artifact of the record being the
+  last commit by design: the RED/GREEN evidence landed in `53487ca`, one commit after its snapshot. Every
+  earlier commit message carries the same reasoning; the record is where it is consolidated.
+- **S14 FAIL — Spanish docs.** Restated, not changed: Deviation 2 stands. `README.md`, `docs/adr/*.md` and
+  `docs/architecture.md` are Spanish end to end; translating only the sections this feature touched would
+  produce a bilingual README, which is worse for the reader than the rule it breaks. Everything new that a
+  developer reads — module docstrings, comments, tests, commit messages, this record — is English.
+- **Scope mutation it observed (`779af27` → `53487ca`).** Caused by the parent, entirely documentation:
+  `git diff --stat 779af27..53487ca -- src tests pyproject.toml .gitignore .env.example docs/` is empty;
+  only `README.md` (+2 tree lines, inside the amended T7 commit) and this record moved. Its per-file
+  evidence for all code, tests and configuration stands unchanged.
+
+Re-verified after the round: `uv run pytest -q` → **983 passed, 13 deselected** (+6 cases);
+`uv run pytest -q -m integration` → **11 passed, 985 deselected**; `uv run pytest -q -m live
+--collect-only` → **2 collected**, never run; `uvx ruff check --select I src tests` → All checks passed;
+`uvx pyright==1.1.414` → 0 errors.

@@ -70,7 +70,7 @@ Requisitos: Python ≥ 3.12 y [`uv`](https://docs.astral.sh/uv/). Los artefactos
 uv run poe2-rag ingest patch-notes data/raw/patch-notes-0.1.1.html
 ```
 
-El snapshot necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. `patch-notes` es la única fuente disponible por ahora: `poe2db` y `poe2wiki.net` se suman al mismo comando cuando existan sus adaptadores, sin cambiar la forma del comando. La ingesta necesita la clave solo para reconstruir el índice denso del modelo de embeddings local, nunca la de Claude.
+El snapshot necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. `patch-notes` es la única fuente disponible por ahora: `poe2db` y `poe2wiki.net` se suman al mismo comando cuando existan sus adaptadores, sin cambiar la forma del comando. La ingesta **no necesita ninguna clave**: los embeddings del índice denso los produce un modelo local, así que el comando funciona en una máquina que nunca llama a la API. `ANTHROPIC_API_KEY` solo hace falta para `ask`.
 
 ### Consulta
 
