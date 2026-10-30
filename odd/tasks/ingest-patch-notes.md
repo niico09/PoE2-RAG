@@ -1,0 +1,236 @@
+# Feature: ingest-patch-notes
+
+## Objective
+Turn one official patch notes thread into validated, persisted domain chunks end to end, test-first, with
+no network access in tests: the `IngestSource` use case over three outbound ports, a JSON
+`ChunkRepository`, a local snapshot `SourceFetcher` and the official forum parser.
+
+## Problem / Why
+`docs/architecture.md` §3 defines the write path (source → parse → chunk → index) but nothing implements
+it. `Chunk`, `Validity` and `PatchCatalog` already exist; what is missing is the orchestration that turns
+raw HTML into chunks whose validity the catalog accepts, and the adapters that read a snapshot and persist
+the corpus. §10 names two risks this slice must address: parsers break when sources change (mitigate with
+committed minimal parser fixtures and gitignored full snapshots) and patch notes describe changes, not full
+states.
+
+## Specs
+- **S1** — `ingestion/application/ports.py` holds `typing.Protocol` ports and the `RawDocument` value:
+  - `SourceFetcher.fetch(locator: str) -> RawDocument`
+  - `RawDocument(locator: str, content: str, fetched_at: datetime, source_type: str)`, frozen.
+  - `DocumentParser.parse(raw: RawDocument) -> Sequence[Chunk]`
+  - `ChunkRepository.save(chunks: Sequence[Chunk]) -> None` (upsert by `chunk_id`) and
+    `ChunkRepository.all() -> Sequence[Chunk]`.
+- **S2** — `ingestion/application/ingest_source.py`: `IngestSource(fetcher, parser, repository, catalog)`;
+  `execute(locator) -> IngestReport(locator, chunk_ids, skipped)`: fetch → parse → reject chunks whose
+  `valid_from` is unknown to the `PatchCatalog` (specific error, fail loud) → reject duplicate `chunk_id`
+  values within one document → save. `chunk_ids` are the document's ids in document order; `skipped`
+  counts chunks whose stored value is identical and were therefore not rewritten.
+- **S3** — Application errors subclass a new `IngestionError`.
+- **S4** — `ingestion/adapters/outbound/json_chunk_repository.py`: one JSON file under a directory given by
+  the constructor (production default `data/processed/`). Lossless round-trip of every `Chunk` field,
+  atomic write (temp file + replace), schema version field. Its contract is shared with an in-memory fake
+  in `tests/contract/test_chunk_repository_contract.py`.
+- **S5** — `ingestion/adapters/outbound/local_file_fetcher.py`: reads a saved HTML snapshot from disk. No
+  HTTP fetcher in this task (polite HTTP fetching is the next task).
+- **S6** — `ingestion/adapters/outbound/patch_notes_parser.py`: official forum thread HTML → chunks.
+  - Detect the patch version from the thread title; unknown/unparseable → specific error.
+  - `SourceRef(type="patch_notes", url=<thread url>, captured_at=<fetched_at date>)`.
+  - Strip markup to clean text; keep bullet structure as lines.
+  - The domain and application layers stay stdlib-only; `beautifulsoup4` is adapter-only
+    (`uv add beautifulsoup4`).
+- **S7** — Tests never touch the network. Small hand-written HTML fixtures under `tests/fixtures/` mirror
+  the real thread structure (title, post body, headings, bullet lists). At most one real thread may be
+  downloaded manually into the gitignored `data/raw/`, with an identifiable User-Agent after checking
+  `https://www.pathofexile.com/robots.txt`; it is never committed and fixtures only quote short lines.
+- **S8** — Modeling decision (MVP): a patch note is its own entity, not a transition applied to gem chunks:
+  `EntityRef(kind="patch_notes", slug="<major>-<minor>-<patch>", name="Patch <version>")`, one `Chunk` per
+  top-level section (section = heading slug), `Validity(valid_from=<that patch>, valid_until=None)`.
+  Applying notes as transitions that close `valid_until` needs poe2db data first; it is out of scope.
+  Recorded in `docs/architecture.md` §10.
+- **S9** — TDD: tests first, observe RED, implement GREEN, refactor while green. Required tests: version
+  detection (valid, missing, malformed); one chunk per section with correct `chunk_id`; validity starts at
+  the detected patch and is open; empty/garbage HTML raises; unknown patch rejected by `IngestSource`;
+  duplicate `chunk_id`s rejected; repository round-trip and upsert; atomic write leaves no partial file on
+  failure.
+- **S10** — Code, tests, docs and commit messages in English. `docs/architecture.md` stays Spanish because
+  the whole document is (same precedent as `odd/tasks/answer-question.md` L2.7).
+- **S11** — Out of scope: HTTP fetching, poe2db and poe2wiki adapters, `ReindexCorpus`, indexes, CLI
+  `ingest`.
+- **S12** — Branch `feat/ingest` from `main`. Feature doc `odd/tasks/ingest-patch-notes.md`. One
+  Conventional Commit per task, no `Co-Authored-By` or any AI attribution. Do not push or open a PR.
+- **S13** — `uv run pytest -q` passes; the report states `<command>: <observed result>` and RED/GREEN counts
+  per task. About 400 authored changed lines per task is a planning heuristic, not a cap.
+
+## Non-goals
+- HTTP fetching, caching, rate limiting and robots handling (the next task).
+- poe2db and poe2wiki adapters.
+- `ReindexCorpus`, BM25/Chroma indexes and the CLI `ingest` command.
+- Applying patch notes as transitions over gem chunks (needs poe2db data).
+- Parsing patch versions with a letter suffix (`0.5.5e`): `PatchVersion` is `major.minor.patch`, so such a
+  title is reported as unparseable instead of being silently mapped to a different patch.
+
+## Acceptance criteria
+- One command (`IngestSource.execute`) takes a locator to persisted, catalog-approved chunks, and every
+  rejection fails loud with a specific error instead of dropping data.
+- Re-running the same document writes nothing new and reports every chunk as skipped.
+- The JSON repository round-trips every `Chunk` field and never leaves a partial file.
+- The parser produces one chunk per top-level section, with `chunk_id`
+  `<source.type>:patch_notes:<major>-<minor>-<patch>@<version>#<section>` and an open validity range.
+- `uv run pytest -q` green; no test reads the network.
+
+## Checks
+- `uv run pytest -q`
+- Import boundary, by inspection plus `grep`: `ingestion/application` and `shared/domain` import only the
+  standard library and `poe2_rag.shared.domain`; `beautifulsoup4` appears only in the parser adapter.
+- Type check, best effort and **not** a gate: `uvx pyright==1.1.414` (Pyright is not a project dependency;
+  see `odd/tasks/patch-catalog.md` T13).
+- Import order, as used by the repository: `uvx ruff check --select I src/poe2_rag/ingestion tests/unit/ingestion`.
+
+## Tasks
+- [ ] T1 — Branch `feat/ingest`, feature doc, Engram mirror. Route: inline. S12.
+- [ ] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
+- [ ] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
+- [ ] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
+- [ ] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
+- [ ] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: inline. S6, S7.
+- [ ] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
+- [ ] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
+
+## Progress / Evidence
+- T1: branch `feat/ingest` reset to `main` (`c907558`; the old local branch sat at `b8e19af` with no work
+  of its own). Baseline on that base: `uv run pytest -q` → 419 passed. No RED applicable (documentation
+  only).
+- T2: pending.
+- T3: pending.
+- T4: pending.
+- T5: pending.
+- T6: pending.
+- T7: pending.
+- T8: pending.
+
+## Delivery slices
+- One commit per task (S12). The adapters are one vertical slice of the same feature: they share the ports,
+  the fixtures and the domain, so they stay inline instead of being split across parallel writers.
+
+## Close
+- Pending.
+
+## Log
+
+### L1 — original request (verbatim)
+
+````text
+Implement the first ingestion slice of PoE2-RAG: the IngestSource use case, its ports,
+a JSON ChunkRepository and the official patch notes parser, test-first.
+
+## Context (read first)
+- docs/architecture.md §4 (Chunk schema), §5 (IngestSource), §6 (ports), §7 (ingestion/ layout),
+  §8 (testing), §10 (risks: parser snapshots; patch notes describe changes, not full states).
+- docs/adr/0002-fuentes-de-datos-mvp.md: patch notes are indexed and are the source of truth for
+  validity; access rules (identifiable User-Agent, rate limit, cache, robots.txt);
+  data/raw/ and data/processed/ are gitignored because the repo is public.
+- Existing shared domain: Chunk, EntityRef, SourceRef, Validity, PatchVersion, PatchCatalog,
+  DomainError. Existing answering/application shows the port and use-case style to mirror.
+
+## Goal
+Turn one official patch notes thread into validated, persisted domain chunks, end to end,
+without network access in tests.
+
+## Modeling decision (MVP)
+A patch note is its own entity, not a transition applied to gem chunks:
+- `EntityRef(kind="patch_notes", slug="<major>-<minor>-<patch>", name="Patch <version>")`
+- one Chunk per top-level section of the notes (section = slug of the heading),
+- `Validity(valid_from=<that patch>, valid_until=None)`: a change is a fact from that patch on.
+Applying notes as transitions that close `valid_until` on gem chunks needs poe2db data first;
+it is out of scope here. Record this decision in the feature doc and in architecture.md §10.
+
+## Scope
+1. ingestion/application/ports.py (typing.Protocol):
+   - `SourceFetcher.fetch(locator: str) -> RawDocument`
+     where `RawDocument(locator, content: str, fetched_at: datetime, source_type: str)` is frozen.
+   - `DocumentParser.parse(raw: RawDocument) -> Sequence[Chunk]`
+   - `ChunkRepository.save(chunks: Sequence[Chunk]) -> None` (upsert by chunk_id)
+     and `ChunkRepository.all() -> Sequence[Chunk]`.
+2. ingestion/application/ingest_source.py: `IngestSource(fetcher, parser, repository, catalog)`;
+   `execute(locator) -> IngestReport(locator, chunk_ids, skipped)`:
+   fetch → parse → reject chunks whose valid_from is unknown to the PatchCatalog
+   (specific error, fail loud) → reject duplicate chunk_ids within one document → save.
+   Application errors subclass a new `IngestionError`.
+3. ingestion/adapters/outbound/json_chunk_repository.py: one JSON file under a directory given
+   by constructor (production default data/processed/). Lossless round-trip of every Chunk field,
+   atomic write (temp file + replace), schema version field. Contract tests shared with an
+   in-memory fake (tests/contract/test_chunk_repository_contract.py).
+4. ingestion/adapters/outbound/local_file_fetcher.py: reads a saved HTML snapshot from disk.
+   No HTTP fetcher in this task (polite HTTP fetching is the next task).
+5. ingestion/adapters/outbound/patch_notes_parser.py: official forum thread HTML → chunks.
+   - Detect the patch version from the thread title; unknown/unparseable → specific error.
+   - `SourceRef(type="patch_notes", url=<thread url>, captured_at=<fetched_at date>)`.
+   - Strip markup to clean text; keep bullet structure as lines.
+   - beautifulsoup4 is allowed as an adapter-only dependency (`uv add beautifulsoup4`);
+     the domain and application layers stay stdlib-only.
+
+## Fixtures
+- Tests never touch the network. Use small hand-written HTML fixtures under tests/fixtures/
+  that mirror the real thread structure (title, post body, headings, bullet lists).
+- To learn the real structure you may download ONE thread manually into data/raw/ (gitignored),
+  after checking https://www.pathofexile.com/robots.txt, with an identifiable User-Agent.
+  Never commit it. Short quoted lines in fixtures are fine; whole posts are not.
+- Update architecture.md §10: parser tests run on committed minimal fixtures; full snapshots
+  stay in the gitignored data/raw/.
+
+## Rules
+- TDD: tests first, observe RED, implement GREEN, refactor while green.
+- Required tests: version detection (valid, missing, malformed); one chunk per section with
+  correct chunk_id; validity starts at the detected patch and is open; empty/garbage HTML raises;
+  unknown patch rejected by IngestSource; duplicate chunk_ids rejected; repository round-trip
+  and upsert; atomic write leaves no partial file on failure.
+- Out of scope: HTTP fetching, poe2db and poe2wiki adapters, ReindexCorpus, indexes, CLI `ingest`.
+- Code, tests, docs and commit messages in English.
+- About 400 authored changed lines per task is a planning heuristic, not a cap.
+
+## Allowed edit surfaces
+src/poe2_rag/ingestion/**
+tests/unit/ingestion/**
+tests/contract/test_chunk_repository_contract.py
+tests/fixtures/patch_notes/**
+pyproject.toml
+uv.lock
+odd/tasks/ingest-patch-notes.md
+docs/architecture.md
+
+## Delivery
+- Branch feat/ingest from main (the local feat/ingest has no commits; reset it to main or
+  recreate it). Feature doc odd/tasks/ingest-patch-notes.md with task IDs, route per task and
+  RED/GREEN evidence.
+- One Conventional Commit per task. No Co-Authored-By or any AI attribution.
+- Do not push or open a PR.
+
+## Verification
+- `uv run pytest -q` passes. Report `<command>: <observed result>` and RED/GREEN counts per task.
+
+## Return
+Concise report: tasks done, commits, test counts, deviations from this prompt and why.
+Close with a `## Key Learnings` block of 1–5 numbered standalone facts.
+````
+
+### L2 — decisions taken while planning
+- `EntityRef` has a closed kind vocabulary that does not include `patch_notes`. Adding the kind to
+  `src/poe2_rag/shared/domain/entity_ref.py` (one entry) is required by the modeling decision, so it is
+  done even though it sits outside the listed edit surfaces; the shared domain test that enumerates the
+  vocabulary gets the matching value. Everything else stays inside the surfaces.
+- `RawDocument` has no URL field and a local snapshot is not a URL, so the parser recovers the thread URL
+  from the thread's own `/forum/post-reply/<thread_id>` links (falling back to `/forum/view-thread/<id>`);
+  when the locator already is an absolute http(s) URL, the locator wins. The future HTTP fetcher therefore
+  needs no parser change.
+- A document with no section headings (hotfix notes, as the downloaded snapshot shows) produces one chunk
+  whose section is `notes`; text before the first section heading becomes a chunk whose section is
+  `overview`. Both are documented in the parser docstring.
+- The parser splits at the shallowest heading level found after the document title, so deeper headings stay
+  inside their section instead of creating chunks; this is what "one chunk per top-level section" means.
+- `IngestSource` skips chunks already stored with an identical value, so `IngestReport.skipped` is
+  observable and a second run over the same snapshot writes nothing.
+- `LocalFileFetcher` uses the snapshot's mtime as `fetched_at`: the citation date must be when the snapshot
+  was captured, not when it was read.
+- The downloaded reference thread is `0.5.5e` (thread 4009785), whose title the MVP rejects as unparseable
+  because `PatchVersion` is `major.minor.patch`. It is used only to learn the page skeleton; the committed
+  fixtures use numeric patch titles. The limitation is recorded in §10.
