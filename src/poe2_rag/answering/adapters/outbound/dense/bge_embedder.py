@@ -69,7 +69,7 @@ class _Model(Protocol):
         """Return one vector per sentence, in order."""
         ...
 
-    def get_sentence_embedding_dimension(self) -> int | None:
+    def get_embedding_dimension(self) -> int | None:
         """Return the width of the vectors this model produces."""
         ...
 
@@ -183,7 +183,7 @@ class BgeEmbedder:
         """Return the loaded model, loading it once and checking its width against the configuration."""
         if self._model_instance is None:
             model = _load_model(self._model_id, self._device)
-            produced = model.get_sentence_embedding_dimension()
+            produced = model.get_embedding_dimension()
             if produced is not None and int(produced) != self._dimension:
                 raise EmbedderConfigurationError(
                     f"model {self._model_id!r} produces {produced}-dimensional vectors, but this "

@@ -75,7 +75,7 @@ class StubModel:
         )
         return [[float(index + 1)] * self._dimension for index in range(len(sentences))]
 
-    def get_sentence_embedding_dimension(self) -> int:
+    def get_embedding_dimension(self) -> int:
         return self._dimension
 
 
