@@ -30,3 +30,12 @@ class DuplicateChunkIdError(IngestionError):
     A duplicate means two different sections resolve to the same identity, so persisting both would
     silently keep only one. The run stops before anything is written.
     """
+
+
+class ChunkIdentityConflictError(IngestionError):
+    """Raised when a `chunk_id` already stored from another source document is claimed again.
+
+    `chunk_id` covers source type, entity, patch and section but not the document URL, so two
+    threads of the same patch with a section of the same name would resolve to one identity. The run
+    stops instead of overwriting the first document's text and moving its citation to the second URL.
+    """

@@ -60,6 +60,7 @@ def make_chunk(
     version: str = "0.1.0",
     *,
     text: str | None = None,
+    url: str = THREAD_URL,
 ) -> Chunk:
     """Build one patch-notes chunk, the modelling decision of `odd/tasks/ingest-patch-notes.md` S8."""
     parsed = PatchVersion.parse(version)
@@ -69,7 +70,7 @@ def make_chunk(
         validity=Validity(parsed),
         section=section,
         text=text if text is not None else f"Notes for {section} in {parsed}.",
-        source=SourceRef("patch_notes", THREAD_URL, FETCHED_AT.date()),
+        source=SourceRef("patch_notes", url, FETCHED_AT.date()),
     )
 
 

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from poe2_rag.ingestion.application.errors import (
+    ChunkIdentityConflictError,
     DuplicateChunkIdError,
     UnknownPatchError,
 )
@@ -54,8 +55,10 @@ class IngestSource:
         The order is fixed: fetch, parse, reject chunks whose `valid_from` is unknown to the catalog,
         reject duplicate `chunk_id` values, then upsert only what changed. Both rejections fail loud
         (D1): dropping an unknown or repeated chunk would persist a corpus that silently disagrees
-        with its source. Nothing is written when no chunk survives; a document whose chunks are all
-        already stored is a no-op that reports them as skipped.
+        with its source. A `chunk_id` already stored from a different source URL is rejected as well,
+        because upserting it would move the first document's citation to the second thread. Nothing is
+        written when no chunk survives; a document whose chunks are all already stored is a no-op
+        that reports them as skipped.
         """
         raw = self._fetcher.fetch(locator)
         chunks = tuple(self._parser.parse(raw))
@@ -64,6 +67,7 @@ class IngestSource:
         if not chunks:
             return IngestReport(locator, (), 0)
         stored = {chunk.chunk_id: chunk for chunk in self._repository.all()}
+        _require_same_source(chunks, stored)
         changed = tuple(chunk for chunk in chunks if stored.get(chunk.chunk_id) != chunk)
         if changed:
             self._repository.save(changed)
@@ -93,3 +97,20 @@ def _require_distinct_ids(chunks: Sequence[Chunk]) -> None:
                 f"the document produced {chunk.chunk_id!r} more than once"
             )
         seen.add(chunk.chunk_id)
+
+
+def _require_same_source(chunks: Sequence[Chunk], stored: dict[str, Chunk]) -> None:
+    """Raise when a stored `chunk_id` belongs to another document URL.
+
+    A re-capture of the same thread is an update, so only the source identity is compared: the
+    capture date may change without the identity moving.
+    """
+    for chunk in chunks:
+        existing = stored.get(chunk.chunk_id)
+        if existing is None:
+            continue
+        if existing.source.type != chunk.source.type or existing.source.url != chunk.source.url:
+            raise ChunkIdentityConflictError(
+                f"chunk {chunk.chunk_id!r} is already stored from {existing.source.url!r} "
+                f"and cannot be claimed by {chunk.source.url!r}"
+            )

@@ -1,6 +1,7 @@
 """Ingestion application: one source orchestrated over its outbound ports (§5)."""
 
 from poe2_rag.ingestion.application.errors import (
+    ChunkIdentityConflictError,
     DuplicateChunkIdError,
     IngestionError,
     InvalidRawDocumentError,
@@ -15,6 +16,7 @@ from poe2_rag.ingestion.application.ports import (
 )
 
 __all__ = [
+    "ChunkIdentityConflictError",
     "ChunkRepository",
     "DocumentParser",
     "DuplicateChunkIdError",

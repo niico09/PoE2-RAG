@@ -168,9 +168,18 @@ def _build_chunks(path: Path, data: object) -> tuple[Chunk, ...]:
     entries = data["chunks"]
     if not isinstance(entries, list):
         raise ChunkRepositoryLoadError(f"{path}: 'chunks' must be an array, got {entries!r}")
-    return tuple(
-        _build_chunk(path, index, entry) for index, entry in enumerate(entries)
-    )
+    chunks = tuple(_build_chunk(path, index, entry) for index, entry in enumerate(entries))
+    _require_unique_ids(path, chunks)
+    return chunks
+
+
+def _require_unique_ids(path: Path, chunks: tuple[Chunk, ...]) -> None:
+    """Reject a file that stores one `chunk_id` twice, so the corpus stays keyed by identity."""
+    seen: set[str] = set()
+    for chunk in chunks:
+        if chunk.chunk_id in seen:
+            raise ChunkRepositoryLoadError(f"{path}: duplicate chunk_id {chunk.chunk_id!r}")
+        seen.add(chunk.chunk_id)
 
 
 def _build_chunk(path: Path, index: int, entry: object) -> Chunk:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,7 +37,7 @@ def make_chunk(section: str = "general-changes", text: str = "Notes.") -> Chunk:
     )
 
 
-def read_file(path: Path) -> dict[str, object]:
+def read_file(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -96,6 +97,19 @@ class TestPersistence:
             JsonChunkRepository(tmp_path).all()
 
         assert "schema_version" in str(exc_info.value)
+
+    def test_rejects_duplicate_chunk_ids(self, tmp_path: Path) -> None:
+        repository = JsonChunkRepository(tmp_path)
+        repository.save((make_chunk(),))
+        document = read_file(repository.path)
+        entry = document["chunks"][0]
+        document["chunks"] = [entry, entry]
+        repository.path.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(ChunkRepositoryLoadError) as exc_info:
+            repository.all()
+
+        assert make_chunk().chunk_id in str(exc_info.value)
 
     def test_rejects_a_chunk_with_a_missing_field(self, tmp_path: Path) -> None:
         path = tmp_path / "chunks.json"
