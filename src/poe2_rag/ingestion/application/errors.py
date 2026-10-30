@@ -49,3 +49,13 @@ class EmptyCorpusError(IngestionError):
     is called, so the index of the previous rebuild survives untouched instead of being replaced by
     an empty one.
     """
+
+
+class EmbedderContractError(IngestionError):
+    """Raised when the document embedder breaks its port contract while a reindex runs.
+
+    The port promises one vector per text in the same order, and overflow positions inside the batch
+    it was given. A short batch or an index past the end would pair a vector with the wrong chunk or
+    leave one unindexed, so the run stops before either writer runs instead of persisting a dense
+    index that silently disagrees with the corpus.
+    """

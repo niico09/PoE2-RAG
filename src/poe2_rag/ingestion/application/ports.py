@@ -101,3 +101,52 @@ class LexicalIndexWriter(Protocol):
         that silently answers "no information".
         """
         ...
+
+
+@runtime_checkable
+class DocumentEmbedder(Protocol):
+    """Turn corpus text into the vectors the dense index stores (ADR-0004).
+
+    This is the batch half of the embedder: the query-side port, `Embedder.embed`, lives in
+    `answering/application/ports.py` and takes one text. One adapter implements both, and whichever
+    instruction prefix the model needs is applied on the query side only, never to documents.
+    """
+
+    def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        """Return one vector per text, in the same order and with the model's fixed dimension.
+
+        The caller passes the whole corpus in one call; batching is the adapter's concern, because
+        the batch size is a property of the model and the device, not of the corpus. A vector count
+        that does not match the texts is a broken contract: `ReindexCorpus` refuses it before any
+        writer runs, so a short batch never becomes a partially indexed corpus.
+        """
+        ...
+
+    def overflowing_indices(self, texts: Sequence[str]) -> tuple[int, ...]:
+        """Return the positions of the texts longer than the model's maximum sequence length.
+
+        Models truncate their input silently, so the caller cannot learn from the vectors what it
+        lost. Reporting the positions instead lets the reindex name the affected chunks while the
+        corpus keeps serving them through the lexical index, which reads the full text (ADR-0004).
+        """
+        ...
+
+
+@runtime_checkable
+class VectorIndexWriter(Protocol):
+    """Rebuild the dense index from the corpus and the vectors computed for it (§6).
+
+    `VectorIndex` in `answering/application/ports.py` stays the read port, for the same reason the
+    lexical pair is split. The adapter receives the vectors instead of computing them: the embedder
+    decides how a document is embedded, and the index decides how a vector is stored and filtered.
+    """
+
+    def rebuild(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        """Replace the persisted index with `chunks` and their `vectors`, in one atomic step.
+
+        `vectors[i]` is the embedding of `chunks[i]`: the two sequences are positional and must have
+        the same length. Like the lexical rebuild it replaces the whole index instead of upserting,
+        and a failed rebuild leaves the previous one in place. `chunks` must be non-empty: the
+        caller owns the empty-corpus rule (`ReindexCorpus` rejects it before calling).
+        """
+        ...

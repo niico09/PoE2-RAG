@@ -135,3 +135,78 @@ class FakeLexicalIndexWriter:
     def chunks(self) -> tuple[Chunk, ...]:
         """The chunks the last successful rebuild received."""
         return self._chunks
+
+
+DEFAULT_DIMENSION = 4
+
+
+class FakeDocumentEmbedder:
+    """Returns one scripted vector per text and reports the scripted overflow positions.
+
+    `vector_count` shortens the returned batch on purpose, so a test can prove the use case refuses an
+    embedder that drops or adds a vector instead of handing an inconsistent pair to the writers.
+    """
+
+    def __init__(
+        self,
+        recorder: CallRecorder,
+        *,
+        dimension: int = DEFAULT_DIMENSION,
+        overflowing: Sequence[int] = (),
+        vector_count: int | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._recorder = recorder
+        self._dimension = dimension
+        self._overflowing = tuple(overflowing)
+        self._vector_count = vector_count
+        self._error = error
+
+    def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        self._recorder.record("embed_documents", tuple(texts))
+        if self._error is not None:
+            raise self._error
+        count = len(texts) if self._vector_count is None else self._vector_count
+        return self.vectors(count)
+
+    def overflowing_indices(self, texts: Sequence[str]) -> tuple[int, ...]:
+        self._recorder.record("overflowing_indices", tuple(texts))
+        return self._overflowing
+
+    def vectors(self, count: int) -> tuple[tuple[float, ...], ...]:
+        """Return `count` distinct unit vectors, so a test can match each vector to its position."""
+        return tuple(
+            tuple(
+                1.0 if offset == position % self._dimension else 0.0
+                for offset in range(self._dimension)
+            )
+            for position in range(count)
+        )
+
+
+class FakeVectorIndexWriter:
+    """Records every rebuild with the exact chunks and vectors it received and keeps the last ones."""
+
+    def __init__(self, recorder: CallRecorder, error: Exception | None = None) -> None:
+        self._recorder = recorder
+        self._error = error
+        self._chunks: tuple[Chunk, ...] = ()
+        self._vectors: tuple[tuple[float, ...], ...] = ()
+
+    def rebuild(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        materialized = tuple(tuple(vector) for vector in vectors)
+        self._recorder.record("vector_rebuild", tuple(chunks), materialized)
+        if self._error is not None:
+            raise self._error
+        self._chunks = tuple(chunks)
+        self._vectors = materialized
+
+    @property
+    def chunks(self) -> tuple[Chunk, ...]:
+        """The chunks the last successful rebuild received."""
+        return self._chunks
+
+    @property
+    def vectors(self) -> tuple[tuple[float, ...], ...]:
+        """The vectors the last successful rebuild received."""
+        return self._vectors
