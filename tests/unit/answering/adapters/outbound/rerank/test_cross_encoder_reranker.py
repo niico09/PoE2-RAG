@@ -4,6 +4,9 @@ The real `BAAI/bge-reranker-base` is exercised by `tests/integration/test_rerank
 Here the scorer is injected, so the default suite stays offline and fast while still pinning every rule
 the adapter owns: the scoring pairs it builds, the total order it returns, the budget it respects, and
 the stage scores it must not touch.
+
+A stub is enough because the adapter owns no model behaviour: the cross-encoder only has to return
+numbers, and the ranking is the adapter's job.
 """
 
 from __future__ import annotations
@@ -51,15 +54,17 @@ class PredictCall:
 class StubScorer:
     """Stands in for `CrossEncoder`: records every call and returns the scores it was given."""
 
-    def __init__(self, scores: list[Any]) -> None:
+    def __init__(self, scores: Any) -> None:
         self.calls: list[PredictCall] = []
         self._scores = scores
 
     def predict(
         self, inputs: list[tuple[str, str]], *, batch_size: int, show_progress_bar: bool
-    ) -> list[Any]:
+    ) -> Any:
         self.calls.append(PredictCall(tuple(inputs), batch_size, show_progress_bar))
-        return list(self._scores)
+        # Returned as stored: the real model hands back an `ndarray`, not a list, so the stub must
+        # not quietly normalize the one shape the adapter has to accept.
+        return self._scores
 
 
 def make_retrieved(section: str, text: str) -> RetrievedChunk:
@@ -79,7 +84,7 @@ BETA = make_retrieved("beta", "Spark chains to two enemies.")
 GAMMA = make_retrieved("gamma", "Glacial Cascade freezes enemies.")
 
 
-def make_reranker(scores: list[Any], **kwargs: Any) -> tuple[CrossEncoderReranker, StubScorer]:
+def make_reranker(scores: Any, **kwargs: Any) -> tuple[CrossEncoderReranker, StubScorer]:
     """Build a reranker over a stub scorer and hand both back for assertions."""
     scorer = StubScorer(scores)
     return CrossEncoderReranker(scorer=scorer, **kwargs), scorer
@@ -196,11 +201,34 @@ def test_a_candidate_that_is_a_string_is_not_read_as_a_sequence_of_chunks() -> N
         reranker.rerank(QUERY, "alpha", 1)  # type: ignore[arg-type]
 
 
+def test_a_scorer_returning_the_numpy_array_the_real_model_returns_is_accepted() -> None:
+    """The real `CrossEncoder.predict` returns an `ndarray` of `float32`, not a `Sequence` of floats."""
+    import numpy
+
+    scores = numpy.array([0.1, 0.9, 0.5], dtype=numpy.float32)
+    reranker, _ = make_reranker(scores)  # type: ignore[arg-type]
+
+    reranked = reranker.rerank(QUERY, (ALPHA, BETA, GAMMA), 2)
+
+    # `numpy.float32` is not a Python `float`: the adapter must convert, not reject, what the model
+    # actually produces.
+    assert [item.chunk.chunk_id for item in reranked] == [BETA.chunk.chunk_id, GAMMA.chunk.chunk_id]
+    assert [item.scores.rerank for item in reranked] == [0.8999999761581421, 0.5]
+
+
 def test_a_scorer_that_returns_the_wrong_number_of_scores_raises() -> None:
     reranker, _ = make_reranker([0.5, 0.5])
 
     with pytest.raises(RerankScoringError):
         reranker.rerank(QUERY, (ALPHA, BETA, GAMMA), 3)
+
+
+@pytest.mark.parametrize("raw", [0.5, None, object()])
+def test_a_scorer_that_returns_something_that_is_not_iterable_raises(raw: Any) -> None:
+    reranker, _ = make_reranker(raw)
+
+    with pytest.raises(RerankScoringError):
+        reranker.rerank(QUERY, (ALPHA, BETA), 2)
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), None, "0.5", True])

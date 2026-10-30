@@ -177,13 +177,18 @@ def _require_candidates(candidates: object) -> tuple[RetrievedChunk, ...]:
 def _require_scores(raw: object, expected: int) -> list[float]:
     """Return one finite float per pair, so a malformed scorer cannot rank the context.
 
-    The real model returns numpy scalars, so each value is converted with `float` rather than
-    checked against `int`/`float`; strings and booleans are rejected before that conversion, because
-    `float("0.5")` and `float(True)` would be accepted silently.
+    The real `CrossEncoder.predict` returns an `ndarray` of `float32`, which is iterable but is not a
+    `collections.abc.Sequence` and whose elements are not Python floats, so anything iterable is
+    accepted and each value is converted with `float`, rather than checked against `int`/`float`.
+    Strings and booleans are rejected before that conversion, because `float("0.5")` and
+    `float(True)` would be accepted silently.
     """
-    if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
-        raise RerankScoringError(f"the scorer must return a sequence of scores, got {raw!r}")
-    values = list(raw)
+    if isinstance(raw, (str, bytes)) or not hasattr(raw, "__iter__"):
+        raise RerankScoringError(f"the scorer must return iterable scores, got {raw!r}")
+    try:
+        values = list(raw)
+    except TypeError as exc:
+        raise RerankScoringError(f"the scorer must return iterable scores, got {raw!r}") from exc
     if len(values) != expected:
         raise RerankScoringError(
             f"the scorer returned {len(values)} scores for {expected} candidate pairs"
