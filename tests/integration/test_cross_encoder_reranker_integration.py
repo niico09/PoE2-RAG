@@ -81,7 +81,11 @@ def test_the_real_model_ranks_the_obviously_relevant_chunk_first() -> None:
 def test_the_real_model_scores_are_finite_ordered_and_keep_the_earlier_stages() -> None:
     reranked = CrossEncoderReranker().rerank(QUESTION, CANDIDATES, 2)
 
-    first, second = (item.scores.rerank for item in reranked)
-    assert first is not None and second is not None
-    assert first > second > 0 or first < second < 0
+    scores = [item.scores.rerank for item in reranked]
+    assert all(score is not None for score in scores)
+    ordered = [score for score in scores if score is not None]
+    # Strictly decreasing over the whole ranking: `StageScores` already rejects a non-finite score, so
+    # what the adapter owes is the total order it sorts by.
+    assert ordered == sorted(ordered, reverse=True)
+    assert len(set(ordered)) == len(ordered)
     assert all(item.scores.lexical == 0.5 and item.scores.dense == 0.25 for item in reranked)
