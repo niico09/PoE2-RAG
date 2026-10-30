@@ -1,13 +1,13 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado; ingesta y recuperación léxica implementadas**. Implementados el modelo
-> de dominio de §4, el puerto `PatchCatalog` con su adaptador TOML, el caso de uso `AnswerQuestion` de
-> §5.1 con sus puertos de consulta (probado con *fakes*), el primer corte de ingesta de §5.2:
-> `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de
-> parche, y el índice léxico de §5.3: `ReindexCorpus`, el tokenizador determinista y el adaptador BM25
-> Okapi, probados con fakes y, de punta a punta, sobre el repositorio JSON del corpus. Todavía no: el fetcher
-> HTTP, los adaptadores de poe2db y poe2wiki.net, el índice vectorial (Chroma), el embedder, el reranker, el
-> LLM, la CLI y la evaluación de §8.
+> Estado: **diseño del MVP acordado; ingesta, recuperación léxica y recuperación densa implementadas**.
+> Implementados el modelo de dominio de §4, el puerto `PatchCatalog` con su adaptador TOML, el caso de uso
+> `AnswerQuestion` de §5.1 con sus puertos de consulta (probado con *fakes*), el primer corte de ingesta de
+> §5.2: `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de
+> parche, y los dos índices de §5.3 a §5.5: `ReindexCorpus`, el tokenizador determinista, el adaptador BM25
+> Okapi, el embedder local `bge-base-en-v1.5` y el índice vectorial sobre Chroma embebido, probados con fakes,
+> con un embedder determinista y, de punta a punta, sobre el repositorio JSON del corpus. Todavía no: el
+> fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el reranker, el LLM, la CLI y la evaluación de §8.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -137,8 +137,8 @@ El esquema actual del README tiene dos problemas de diseño:
 ### 5.1 Flujo de `AnswerQuestion`
 
 1. **Análisis de la consulta:** detectar entidades (nombres de gemas), tipo de modificador mencionado y versión objetivo. Sin versión explícita, usar la actual del `PatchCatalog`.
-2. **Pre-filtrado por vigencia:** ambos índices reciben el filtro `is_valid_at(target_version)`. **El filtro se aplica antes de la fusión**, nunca después: si se filtra tarde, RRF ya mezcló rankings con datos obsoletos y el top-K queda con huecos. Si un índice devuelve un chunk que no es vigente para la versión objetivo, `AnswerQuestion` falla con `StaleChunkError` en vez de descartarlo: el contrato del índice está roto y descartar dejaría el mismo hueco. El adaptador léxico del MVP filtra sobre los objetos de dominio (`Chunk.is_valid_at`) y rankea solo los candidatos vigentes; el entero ordenable de [ADR-0003](adr/0003-vector-store-chroma.md) es un detalle del adaptador de Chroma, no del puerto.
-3. **Recuperación híbrida:** BM25 (top-N) y vectorial (top-N). En el MVP las dos búsquedas corren en serie; paralelizarlas es una decisión del adaptador, no del caso de uso.
+2. **Pre-filtrado por vigencia:** ambos índices reciben el filtro `is_valid_at(target_version)`. **El filtro se aplica antes de la fusión**, nunca después: si se filtra tarde, RRF ya mezcló rankings con datos obsoletos y el top-K queda con huecos. Si un índice devuelve un chunk que no es vigente para la versión objetivo, `AnswerQuestion` falla con `StaleChunkError` en vez de descartarlo: el contrato del índice está roto y descartar dejaría el mismo hueco. El adaptador léxico del MVP filtra sobre los objetos de dominio (`Chunk.is_valid_at`) y rankea solo los candidatos vigentes; el adaptador de Chroma filtra **dentro de la consulta** con el entero ordenable de [ADR-0003](adr/0003-vector-store-chroma.md), que es un detalle suyo y no del puerto.
+3. **Recuperación híbrida:** BM25 (top-N) y vectorial (top-N). En el MVP las dos búsquedas corren en serie; paralelizarlas es una decisión del adaptador, no del caso de uso. Las dos están implementadas: el índice léxico de §5.4 y el denso de §5.5.
 4. **Fusión:** Reciprocal Rank Fusion sobre ambos rankings.
 5. **Reranking:** cross-encoder sobre el top-M fusionado → top-K final.
 6. **Construcción de contexto:** cada chunk se entrega al LLM con su `chunk_id` y versión.
@@ -162,20 +162,25 @@ Las notas de parche son la primera fuente implementada; el modelo de vigencia qu
 
 1. **Lectura única:** el caso de uso lee el corpus procesado una vez y lo congela en una tupla de chunks.
    Cada escritor recibe ese mismo snapshot, así dos índices de una misma corrida describen el mismo corpus.
-2. **Corpus vacío:** un corpus sin chunks aborta con `EmptyCorpusError` **antes** de llamar a ningún
-   escritor. Un índice construido desde nada respondería "no hay información" a toda consulta (D1), y
+2. **Corpus vacío:** un corpus sin chunks aborta con `EmptyCorpusError` **antes** de llamar al embedder o a
+   ningún escritor. Un índice construido desde nada respondería "no hay información" a toda consulta (D1), y
    reemplazar un índice bueno por uno vacío convertiría un reindexado roto en una regresión silenciosa.
-3. **Reconstrucción:** el escritor léxico (`LexicalIndexWriter`) reescribe el índice completo desde el
-   snapshot: es un rebuild, no un upsert. Una escritura fallida deja el índice anterior intacto.
-4. **Informe:** `ReindexReport(chunk_count, rebuilt_at)`, con el tamaño del corpus leído y el momento UTC en
-   que terminó la corrida. Un escritor que falla propaga su error y no se informa ningún índice.
-5. **Seam del índice vectorial:** cuando exista el `VectorIndex`, reconstruirá desde el mismo snapshot a
-   continuación del léxico. Hoy no está implementado.
+3. **Embedding primero:** el `DocumentEmbedder` vectoriza todos los textos del snapshot en una sola llamada
+   (los lotes los decide el adaptador) y el caso de uso verifica que haya exactamente un vector por chunk. Un
+   modelo que no puede cargar deja los dos índices persistidos intactos, en vez de dejar un índice léxico
+   reconstruido al lado de uno denso viejo. Las posiciones de los textos que superan el límite de secuencia se
+   traducen a `chunk_id` para el informe.
+4. **Reconstrucción:** los dos escritores (`LexicalIndexWriter` y `VectorIndexWriter`) reescriben su índice
+   completo desde el snapshot: es un rebuild, no un upsert. Una escritura fallida deja el índice anterior
+   intacto.
+5. **Informe:** `ReindexReport(chunk_count, rebuilt_at, truncated_chunk_ids)`, con el tamaño del corpus leído,
+   el momento UTC en que terminó la corrida y los chunks que el embedder tuvo que cortar. Un escritor que falla
+   propaga su error y no se informa ningún índice.
 
-El orden importa: leer antes de rechazar y rechazar antes de escribir significa que una corrida fallida no
-reemplaza el índice que ya existía. Hoy hay un solo escritor, así que el caso de uso no puede prometer
-atomicidad *entre* escritores: cuando llegue el índice vectorial, un rebuild léxico exitoso seguido de uno
-vectorial fallido dejará índices de versiones distintas. Ese estado mixto se registra como riesgo en §10.
+El orden importa: leer antes de rechazar, rechazar antes de escribir y embeber antes de escribir significa que
+una corrida fallida por corpus vacío o por modelo roto no reemplaza ninguno de los dos índices. Entre escritores
+no hay atomicidad: un rebuild léxico exitoso seguido de uno vectorial fallido deja índices de versiones
+distintas. Ese estado mixto se registra como riesgo en §10.
 
 ### 5.4 Flujo de búsqueda léxica
 
@@ -210,6 +215,48 @@ los chunks completos que la consulta devuelve dentro de `RetrievedChunk`.
 - **Archivo vigente:** el lector cachea el índice decodificado y revalida la identidad del archivo (mtime, tamaño, inodo)
   en cada búsqueda, así un reindexado hecho por otra instancia no lo deja respondiendo con el índice viejo.
 
+### 5.5 Flujo de búsqueda densa
+
+El adaptador `BgeEmbedder` implementa los dos puertos del embedder (ADR-0004):
+
+- **Consulta con instrucción, documentos sin ella.** `embed(text)` antepone la instrucción de recuperación del
+  modelo; `embed_documents(texts)` no. Cargar el modelo perezosamente mantiene barato el armado del pipeline y
+  deja el conjunto de tests por defecto sin red.
+- **Vectores normalizados L2** pedidos al modelo, con la colección en espacio coseno; el puntaje denso es
+  `1 - distancia`.
+- **Sin truncado silencioso.** `overflowing_indices(texts)` cuenta tokens con el truncado apagado y reporta las
+  posiciones que superan los 512 tokens del modelo; `ReindexCorpus` las convierte en `truncated_chunk_ids`.
+- **Identidad fija.** Expone `model_id` y `dimension`; al cargar, verifica que el modelo produzca esa dimensión.
+
+El adaptador `ChromaVectorIndex` escribe y lee una colección de Chroma embebido (`chromadb.PersistentClient`):
+
+- **Metadatos de la colección:** `index_schema_version`, `embedding_model`, `dimension` y `chunk_count`. Cada
+  registro guarda el chunk serializado y los dos enteros de vigencia de ADR-0003 (`valid_from_code`,
+  `valid_until_code`), más su `chunk_id` como id.
+- **Filtro dentro de la consulta:** `where = {$and: [{valid_from_code: {$lte: v}}, {valid_until_code: {$gt: v}}]}`
+  se aplica dentro de la consulta de Chroma, así ningún registro obsoleto entra al ranking (D1).
+- **Swap atómico con puntero:** Chroma no renombra una colección de forma atómica, así que `rebuild` arma una
+  colección nueva `«nombre»__«uuid»`, la llena por lotes y recién entonces escribe el puntero
+  `data/index/chroma/<nombre>.current.json` con `mkstemp` + `os.replace`, y hace `fsync` del directorio antes
+  de borrar la colección anterior: un rename que no sobreviva a un corte no puede dejar el puntero nombrando
+  una colección ya borrada. El lector solo confía en el puntero y lo lee antes de abrir nada, así que una
+  consulta sobre un índice inexistente no crea el directorio. Chroma no transacciona entre procesos: es un
+  store local de un solo proceso (ADR-0003).
+- **Sin fugas de disco:** `delete_collection` de Chroma 1.5.9 borra las filas del catálogo pero deja el
+  directorio del segmento HNSW. Después de cada swap se leen los segmentos vivos del catálogo y se borran los
+  directorios de segmento que ninguna colección referencia; si esa lectura falla, no se borra nada.
+- **Identidad del modelo:** `search` compara `embedding_model` y `dimension` de la colección con el embedder
+  configurado y falla con `EmbeddingModelMismatchError` si no coinciden; un vector de otro largo o no finito
+  falla con `InvalidVectorError`. El vector se normaliza con `float()`: un `ndarray` de numpy también entra.
+- **Orden total:** se piden todas las filas vigentes (`n_results = count()`), se ordenan por puntaje
+  descendente y `chunk_id` ascendente, y recién después se corta en `limit`. Pedir `limit` a Chroma dejaría
+  que el store decidiera el desempate entre distancias iguales, y el puerto promete un orden total. El costo
+  es el mismo perfil que BM25: una consulta recorre el corpus vigente.
+- **Fallos explícitos:** colección ausente, puntero ausente o ilegible, esquema desconocido, registro corrupto,
+  store ilegible y rebuild fallido tienen errores propios; ninguno se convierte en un resultado vacío.
+- **Fallos explícitos:** colección ausente, puntero ausente o ilegible, esquema desconocido, registro corrupto y
+  rebuild fallido tienen errores propios; ninguno se convierte en un resultado vacío.
+
 ---
 
 ## 6. Puertos
@@ -221,13 +268,15 @@ los chunks completos que la consulta devuelve dentro de `RetrievedChunk`.
 | `ChunkRepository` | Persistir y leer el corpus procesado | JSON en `data/processed/` |
 | `LexicalIndexWriter` | Reconstruir el índice léxico desde el corpus | el mismo adaptador BM25 que `LexicalIndex` |
 | `PatchCatalog` | Parches conocidos y parche actual | archivo de configuración versionado |
-| `Embedder` | Texto → vector | `bge-base-en-v1.5` local ([ADR-0004](adr/0004-embeddings-locales.md)) |
+| `Embedder` | Texto → vector (lado de la consulta) | `bge-base-en-v1.5` local ([ADR-0004](adr/0004-embeddings-locales.md)) |
+| `DocumentEmbedder` | Textos del corpus → vectores (lado de la escritura) | el mismo adaptador `bge` que `Embedder` |
 | `LexicalIndex` | Búsqueda léxica con filtro de vigencia | BM25 Okapi propio (puro Python) con índice JSON; Tantivy a futuro |
 | `VectorIndex` | Búsqueda densa con filtro por metadatos | Chroma embebido ([ADR-0003](adr/0003-vector-store-chroma.md)); Qdrant a futuro |
+| `VectorIndexWriter` | Reconstruir el índice denso desde el corpus y sus vectores | el mismo adaptador Chroma que `VectorIndex` |
 | `Reranker` | Reordenar candidatos | `bge-reranker-base` |
 | `LanguageModel` | Generar la respuesta | Claude Sonnet 5.5 por API ([ADR-0005](adr/0005-llm-por-api.md)); Nemotron 3.5 Lightning como candidato |
 
-Los puertos son interfaces pequeñas (un método principal cada uno). En el código son `typing.Protocol`: los de consulta viven en `answering/application/ports.py` y los de ingesta en `ingestion/application/ports.py`, con sus *fakes* en `tests/` (§8). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada. El índice léxico suma además un puerto de escritura, `LexicalIndexWriter.rebuild`, que implementa el mismo adaptador: la consulta nunca adquiere la capacidad de reescribir un índice y solo `bootstrap.py` une las dos mitades.
+Los puertos son interfaces pequeñas (un método principal cada uno). En el código son `typing.Protocol`: los de consulta viven en `answering/application/ports.py` y los de ingesta en `ingestion/application/ports.py`, con sus *fakes* en `tests/` (§8). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada. Cada índice suma además un puerto de escritura que implementa el mismo adaptador: `LexicalIndexWriter.rebuild` y `VectorIndexWriter.rebuild(chunks, vectors)`. La consulta nunca adquiere la capacidad de reescribir un índice y solo `bootstrap.py` une las dos mitades. El embedder tiene la misma división: `Embedder.embed` responde a una consulta y `DocumentEmbedder` vectoriza el corpus, porque la instrucción de recuperación se aplica de un lado y no del otro (ADR-0004).
 
 ---
 
@@ -251,7 +300,7 @@ src/poe2_rag/
 │   ├── application/         # AnswerQuestion, puertos de consulta
 │   └── adapters/
 │       ├── inbound/cli/     # comando `ask`
-│       └── outbound/        # lexical/ (tokenizador + BM25), vector store, reranker, LLM
+│       └── outbound/        # lexical/ (tokenizador + BM25), dense/ (embedder bge + Chroma), reranker, LLM
 ├── evaluation/
 │   ├── application/         # RunEvaluation, métricas
 │   └── adapters/
@@ -264,7 +313,7 @@ tests/
 └── eval/                    # dataset de preguntas con respuestas esperadas
 ```
 
-**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` es la excepción deliberada: lo consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/lexical/` porque implementa también el puerto de lectura `LexicalIndex` y ambos comparten el archivo del índice; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta.
+**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Las bibliotecas externas del denso (`chromadb`, `sentence-transformers`) solo pueden importarse desde `answering/adapters/outbound/dense/`: ni el dominio ni los casos de uso las ven, y el suite por defecto las evita salvo por el adaptador de Chroma. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` y `VectorIndexWriter` son la excepción deliberada: los consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/` porque implementa también el puerto de lectura y ambos comparten el almacenamiento; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`, con `bm25.json` y el directorio `chroma/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta; el adaptador de Chroma copia el mismo codificador de chunk por la misma razón.
 
 RRF vive en el dominio de `answering` porque es una función pura sobre rankings, no depende de ninguna librería.
 
@@ -280,12 +329,19 @@ RRF vive en el dominio de `answering` porque es una función pura sobre rankings
 
 La métrica de datos obsoletos es la que protege D1: una pregunta sobre `0.2.0` que recupera un chunk válido solo en `0.1.1` cuenta como fallo.
 
-Hoy hay suites de contrato para `PatchCatalog`, `ChunkRepository` y `LexicalIndex`. La de `LexicalIndex`
-declara los bordes de vigencia como datos reutilizables (`VALIDITY_CASES`: `v == valid_from` incluido,
-`v == valid_until` excluido, vigencia abierta, `v < valid_from` excluido), de modo que la suite de
-`VectorIndex` aplique los mismos bordes a su propio `search` en vez de reescribirlos. La implementación en
-memoria del mismo archivo es la especificación ejecutable del puerto: un test que pasa en una y falla en la
-otra señala al adaptador.
+Hoy hay suites de contrato para `PatchCatalog`, `ChunkRepository`, `LexicalIndex` y `VectorIndex`. La de
+`LexicalIndex` declara los bordes de vigencia como datos reutilizables (`VALIDITY_CASES`: `v == valid_from`
+incluido, `v == valid_until` excluido, vigencia abierta, `v < valid_from` excluido), y la de `VectorIndex`
+aplica esos mismos bordes a su propio `search` en vez de reescribirlos. La implementación en memoria del mismo
+archivo es la especificación ejecutable del puerto: un test que pasa en una y falla en la otra señala al
+adaptador.
+
+El suite por defecto es **offline y rápido**: los adaptadores densos se prueban con un embedder determinista
+(*hashed bag-of-words*, dimensión fija, normalizado) en `tmp_path`, y el embedder real solo corre en un suite
+marcado `integration` que el `addopts` excluye (`uv run pytest -q -m integration` para correrlo a propósito).
+Así la descarga del modelo y su costo de CPU no entran en cada corrida, pero la prueba de que el modelo real
+produce vectores de 768 dimensiones y rankea un chunk relevante arriba de uno ajeno queda escrita y se puede
+ejecutar cuando se quiera.
 
 ---
 
@@ -317,8 +373,12 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
 | Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |
 | Un índice léxico queda desactualizado respecto del corpus | El índice persiste el `corpus_fingerprint` del corpus desde el que se construyó, y también la versión del tokenizador y los parámetros de puntuación, así que un archivo escrito con otras reglas se rechaza en vez de responder. Comparar el fingerprint con el corpus y reindexar automáticamente es trabajo del próximo corte. |
-| Un reindexado con dos escritores deja índices de versiones distintas | Hoy hay un solo escritor. Cuando exista el índice vectorial, `rebuild` garantiza atomicidad por archivo, no entre escritores: `ReindexCorpus` deberá reconstruir ambos desde el mismo snapshot y decidir qué hacer si el segundo falla. Se registra como riesgo del próximo corte. |
-| Un reindexado sobre un corpus vacío reemplaza índices buenos por índices vacíos | `ReindexCorpus` aborta con `EmptyCorpusError` antes de llamar a ningún escritor, y `rebuild` rechaza una secuencia vacía: el índice anterior sobrevive. |
+| Un reindexado con dos escritores deja índices de versiones distintas | `rebuild` garantiza atomicidad por almacenamiento, no entre los dos escritores: un rebuild léxico exitoso seguido de uno vectorial fallido deja índices de corpus distintos. `ReindexCorpus` mitiga el caso barato (lee y embebe antes de escribir, así un corpus vacío o un modelo roto no tocan ningún índice) y el estado mixto restante queda como deuda explícita hasta que los dos índices compartan un puntero de versión. |
+| Los directorios de segmento de Chroma no se recolectan y el índice crece sin cota | `_reap_segment_directories` borra los directorios que ninguna colección viva referencia, leyendo los ids del catálogo del propio store; si el catálogo cambia de esquema, no borra nada y el costo queda como deuda visible en vez de borrar datos vivos. |
+| Un reindexado sobre un corpus vacío reemplaza índices buenos por índices vacíos | `ReindexCorpus` aborta con `EmptyCorpusError` antes de llamar al embedder o a ningún escritor, y `rebuild` rechaza una secuencia vacía: el índice anterior sobrevive. |
+| El modelo de embeddings cambia y los vectores del índice dejan de ser comparables | La colección guarda `embedding_model` y `dimension`, y `search` falla con `EmbeddingModelMismatchError` si el embedder configurado no coincide; cambiar de modelo implica reindexar, nunca comparar vectores de dos modelos (ADR-0004). |
+| Un rebuild del índice denso deja la colección a medio llenar si el proceso muere | La colección nueva se llena entera antes de escribir el puntero con `os.replace` + `fsync` del directorio: hasta ese momento los lectores siguen viendo la colección anterior. Si el proceso muere, la colección sin promover sobrevive como huérfana y consume disco hasta que el siguiente rebuild exitoso la recolecta (`_reap_segment_directories`); no hay descarte automático en la muerte del proceso. El puntero no transacciona entre procesos (store local de un solo proceso, ADR-0003). |
+| Un chunk más largo que la ventana del modelo queda a medio indexar en el índice denso | El embedder reporta las posiciones que superan los 512 tokens con el truncado apagado, `ReindexCorpus` las expone como `truncated_chunk_ids` y el índice léxico sigue leyendo el texto completo: el punto ciego es visible en vez de silencioso (ADR-0004). |
 | La búsqueda léxica sin stemming no encuentra una palabra por su variante morfológica | Decisión deliberada (D2): `increased` y `more` son mecánicas distintas y `more` no es ruido. El recall semántico es trabajo del embedder y del reranker, no de la búsqueda léxica. |
 | El LLM inventa valores numéricos | Validación de citas y regla de "sin respaldo" en el dominio |
 | Sobreingeniería antes de tener datos reales | Implementar primero un corte vertical mínimo (una fuente, un índice, un LLM) y medir |

@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche) y el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el índice vectorial con su embedder, el reranker, el LLM y la CLI todavía no.
+> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido) y el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido, ambos reconstruidos por `ReindexCorpus`) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el reranker, el LLM y la CLI todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -68,7 +68,7 @@ poe2-rag/
 ├── data/
 │   ├── raw/                 # Snapshots de las fuentes sin procesar
 │   ├── processed/           # Chunks normalizados en JSON con metadatos
-│   └── index/               # Índices derivados (BM25 JSON), reconstruibles desde data/processed/
+│   └── index/               # Índices derivados (BM25 JSON y Chroma), reconstruibles desde data/processed/
 ├── docs/
 │   ├── architecture.md      # Diseño del sistema
 │   └── adr/                 # Registro de decisiones de arquitectura
@@ -127,8 +127,10 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
 - [x] Índice léxico BM25 (Okapi, puro Python) reconstruido desde el corpus con `ReindexCorpus`, con
   pre-filtrado por vigencia, tokenizador determinista y tests unitarios, de contrato y de integración.
-- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia: falta la mitad densa (Chroma y
-  embedder) y la fusión con RRF en un adaptador de entrada.
+- [x] Índice denso: embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido, con pre-filtrado
+  por vigencia dentro de la consulta, identidad del modelo persistida e informe de textos truncados.
+- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia: falta la fusión con RRF en un
+  adaptador de entrada.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
 - [ ] Generación con citas nativas y CLI.
 - [ ] Dataset de evaluación y métricas.

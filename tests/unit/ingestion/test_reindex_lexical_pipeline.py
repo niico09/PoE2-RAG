@@ -8,6 +8,7 @@ writes is the one the index reads back. This suite covers that seam with no fake
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,23 @@ from poe2_rag.shared.domain import (
 THREAD_URL = "https://www.pathofexile.com/forum/view-thread/1234567"
 CAPTURED_AT = date(2026, 10, 29)
 TARGET = PatchVersion.parse("0.2.0")
+
+
+class LexicalOnlyEmbedder:
+    """Fixed two-dimensional vectors: this suite composes the lexical half, not the dense one."""
+
+    def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0, 0.0) for _ in texts)
+
+    def overflowing_indices(self, texts: Sequence[str]) -> tuple[int, ...]:
+        return ()
+
+
+class DiscardedVectorWriter:
+    """Accepts the rebuild and stores nothing, so the dense half stays out of this suite."""
+
+    def rebuild(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        return None
 
 
 def make_chunk(
@@ -72,15 +90,25 @@ def reindexed(tmp_path: Path) -> tuple[JsonChunkRepository, tuple[Chunk, ...], P
     """Persist the corpus and rebuild the index from it, as the composition root will."""
     repository, chunks = seeded_corpus(tmp_path)
     index_directory = tmp_path / "data" / "index"
-    ReindexCorpus(repository, Bm25Index(index_directory)).execute()
+    make_reindex(repository, index_directory).execute()
     return repository, chunks, index_directory
+
+
+def make_reindex(repository: JsonChunkRepository, index_directory: Path) -> ReindexCorpus:
+    """Wire the use case with the real BM25 adapter and stand-ins for the dense half."""
+    return ReindexCorpus(
+        repository,
+        Bm25Index(index_directory),
+        document_embedder=LexicalOnlyEmbedder(),
+        vector_writer=DiscardedVectorWriter(),
+    )
 
 
 class TestComposition:
     def test_reindex_reports_the_whole_persisted_corpus(self, tmp_path: Path) -> None:
         repository, chunks = seeded_corpus(tmp_path)
 
-        report = ReindexCorpus(repository, Bm25Index(tmp_path / "data" / "index")).execute()
+        report = make_reindex(repository, tmp_path / "data" / "index").execute()
 
         assert report.chunk_count == len(chunks)
         assert report.rebuilt_at.tzinfo is not None

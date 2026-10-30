@@ -28,6 +28,6 @@ La codificación es un detalle del adaptador: el dominio sigue usando `PatchVers
 ## Consecuencias
 
 - Un único proceso local, sin contenedores, para el MVP.
-- El índice BM25 aplica el mismo filtro con la misma codificación para mantener consistencia.
+- El índice BM25 aplica el mismo rango de vigencia sobre los objetos de dominio (`Chunk.is_valid_at`), no sobre enteros: la codificación de esta ADR es exclusiva del adaptador de Chroma, que filtra por metadatos dentro de la consulta. Ambos adaptadores respetan el mismo intervalo, cada uno en su representación.
 - Los tests de contrato de `VectorIndex` verifican el filtro de vigencia en los bordes: `v == valid_from`, `v == valid_until` y vigencia abierta.
 - Cambiar a Qdrant implica escribir un adaptador nuevo y correr la misma suite de contrato; el dominio y los casos de uso no cambian.

@@ -10,12 +10,14 @@ import pytest
 
 from poe2_rag.ingestion.application import (
     ChunkRepository,
+    DocumentEmbedder,
     DocumentParser,
     IngestionError,
     InvalidRawDocumentError,
     LexicalIndexWriter,
     RawDocument,
     SourceFetcher,
+    VectorIndexWriter,
 )
 from poe2_rag.shared.domain import Chunk
 
@@ -60,6 +62,23 @@ class InlineLexicalIndexWriter:
     """Minimal stand-in that matches `LexicalIndexWriter` without any storage."""
 
     def rebuild(self, chunks: Sequence[Chunk]) -> None:
+        return None
+
+
+class InlineDocumentEmbedder:
+    """Minimal stand-in that matches `DocumentEmbedder` without loading a model."""
+
+    def embed_documents(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0, 0.0) for _ in texts)
+
+    def overflowing_indices(self, texts: Sequence[str]) -> tuple[int, ...]:
+        return ()
+
+
+class InlineVectorIndexWriter:
+    """Minimal stand-in that matches `VectorIndexWriter` without any storage."""
+
+    def rebuild(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         return None
 
 
@@ -119,6 +138,30 @@ class TestProtocols:
 
     def test_lexical_index_writer_conformance_is_checkable(self) -> None:
         assert isinstance(InlineLexicalIndexWriter(), LexicalIndexWriter)
+
+    def test_document_embedder_conformance_is_checkable(self) -> None:
+        assert isinstance(InlineDocumentEmbedder(), DocumentEmbedder)
+
+    def test_vector_index_writer_conformance_is_checkable(self) -> None:
+        assert isinstance(InlineVectorIndexWriter(), VectorIndexWriter)
+
+    def test_a_query_embedder_is_not_a_document_embedder(self) -> None:
+        """The corpus side embeds a whole batch and reports overflow; one text is the query side."""
+
+        class OnlyEmbed:
+            def embed(self, text: str) -> tuple[float, ...]:
+                return (1.0,)
+
+        assert not isinstance(OnlyEmbed(), DocumentEmbedder)
+
+    def test_a_reader_is_not_a_vector_index_writer(self) -> None:
+        class OnlySearch:
+            def search(
+                self, vector: Sequence[float], version: object, limit: int
+            ) -> Sequence[Chunk]:
+                return ()
+
+        assert not isinstance(OnlySearch(), VectorIndexWriter)
 
     def test_a_reader_is_not_a_lexical_index_writer(self) -> None:
         """The write port is `rebuild`; a class that only knows `search` is the read port."""
