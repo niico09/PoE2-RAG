@@ -94,7 +94,7 @@ states.
 - [x] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
 - [x] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: delegated to `gentle-ai-worker`, reviewed inline. S6, S7.
 - [x] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
-- [ ] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
+- [x] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
 
 ## Progress / Evidence
 - T1: branch `feat/ingest` reset to `main` (`c907558`; the old local branch sat at `b8e19af` with no work
@@ -179,7 +179,21 @@ states.
   notes as their own entity with open validity; transitions deferred until poe2db exists) and three new
   risk rows (suffixed versions, repeated headings, snapshot URL recovery). The document stays Spanish
   (S10) because the whole file is; everything new elsewhere is English.
-- T8: pending.
+- T8: close. Final `uv run pytest -q` → **530 passed** (baseline on `main`: 419; **+111**: 110 cases in the
+  new ingestion suites plus the `EntityRef` kind case). Per suite: ports 22, `IngestSource` 16, repository
+  contract 24 (12 scenarios × 2 implementations), JSON adapter 14, local fetcher 12, parser 22.
+  - The per-spec verdict found the "garbage HTML raises" half of S9 pinned only for an empty file. A
+    `garbage.html` fixture and a characterization test were added; the parser already raised
+    `PatchVersionNotFoundError` (a `PatchNotesParseError`), so no RED applied and the suite went 529 → 530.
+  - `uvx pyright==1.1.414` (whole workspace, best effort, not a gate) → `0 errors, 0 warnings, 0 informations`.
+  - `uvx ruff check --select I src/poe2_rag/ingestion tests/unit/ingestion tests/contract/test_chunk_repository_contract.py`
+    → `All checks passed`.
+  - Import boundary: `grep` over `ingestion/application` and `shared/domain` shows only `__future__`, the
+    standard library and `poe2_rag.shared.domain`; `bs4` appears only in `patch_notes_parser.py`; no test
+    imports `requests`, `httpx`, `urlopen` or `urllib.request`.
+  - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'` → `0`.
+  - The reference snapshot `data/raw/patch-notes-0.5.5e.html` exists and `git check-ignore` names
+    `.gitignore:7`; `git ls-files data` is empty. The worktree is clean.
 
 ## Delivery slices
 - One commit per task (S12). The adapters are one vertical slice of the same feature: they share the ports,
@@ -193,6 +207,7 @@ states.
 - Slice 5: T6 (patch notes parser, fixtures and the beautifulsoup4 dependency); the delegated writer did not
   commit, so the slice is one parent commit.
 - Slice 6: T7 (architecture decisions, one documentation commit).
+- Slice 7: T8 (close: one documentation commit with the final evidence and per-spec verdict).
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
@@ -203,7 +218,31 @@ states.
   calls, a documented false-positive class: this repository has no SQL, cursor or database call.
 
 ## Close
-- Pending.
+- Final `uv run pytest -q` → **530 passed** (baseline before the feature: 419; **+111 tests**).
+- `<command>: <observed result>`:
+  - `uv run pytest -q`: `530 passed in 0.23s`.
+  - `uvx pyright==1.1.414`: `0 errors, 0 warnings, 0 informations` (best effort, not a gate).
+  - `uvx ruff check --select I src/poe2_rag/ingestion tests/unit/ingestion tests/contract/test_chunk_repository_contract.py`: `All checks passed`.
+  - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'`: `0`.
+  - `git check-ignore -v data/raw/patch-notes-0.5.5e.html`: `.gitignore:7:data/raw/`.
+  - `grep -rn "requests\|httpx\|urlopen\|urllib.request" tests`: no matches.
+- Per-spec verdict:
+  - S1 ✅ `SourceFetcher`, `DocumentParser` and `ChunkRepository` are runtime-checkable protocols, with the frozen `RawDocument` (22 tests).
+  - S2 ✅ `IngestSource.execute` runs fetch → parse → unknown patch → duplicate id → read → upsert and returns `IngestReport(locator, chunk_ids, skipped)` (16 tests).
+  - S3 ✅ `IngestionError(ValueError)` with `InvalidRawDocumentError`, `UnknownPatchError` and `DuplicateChunkIdError`.
+  - S4 ✅ `JsonChunkRepository`: `schema_version: 1`, one `chunks.json`, atomic temp-file replace, production default `data/processed/`; the same contract runs against it and the in-memory fake (24 cases + 14 adapter tests).
+  - S5 ✅ `LocalFileFetcher` reads a UTF-8 snapshot and uses its mtime as `fetched_at` (12 tests).
+  - S6 ✅ `PatchNotesParser`: version from the thread title, one chunk per top-level section, `SourceRef("patch_notes", <thread url>, <fetched_at date>)`, bullets as lines and inline markup stripped; `beautifulsoup4` only in the adapter (22 tests).
+  - S7 ✅ eleven hand-written fixtures in `tests/fixtures/patch_notes/`, no network in any test, one reference thread downloaded manually into the gitignored `data/raw/` (checked).
+  - S8 ✅ `patch_notes` entity kind, open validity and section slugs; the modeling decision is recorded in `docs/architecture.md` §10.1 and L2.
+  - S9 ✅ RED and GREEN observed and recorded per task; every required case has a named test (the per-task evidence lists them).
+  - S10 ✅ code, tests, this document and every commit message are English; `docs/architecture.md` stays Spanish by the documented precedent (answer-question L2.7).
+  - S11 ✅ no HTTP fetcher, poe2db/poe2wiki adapters, `ReindexCorpus`, indexes or `ingest` CLI.
+  - S12 ✅ `feat/ingest` reset to `main` at `c907558`; one Conventional Commit per task plus this closing commit; no attribution; nothing pushed or opened.
+  - S13 ✅ the commands and counts above.
+- Branch totals before this closing commit: `git diff --shortstat main..HEAD -- . ':(exclude)uv.lock'` → 32 files changed, **2509 insertions(+), 11 deletions(-)**, including this feature document. Per-commit authored lines: T1 236, T2 260, T3 456, T4 638, T5 164, T6 757 (35 of them `uv.lock`), T7 46. T3, T4 and T6 are over the ~400-line review slice; each commit is green on its own, so native review can take them one at a time.
+- `Risk: none`. The feature adds modules, ports and adapters and only touches shared code by adding one value to the closed `EntityRef` kind vocabulary, an additive change no consumer can break (the only enumeration, a test, was extended). It changes no stored data, credential, guard or existing contract, adds no concurrency and no delivery path, and every rule it introduces has a test that fails without it. `data/processed/` is gitignored working data that any snapshot can rebuild.
+- No check was skipped. Push and PR remain the user's decision, not taken here.
 
 ## Log
 

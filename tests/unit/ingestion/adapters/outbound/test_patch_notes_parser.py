@@ -190,6 +190,10 @@ class TestErrors:
 
         assert type(exc_info.value) is PatchNotesParseError
 
+    def test_garbage_html_raises_base_error(self) -> None:
+        with pytest.raises(PatchNotesParseError):
+            PatchNotesParser().parse(make_raw("garbage.html"))
+
     def test_parse_errors_are_environment_failures(self) -> None:
         assert issubclass(PatchNotesParseError, RuntimeError)
         assert issubclass(PatchVersionNotFoundError, PatchNotesParseError)
