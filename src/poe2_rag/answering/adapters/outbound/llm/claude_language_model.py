@@ -56,8 +56,13 @@ SYSTEM_PROMPT = (
 nothing, so a bare "no information" answer reads the same on both paths."""
 
 
-class LanguageModelError(RuntimeError):
-    """Base class for every failure this adapter owns."""
+class LanguageModelError(ValueError):
+    """Base class for caller-provided invalid arguments to the language model adapter.
+
+    Upstream failures do not derive from this class, exactly like `RerankerError` and
+    `RerankScoringError`: a caller that captures `ValueError` for a bad argument gets the configuration
+    and request errors, and never a refusal or an API failure dressed as one.
+    """
 
 
 class LanguageModelConfigurationError(LanguageModelError):
@@ -68,7 +73,11 @@ class LanguageModelRequestError(LanguageModelError):
     """Raised when a question or a context is unusable, before any request is sent."""
 
 
-class LanguageModelRefusedError(LanguageModelError):
+class LanguageModelRuntimeError(RuntimeError):
+    """Base class for every upstream failure this adapter owns: refusal, truncation, response, API."""
+
+
+class LanguageModelRefusedError(LanguageModelRuntimeError):
     """Raised when the model declined the request (`stop_reason: "refusal"`)."""
 
     def __init__(self, message: str, stop_details_category: str | None = None) -> None:
@@ -76,27 +85,27 @@ class LanguageModelRefusedError(LanguageModelError):
         self.stop_details_category = stop_details_category
 
 
-class LanguageModelTruncatedError(LanguageModelError):
+class LanguageModelTruncatedError(LanguageModelRuntimeError):
     """Raised when the answer hit `max_tokens` (`stop_reason: "max_tokens"`) and is incomplete."""
 
 
-class LanguageModelResponseError(LanguageModelError):
+class LanguageModelResponseError(LanguageModelRuntimeError):
     """Raised when a response cannot be turned into an answer with mappable citations."""
 
 
-class LanguageModelAuthenticationError(LanguageModelError):
+class LanguageModelAuthenticationError(LanguageModelRuntimeError):
     """Raised when the API rejects the credentials."""
 
 
-class LanguageModelRateLimitError(LanguageModelError):
+class LanguageModelRateLimitError(LanguageModelRuntimeError):
     """Raised when the API rate-limits the request, after the SDK's own retries."""
 
 
-class LanguageModelAPIError(LanguageModelError):
+class LanguageModelAPIError(LanguageModelRuntimeError):
     """Raised when the API answers with a status error that is neither authentication nor rate limit."""
 
 
-class LanguageModelConnectionError(LanguageModelError):
+class LanguageModelConnectionError(LanguageModelRuntimeError):
     """Raised when the request never reached the API, or the connection died on the way."""
 
 
@@ -143,9 +152,10 @@ class ClaudeLanguageModel:
         Raises `LanguageModelRefusedError` when the model declines and
         `LanguageModelTruncatedError` when the budget ran out, both checked before the content is
         read: a refusal or a half sentence is never an answer. A citation that is not a content-block
-        location, or that names a document index outside `context`, raises
-        `LanguageModelResponseError`; a citation naming a chunk that was delivered is kept as is, and
-        `Answer.build` decides later whether it is backed.
+        location, that names a document index outside `context`, or whose `cited_text` does not belong
+        to the chunk that index names raises `LanguageModelResponseError`: an in-range index alone would
+        let a citation lend one chunk's words to another. The quoted text itself is never rewritten or
+        dropped, and `Answer.build` still decides whether every citation is backed.
         """
         _require_question(question)
         delivered = _require_context(context)
@@ -190,6 +200,21 @@ class ClaudeLanguageModel:
             raise LanguageModelConnectionError(
                 "the request to the Claude API could not be completed"
             ) from exc
+        except anthropic.APIResponseValidationError as exc:
+            raise LanguageModelResponseError(
+                "the Claude API returned a body the SDK could not validate"
+            ) from exc
+        except anthropic.APIError as exc:
+            # `APIResponseValidationError` and the bare `APIError` are not `APIStatusError`, so
+            # without this handler a raw SDK error would escape the adapter (L4).
+            raise LanguageModelAPIError("the request to the Claude API failed") from exc
+        except (TypeError, AttributeError) as exc:
+            # The SDK iterates the body while parsing it, so a malformed `content` (a missing array,
+            # say) raises before any block reaches this adapter. That is still a response the adapter
+            # cannot use, and it must surface as its own error, never as a raw `TypeError`.
+            raise LanguageModelResponseError(
+                "the Claude API returned a body the SDK could not read"
+            ) from exc
 
 
 def _document(retrieved: RetrievedChunk) -> dict[str, Any]:
@@ -208,8 +233,12 @@ def _document(retrieved: RetrievedChunk) -> dict[str, Any]:
 
 
 def _lines(chunk: Chunk) -> tuple[str, ...]:
-    """Split a chunk into one text block per non-empty line, keeping the text itself exact."""
-    return tuple(line.strip() for line in chunk.text.splitlines() if line.strip())
+    """Split a chunk into one text block per non-blank line, keeping each line exactly as stored.
+
+    Only whitespace-only lines are dropped: stripping a line would send text the chunk does not hold,
+    and then `cited_text` would no longer be a substring of the chunk that names it.
+    """
+    return tuple(line for line in chunk.text.splitlines() if line.strip())
 
 
 def _document_context(chunk: Chunk) -> str:
@@ -233,17 +262,60 @@ def _generated_answer(
         raise LanguageModelTruncatedError("the answer hit max_tokens and is incomplete")
     texts: list[str] = []
     citations: list[Citation] = []
-    for block in response.content:
+    for block in _content_blocks(response):
+        block_type = _block_type(block)
         # Thinking and fallback blocks are part of the payload and never part of the answer.
-        if block.type != "text":
+        if block_type != "text":
             continue
-        texts.append(block.text)
-        for citation in block.citations or ():
+        text = getattr(block, "text", None)
+        if not isinstance(text, str):
+            raise LanguageModelResponseError("a text block carried no text")
+        texts.append(text)
+        for citation in _block_citations(block):
             citations.append(_citation(citation, delivered))
     text = "".join(texts)
     if is_blank(text):
         raise LanguageModelResponseError("the response carried no answer text")
     return GeneratedAnswer(text=text, citations=tuple(citations))
+
+
+def _content_blocks(response: object) -> Sequence[Any]:
+    """Return the response content as a sequence of blocks, rejecting any other shape.
+
+    The SDK does not validate the body of a 200 response, so a gateway, a proxy or a future API change
+    can hand back a string, a bare object or nothing at all. Reading it blindly would leak an
+    `AttributeError` or a `TypeError` from an adapter that promises its own errors (L4).
+    """
+    content = getattr(response, "content", None)
+    if isinstance(content, (str, bytes)) or not isinstance(content, Sequence):
+        raise LanguageModelResponseError(
+            f"the response content must be a sequence of blocks, got {type(content).__name__}"
+        )
+    return content
+
+
+def _block_type(block: object) -> str:
+    """Return a block's type, rejecting a block that is not one.
+
+    The SDK leaves a non-object entry of the `content` array untouched (an int, a string), so a block
+    with no `type` is a malformed response and not a block the adapter can skip.
+    """
+    block_type = getattr(block, "type", None)
+    if not isinstance(block_type, str) or is_blank(block_type):
+        raise LanguageModelResponseError(
+            f"the response carried a content block without a type: {type(block).__name__}"
+        )
+    return block_type
+
+
+def _block_citations(block: object) -> Sequence[Any]:
+    """Return a text block's citations, rejecting anything that is not a sequence."""
+    citations = getattr(block, "citations", None)
+    if citations is None:
+        return ()
+    if isinstance(citations, (str, bytes)) or not isinstance(citations, Sequence):
+        raise LanguageModelResponseError("a text block carried citations that are not a sequence")
+    return citations
 
 
 def _refusal_category(stop_details: object) -> str | None:
@@ -267,7 +339,23 @@ def _citation(citation: object, delivered: tuple[RetrievedChunk, ...]) -> Citati
     quoted_text = getattr(citation, "cited_text", None)
     if not isinstance(quoted_text, str) or is_blank(quoted_text):
         raise LanguageModelResponseError("a citation must quote a non-blank cited_text")
-    return Citation(delivered[index].chunk.chunk_id, quoted_text)
+    chunk = delivered[index].chunk
+    if not _quotes_chunk(quoted_text, chunk.text):
+        raise LanguageModelResponseError(
+            f"citation {index} quotes text that is not part of the chunk it names"
+        )
+    return Citation(chunk.chunk_id, quoted_text)
+
+
+def _quotes_chunk(quoted_text: str, chunk_text: str) -> bool:
+    """Return True when `quoted_text` is the chunk's own text, ignoring whitespace.
+
+    The API returns `cited_text` as the cited block range "joined together", so the separators between
+    two blocks are the API's, not the chunk's. Comparing with every whitespace character removed keeps
+    the check exact about the words and tolerant about the join, and it is what stops an in-range
+    `document_index` from lending one chunk's words to another.
+    """
+    return "".join(quoted_text.split()) in "".join(chunk_text.split())
 
 
 def _require_question(question: object) -> None:

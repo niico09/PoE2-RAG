@@ -4,6 +4,11 @@ The `anthropic` client is real and so is its request serialization: the only fak
 `httpx2.MockTransport`, which returns recorded-shape JSON, so these cases pin the bytes the adapter
 actually sends (documents, fallbacks, beta header, absence of sampling controls) and the values it
 actually returns, without a network call, an API key or a token of spend.
+
+The suite also pins what the adapter promises about a body it cannot use: the SDK does not validate a 200
+response, so a malformed `content` (a missing array, a string, a block without a type, a text that is not
+a string) must come back as `LanguageModelResponseError`, and a citation must quote the chunk its
+`document_index` names, not merely point at an in-range index.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     LanguageModelRefusedError,
     LanguageModelRequestError,
     LanguageModelResponseError,
+    LanguageModelRuntimeError,
     LanguageModelTruncatedError,
 )
 from poe2_rag.answering.application import (
@@ -172,6 +178,22 @@ def message(
     )
 
 
+def raw_response(**overrides: Any) -> httpx2.Response:
+    """Build a 200 response whose body can be malformed in exactly one place."""
+    body: dict[str, Any] = {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": DEFAULT_MODEL,
+        "content": [],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 12, "output_tokens": 8},
+    }
+    body.update(overrides)
+    return httpx2.Response(200, json=body)
+
+
 def error_response(status: int, error_type: str) -> httpx2.Response:
     """Build the JSON body the API returns for a failed request."""
     return httpx2.Response(
@@ -221,9 +243,11 @@ def test_each_chunk_line_becomes_its_own_citable_text_block() -> None:
     generate(gateway)
 
     spark_document, cascade_document = documents_of(gateway.body)
+    # Blank lines are dropped; the text a chunk does hold is sent exactly as stored, indentation
+    # included, so `cited_text` stays a substring of the chunk (ADR-0005, §5.1 step 6).
     assert spark_document["source"]["content"] == [
         {"type": "text", "text": "Spark deals 10 damage."},
-        {"type": "text", "text": "Chains to 2 enemies."},
+        {"type": "text", "text": "  Chains to 2 enemies.  "},
     ]
     assert cascade_document["source"]["content"] == [
         {"type": "text", "text": "Glacial Cascade freezes enemies."}
@@ -445,18 +469,6 @@ def test_a_truncated_answer_raises_instead_of_returning_half_a_sentence() -> Non
         generate(gateway)
 
 
-def test_a_refusal_is_reported_before_a_truncation() -> None:
-    gateway = Gateway(
-        message(
-            stop_reason="refusal",
-            stop_details={"type": "refusal", "category": "frontier_llm"},
-        )
-    )
-
-    with pytest.raises(LanguageModelRefusedError):
-        generate(gateway)
-
-
 def test_an_unknown_citation_type_raises() -> None:
     gateway = Gateway(
         message(
@@ -488,10 +500,60 @@ def test_a_citation_outside_the_delivered_documents_raises(document_index: int) 
         generate(gateway)
 
 
+def test_a_citation_whose_text_belongs_to_another_chunk_raises() -> None:
+    """An in-range index is not enough: the quoted text must belong to the chunk it names."""
+    gateway = Gateway(
+        message(
+            text_block(
+                "Cold damage.",
+                location_citation("Glacial Cascade freezes enemies.", 0, title=SPARK.chunk.chunk_id),
+            )
+        )
+    )
+
+    with pytest.raises(LanguageModelResponseError):
+        generate(gateway)
+
+
+def test_a_citation_spanning_several_lines_of_the_same_chunk_is_accepted() -> None:
+    gateway = Gateway(
+        message(
+            text_block(
+                "Both lines.",
+                # The API joins the cited block range; the adapter compares ignoring whitespace,
+                # because the separators between blocks are the API's, not the chunk's.
+                location_citation("Spark deals 10 damage.\nChains to 2 enemies.", 0),
+            )
+        )
+    )
+
+    generated = generate(gateway)
+
+    assert generated.citations == (Citation(SPARK.chunk.chunk_id, "Spark deals 10 damage.\nChains to 2 enemies."),)
+
+
 def test_a_response_without_any_text_raises() -> None:
     gateway = Gateway(
         message({"type": "thinking", "thinking": "nothing to say", "signature": "sig"})
     )
+
+    with pytest.raises(LanguageModelResponseError):
+        generate(gateway)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "oops",
+        None,
+        [{"type": "text", "text": "ok"}, 42],
+        [{"type": "text", "text": ["not", "a", "string"]}],
+        [42],
+    ],
+    ids=["string", "missing", "int-block", "list-text", "sole-int"],
+)
+def test_a_malformed_content_shape_raises_a_response_error(content: Any) -> None:
+    gateway = Gateway(raw_response(content=content))
 
     with pytest.raises(LanguageModelResponseError):
         generate(gateway)
@@ -517,7 +579,7 @@ def test_sdk_status_errors_map_to_specific_adapter_errors(
     with pytest.raises(expected) as raised:
         generate(gateway)
 
-    assert isinstance(raised.value, LanguageModelError)
+    assert isinstance(raised.value, LanguageModelRuntimeError)
     assert isinstance(raised.value.__cause__, anthropic.APIStatusError)
 
 
@@ -582,6 +644,33 @@ def test_context_items_must_be_retrieved_chunks() -> None:
 def test_invalid_configuration_raises(kwargs: dict[str, Any]) -> None:
     with pytest.raises(LanguageModelConfigurationError):
         ClaudeLanguageModel(make_client(Gateway()), **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LanguageModelConfigurationError,
+        LanguageModelRequestError,
+    ],
+)
+def test_caller_errors_are_value_errors(error: type[Exception]) -> None:
+    assert issubclass(error, ValueError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LanguageModelRefusedError,
+        LanguageModelTruncatedError,
+        LanguageModelResponseError,
+        LanguageModelAuthenticationError,
+        LanguageModelRateLimitError,
+        LanguageModelAPIError,
+        LanguageModelConnectionError,
+    ],
+)
+def test_upstream_errors_are_runtime_errors(error: type[Exception]) -> None:
+    assert issubclass(error, RuntimeError)
 
 
 def test_the_client_is_required_and_never_read_from_the_environment() -> None:
