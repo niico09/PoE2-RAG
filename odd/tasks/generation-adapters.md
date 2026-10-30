@@ -82,7 +82,7 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
 - [ ] T1 — Branch `feat/generation-adapters`, feature doc, `uv add anthropic`, verify the installed
   SDK shapes and the documented custom-http-client injection. Route: inline. S2, S5, S8, S9.
 - [x] T2 — `CrossEncoderReranker` unit tests then the adapter. Route: inline. S1, S10.
-- [ ] T3 — `ClaudeLanguageModel` unit tests then the adapter. Route: inline. S2–S7, S9.
+- [x] T3 — `ClaudeLanguageModel` unit tests then the adapter. Route: inline. S2–S7, S9.
 - [ ] T4 — Integration reranker test and the `live` Claude test (written, never run). Route: inline.
   S11, S12.
 - [ ] T5 — Docs: `docs/adr/0005-llm-por-api.md`, `docs/architecture.md` §5.1 steps 5–8, pytest
@@ -232,6 +232,31 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
     score count, a non-finite value and a non-sequence are `RerankScoringError`, never a silent zip.
   - `scorer=` is the injection point; the lazy-load case monkeypatches `_load_scorer` instead, proving
     the model is not loaded at construction and is loaded once across two calls.
+- T3: RED → collection `ModuleNotFoundError: No module named
+  'poe2_rag.answering.adapters.outbound.llm'`, 0 tests run (43 cases written). First GREEN attempt →
+  **1 failed, 42 passed**: the only failure was the prompt case, where the test recomputed the frozen
+  text with a string replacement instead of asserting the rules it cares about. Test rewritten to
+  assert the four rules by substring, then **43 passed**. Two cases added while green (a fallback
+  block and a blank `cited_text`) → **45 cases**; full suite **900 passed, 6 deselected** (+45).
+  - The client is real and so is its serialization: `anthropic.Anthropic(api_key="test-key",
+    max_retries=0, http_client=httpx2.Client(transport=httpx2.MockTransport(gateway)))`. The suite
+    asserts the body the SDK produced, so a future SDK change that drops `fallbacks` or the beta
+    header fails here, not in production.
+  - `max_retries=0` is what makes "one request" a real assertion: the no-retry case counts the requests
+    the gateway received, so an adapter or client retry would show up as a second one.
+  - The SDK is `anthropic` **2.3.0** on httpx2, not 1.x: `fallbacks` and `betas` are parameters of
+    `client.beta.messages.create`, `BetaMessage` lives at `anthropic.types.beta`, and `output_config`
+    accepts `effort` in `low|medium|high|xhigh|max`. `import httpx` never appears; only mypy/pyright
+    type imports come from `anthropic.types.beta`.
+  - Error mapping is asserted through `__cause__`: a 401, a 429, a 400 and a 500 each become their own
+    adapter error class wrapping the SDK exception, and a `httpx2.ConnectError` raised by the transport
+    becomes `LanguageModelConnectionError` wrapping `anthropic.APIConnectionError`. Refusal wins over
+    truncation when both could apply.
+  - The system prompt is pinned by the rules it must state (documents only, cite every claim, the fixed
+    sentence, no outside knowledge), not by a byte-for-byte copy of itself: the first attempt copied
+    the text and failed on whitespace, which is exactly the fragility the rule-based assertions avoid.
+  - `NO_INFORMATION_TEXT` is imported from the application layer, so the model's "no information"
+    sentence and the use case's unsupported answer are the same string (see L3).
 - **L4 (decision, parent):** the adapter raises its own errors for a refused, truncated or malformed
   response before `GeneratedAnswer` is constructed, so an application-layer
   `InvalidGeneratedAnswerError` never leaks out of an adapter.
