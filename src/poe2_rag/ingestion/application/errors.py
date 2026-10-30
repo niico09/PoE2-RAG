@@ -13,3 +13,20 @@ class IngestionError(ValueError):
 class InvalidRawDocumentError(IngestionError):
     """Raised when a raw document has a blank locator or source type, content that is not a string
     or a fetch time that is not a `datetime`."""
+
+
+class UnknownPatchError(IngestionError):
+    """Raised when a parsed chunk starts at a patch the catalog does not know (driver D1).
+
+    A chunk whose `valid_from` is unknown cannot be placed on the timeline, so storing it would make
+    the corpus claim a patch that the system does not acknowledge. The run stops instead of skipping
+    the chunk.
+    """
+
+
+class DuplicateChunkIdError(IngestionError):
+    """Raised when one document produces the same `chunk_id` more than once.
+
+    A duplicate means two different sections resolve to the same identity, so persisting both would
+    silently keep only one. The run stops before anything is written.
+    """

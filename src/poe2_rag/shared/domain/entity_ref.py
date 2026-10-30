@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from poe2_rag.shared.domain._text import is_blank, is_slug
 from poe2_rag.shared.domain.errors import InvalidEntityRefError
 
-ENTITY_KINDS = frozenset({"active_gem", "support_gem", "mechanic", "item"})
+ENTITY_KINDS = frozenset({"active_gem", "support_gem", "mechanic", "item", "patch_notes"})
 
 
 @dataclass(frozen=True, slots=True)

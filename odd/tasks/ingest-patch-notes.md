@@ -89,7 +89,7 @@ states.
 ## Tasks
 - [x] T1 — Branch `feat/ingest`, feature doc, Engram mirror. Route: inline. S12.
 - [x] T2 — Ports, `RawDocument` and the `IngestionError` base with tests. Route: inline. S1, S3.
-- [ ] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
+- [x] T3 — `IngestSource`, `IngestReport`, unknown-patch and duplicate guards, fakes, tests. Route: inline. S2, S3, S9.
 - [ ] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
 - [ ] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
 - [ ] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: inline. S6, S7.
@@ -114,7 +114,19 @@ states.
     pins that a partial implementation is not accepted.
   - `fetched_at` is documented as the capture moment, not the read moment, which is what makes it a
     citation date instead of a pipeline timestamp.
-- T3: pending.
+- T3: RED (implementation moved aside after authoring the tests) → collection `ImportError: cannot import
+  name 'DuplicateChunkIdError' from 'poe2_rag.ingestion.application'`, 0 tests run (16 written). GREEN → 458
+  passed (16 new + 1 entity-kind case).
+  - The use case validates before it reads the repository: an unknown patch or a repeated id stops the
+    run without a repository access, and an empty document returns before touching it. The happy-path
+    journal is exactly `fetch, parse, all, save`.
+  - `IngestReport.chunk_ids` lists every id the document produced in document order, so a no-op re-run
+    still reports the document; `skipped` counts the identical entries and `save` receives only new or
+    changed chunks (one test gives it one of each).
+  - `patch_notes` had to join the closed `EntityRef` kind vocabulary in
+    `src/poe2_rag/shared/domain/entity_ref.py`, outside the prompt's edit surfaces; the shared test that
+    enumerates that vocabulary gained the matching value. Without it the modelling decision of S8 cannot
+    be represented at all.
 - T4: pending.
 - T5: pending.
 - T6: pending.
@@ -124,6 +136,10 @@ states.
 ## Delivery slices
 - One commit per task (S12). The adapters are one vertical slice of the same feature: they share the ports,
   the fixtures and the domain, so they stay inline instead of being split across parallel writers.
+- Slice 1 (`793dd61`..`cb69d6f`): T1-T2, 493 authored lines (the plan document is 236 of them). It crosses
+  the ~400-line review slice because the user's rule is one commit per task and the plan is a required
+  deliverable; each commit is green on its own, so native review can take either one.
+- Slice 2: T3 (use case, errors, fakes and tests).
 
 ## Close
 - Pending.
