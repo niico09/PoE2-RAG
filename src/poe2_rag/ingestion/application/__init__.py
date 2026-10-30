@@ -11,6 +11,7 @@ from poe2_rag.ingestion.application.ingest_source import IngestReport, IngestSou
 from poe2_rag.ingestion.application.ports import (
     ChunkRepository,
     DocumentParser,
+    LexicalIndexWriter,
     RawDocument,
     SourceFetcher,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "IngestSource",
     "IngestionError",
     "InvalidRawDocumentError",
+    "LexicalIndexWriter",
     "RawDocument",
     "SourceFetcher",
     "UnknownPatchError",

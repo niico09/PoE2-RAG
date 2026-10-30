@@ -80,3 +80,24 @@ class ChunkRepository(Protocol):
     def all(self) -> Sequence[Chunk]:
         """Return every stored chunk once, in insertion order."""
         ...
+
+
+@runtime_checkable
+class LexicalIndexWriter(Protocol):
+    """Rebuild the lexical index from the whole processed corpus (the write side of §6).
+
+    `LexicalIndex` in `answering/application/ports.py` stays the read port: search reads an index,
+    rebuilding writes one, and only the composition root wires both halves to one adapter. Splitting
+    them keeps the query flow from acquiring a write capability it must never use.
+    """
+
+    def rebuild(self, chunks: Sequence[Chunk]) -> None:
+        """Replace the persisted index with exactly `chunks`, in one atomic step.
+
+        The call is a full rebuild, not an upsert: a chunk the previous index stored and `chunks`
+        does not is dropped. A failed rebuild leaves the previous index in place, so a reader never
+        sees a truncated one. `chunks` must be non-empty: the caller owns the empty-corpus rule
+        (`ReindexCorpus` rejects it before calling), and an empty sequence would persist an index
+        that silently answers "no information".
+        """
+        ...

@@ -79,7 +79,7 @@ ingested chunks for the first time.
 ## Tasks
 - [x] T1 — Branch `feat/reindex-lexical`, feature doc, Engram mirror, `data/index/` in `.gitignore`.
   Route: inline. S7, S13, S14.
-- [ ] T2 — `LexicalIndexWriter` port and its shape test. Route: inline. S1.
+- [x] T2 — `LexicalIndexWriter` port and its shape test. Route: inline. S1.
 - [ ] T3 — `EmptyCorpusError`, `ReindexReport`, `ReindexCorpus`, ingestion fakes, tests. Route: inline.
   S2, S9.
 - [ ] T4 — `tokenizer.py` and its cases. Route: inline. S3, S9.
@@ -93,3 +93,11 @@ ingested chunks for the first time.
   `uv run pytest -q` → 550 passed. No RED applicable (documentation and ignore rules only).
   `git check-ignore -v data/index/bm25.json` → `.gitignore:11:data/index/`, and `git ls-files data` is
   empty, so no derived corpus content can be committed.
+- T2: RED → collection `ImportError: cannot import name 'LexicalIndexWriter' from
+  'poe2_rag.ingestion.application'`, 0 tests run (2 written). GREEN → 24 passed in the ports file (22
+  before); full suite **552 passed**.
+  - The port is `runtime_checkable`, so the contract suite can assert conformance, and one test pins
+    that a reader (`search` only) is not accepted as a writer.
+  - Its docstring carries the rule the adapter and the use case share: `rebuild` replaces the whole
+    index, must not leave a truncated one behind, and only receives a non-empty corpus because
+    `ReindexCorpus` rejects the empty case first.
