@@ -8,7 +8,8 @@ produces one tuple.
 The rules:
 
 - lower-case every token, so `Spark` and `spark` meet;
-- split on whitespace and on punctuation, which carries no meaning in this corpus;
+- split on whitespace and on punctuation, which carries no meaning in this corpus; a letter is a letter in
+  any script, so an accent is never a separator (`naïve` stays one token, it does not become `na` + `ve`);
 - keep numbers, decimals and signed or percent values whole (`"+10%"`, `"1.5"`, `"-20%"`): a damage
   value or a percentage is one fact, and splitting `+10%` into `+`, `10` and `%` loses it;
 - keep a hyphenated or underscored game term whole *and* add its parts (`"area-of-effect"` becomes
@@ -18,16 +19,26 @@ The rules:
   must not be dropped as a stopword when it is the modifier the question is about.
 
 Punctuation itself is discarded rather than emitted: no query should be able to match it.
+
+`TOKENIZER_VERSION` identifies these rules. It is bumped whenever tokenization changes, because a
+persisted index stores terms produced by one version and a query tokenized by another would silently match
+the wrong thing or nothing at all; the index records the version it was built with and refuses to answer a
+query tokenized under other rules.
 """
 
 from __future__ import annotations
 
 import re
 
+TOKENIZER_VERSION = 1
+
 # A number keeps its sign, its decimal part and its percent sign: those three carry the meaning.
 _NUMBER = r"[+-]?\d+(?:\.\d+)?%?"
+# A word character is any Unicode letter or digit: `[^\W_]` is `\w` without the underscore, so an accented
+# letter joins its word instead of splitting it, while the underscore stays a compound separator below.
+_LETTER_OR_DIGIT = r"[^\W_]"
 # A word may join its pieces with `.`, `-` or `_`; the whole form is kept and split for its parts.
-_WORD = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
+_WORD = rf"{_LETTER_OR_DIGIT}+(?:[._-]{_LETTER_OR_DIGIT}+)*"
 _TOKEN = re.compile(rf"{_NUMBER}|{_WORD}")
 _COMPOUND_SEPARATORS = re.compile(r"[-_]+")
 

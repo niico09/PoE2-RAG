@@ -78,6 +78,18 @@ class TestNoSemanticReduction:
         assert tokenize("spark spark damage") == ("spark", "spark", "damage")
 
 
+class TestLetters:
+    def test_keeps_accented_letters_inside_words(self) -> None:
+        """An accent is a letter, not punctuation: splitting there leaves broken prefixes (D2)."""
+        assert tokenize("naïve café Über") == ("naïve", "café", "über")
+
+    def test_does_not_truncate_a_word_at_its_accent(self) -> None:
+        assert "na" not in tokenize("naïve")
+
+    def test_keeps_an_accented_compound_term_with_its_parts(self) -> None:
+        assert tokenize("Einhänder-Griff") == ("einhänder-griff", "einhänder", "griff")
+
+
 class TestEdges:
     def test_returns_nothing_for_an_empty_string(self) -> None:
         assert tokenize("") == ()
@@ -86,9 +98,22 @@ class TestEdges:
         assert tokenize("-- ... !!") == ()
 
     def test_is_deterministic(self) -> None:
-        text = "Spark: +10% area-of-effect damage, cast_on_crit 1.5s"
-
-        assert tokenize(text) == tokenize(text)
+        """Pin the exact output: a persisted index depends on one text tokenizing the same way."""
+        assert tokenize("Spark: +10% area-of-effect damage, cast_on_crit 1.5s") == (
+            "spark",
+            "+10%",
+            "area-of-effect",
+            "area",
+            "of",
+            "effect",
+            "damage",
+            "cast_on_crit",
+            "cast",
+            "on",
+            "crit",
+            "1.5",
+            "s",
+        )
 
     def test_returns_an_immutable_sequence(self) -> None:
         assert isinstance(tokenize("spark"), tuple)
