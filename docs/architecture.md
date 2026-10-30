@@ -1,9 +1,11 @@
 # Diseño y arquitectura — PoE2-RAG
 
-> Estado: **diseño del MVP acordado**. Implementados el modelo de dominio de §4, el puerto
-> `PatchCatalog` con su adaptador TOML y el caso de uso `AnswerQuestion` de §5.1 con sus puertos de
-> consulta, probado con *fakes*; los adaptadores de consulta (BM25, Chroma, reranker, LLM), la ingesta,
-> la CLI y la evaluación de §8 todavía no.
+> Estado: **diseño del MVP acordado, primera rebanada de ingesta implementada**. Implementados el modelo
+> de dominio de §4, el puerto `PatchCatalog` con su adaptador TOML, el caso de uso `AnswerQuestion` de
+> §5.1 con sus puertos de consulta (probado con *fakes*) y el primer corte de ingesta de §5.2: `IngestSource`,
+> el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de parche, probados
+> con fixtures mínimas. Todavía no: el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, los
+> adaptadores de consulta (BM25, Chroma, reranker, LLM), la CLI y la evaluación de §8.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -87,7 +89,7 @@ El esquema actual del README tiene dos problemas de diseño:
 | `PatchVersion` | Value object | Versión semántica comparable (`0.1.2 > 0.1.0`). Inmutable. Rechaza formatos inválidos. |
 | `Validity` | Value object | Rango `[valid_from, valid_until)`. `valid_until` vacío = vigente. Responde `is_valid_at(version)`. Invariante: `valid_from < valid_until`. |
 | `PatchCatalog` | Puerto de dominio | Lista de parches conocidos y cuál es el actual. Única fuente de verdad de "actual". |
-| `EntityRef` | Value object | Identidad estable de lo que describe el chunk: `kind` (gema, soporte, mecánica, ítem) + `slug`. |
+| `EntityRef` | Value object | Identidad estable de lo que describe el chunk: `kind` (gema, soporte, mecánica, ítem, notas de parche) + `slug`. |
 | `Modifier` | Value object | Modificador estructurado: `stat`, `value`, `kind` ∈ {`increased`, `reduced`, `more`, `less`, `added`, `flat`}. Resuelve D2 por estructura, no solo por búsqueda. |
 | `Chunk` | Entidad | Unidad indexable: `chunk_id`, `EntityRef`, `Validity`, `section`, `text`, `tags`, `modifiers`, `SourceRef`. |
 | `SourceRef` | Value object | URL, tipo de fuente y fecha de captura. Base de las citas (D3). |
@@ -143,6 +145,16 @@ El esquema actual del README tiene dos problemas de diseño:
 
 Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar por separado.
 
+### 5.2 Flujo de `IngestSource`
+
+1. **Fetch:** el `SourceFetcher` devuelve un `RawDocument` con el contenido, el locator, la fecha de captura y el tipo de fuente.
+2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento.
+3. **Vigencia conocida:** un chunk cuyo `valid_from` no está en el `PatchCatalog` aborta la corrida con `UnknownPatchError`; no se descarta, porque un chunk fuera de la línea de tiempo haría que el corpus afirmara un parche que el sistema no reconoce (D1).
+4. **Identidad única:** dos chunks con el mismo `chunk_id` en un documento abortan con `DuplicateChunkIdError`; guardar el último dejaría el corpus en silencio con una sola sección.
+5. **Upsert:** se leen los chunks ya persistidos y solo se escriben los nuevos o cambiados. Un documento ya ingestado no reescribe el corpus y reporta sus chunks como `skipped`.
+
+Las notas de parche son la primera fuente implementada; el modelo de vigencia que usan se registra en §10.1.
+
 ---
 
 ## 6. Puertos
@@ -159,7 +171,7 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 | `Reranker` | Reordenar candidatos | `bge-reranker-base` |
 | `LanguageModel` | Generar la respuesta | Claude Sonnet 5.5 por API ([ADR-0005](adr/0005-llm-por-api.md)); Nemotron 3.5 Lightning como candidato |
 
-Los puertos son interfaces pequeñas (un método principal cada uno). En el código son `typing.Protocol`, y los de consulta viven en `answering/application/ports.py` con sus *fakes* en `tests/` (§8). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada.
+Los puertos son interfaces pequeñas (un método principal cada uno). En el código son `typing.Protocol`: los de consulta viven en `answering/application/ports.py` y los de ingesta en `ingestion/application/ports.py`, con sus *fakes* en `tests/` (§8). `LexicalIndex` y `VectorIndex` son puertos distintos porque sus capacidades de filtrado y sus parámetros difieren; unificarlos forzaría una interfaz inflada.
 
 ---
 
@@ -234,7 +246,23 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 
 | Riesgo | Mitigación |
 |---|---|
-| Las fuentes cambian de formato y rompen los parsers | Guardar snapshots en `data/raw/`; tests de parser sobre snapshots fijos |
-| Las notas de parche describen cambios, no estados completos | Aplicarlas como transiciones sobre el estado anterior y cerrar el `valid_until` del chunk previo |
+| Las fuentes cambian de formato y rompen los parsers | Guardar snapshots completos en `data/raw/` (gitignored, [ADR-0002](adr/0002-fuentes-de-datos-mvp.md)); los tests de parser corren sobre fixtures mínimas escritas a mano y versionadas en `tests/fixtures/`. |
+| Las notas de parche describen cambios, no estados completos | En el MVP cada hilo se indexa como su propia entidad `patch_notes`, con una sección por encabezado y vigencia abierta desde su parche (§10.1). Aplicarlas como transiciones que cierran el `valid_until` de chunks de gemas requiere poe2db primero y queda fuera de este corte. |
+| El título del hilo puede traer una versión con sufijo (`0.5.5e`) que `PatchVersion` no representa | El parser falla con `PatchVersionUnparseableError` en vez de mapearla a otro parche; si el MVP necesita esos parches, se amplía `PatchVersion` con una decisión explícita. |
+| Encabezados repetidos en un mismo documento producen el mismo `chunk_id` | `IngestSource` rechaza el documento con `DuplicateChunkIdError` antes de escribir; si aparece en datos reales, se parte el documento o se desambigua la sección. |
+| Un snapshot local no conserva la URL del hilo, que la cita necesita | El parser la recupera de los enlaces `/forum/post-reply/<id>` del propio documento; cuando el locator ya es una URL absoluta, esa gana. |
 | El LLM inventa valores numéricos | Validación de citas y regla de "sin respaldo" en el dominio |
 | Sobreingeniería antes de tener datos reales | Implementar primero un corte vertical mínimo (una fuente, un índice, un LLM) y medir |
+
+### 10.1 Modelo de vigencia de las notas de parche (MVP)
+
+Una nota de parche **es su propia entidad**, no una transición aplicada a chunks de gemas:
+
+- `EntityRef(kind="patch_notes", slug="<major>-<minor>-<patch>", name="Patch <version>")`;
+- un `Chunk` por sección de primer nivel del hilo (`section` = slug del encabezado);
+- `Validity(valid_from=<parche detectado>, valid_until=None)`: un cambio es un hecho desde ese parche en adelante.
+
+Aplicar las notas como transiciones que cierran el `valid_until` de chunks de gemas exige primero los datos
+completos de cada gema en poe2db; queda fuera del MVP y se retomará cuando esa fuente exista. Con este
+modelo el filtro de vigencia de §5.1 sigue funcionando: una nota es válida desde su parche y el catálogo
+decide cuál es el actual.

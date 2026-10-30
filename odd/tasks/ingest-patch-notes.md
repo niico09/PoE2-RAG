@@ -93,7 +93,7 @@ states.
 - [x] T4 — `JsonChunkRepository`, shared contract suite with an in-memory fake, adapter unit tests (schema version, atomic write, load errors). Route: inline. S4, S9.
 - [x] T5 — `LocalFileFetcher` with tests. Route: inline. S5.
 - [x] T6 — `PatchNotesParser`, `beautifulsoup4`, hand-written fixtures, tests. Route: delegated to `gentle-ai-worker`, reviewed inline. S6, S7.
-- [ ] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
+- [x] T7 — Record the modeling decision and parser-fixture rule in `docs/architecture.md` §10, and the implemented state in the header. Route: inline. S8.
 - [ ] T8 — Close: full suite, import boundary, type check, evidence, per-spec verdict. Route: inline. S9, S13.
 
 ## Progress / Evidence
@@ -171,7 +171,14 @@ states.
   - Error classes stay outside `DomainError` and `IngestionError`: a page that does not match the forum
     shape is an environment/content failure, so `PatchNotesParseError(RuntimeError)` is the boundary,
     matching `PatchCatalogLoadError` and `LocalSnapshotError`.
-- T7: pending.
+- T7: documentation only, no RED applicable. `docs/architecture.md` now has: the updated state header
+  (ingestion slice implemented, HTTP/other parsers/query adapters/CLI/evaluation still pending); a new
+  §5.2 with the five `IngestSource` steps and their fail-loud rules; the `patch_notes` kind in the §4.2
+  `EntityRef` row; the ingestion port location in §6; and, in §10, the parser-fixture rule (minimal
+  fixtures committed, full snapshots in gitignored `data/raw/`), the new §10.1 modeling decision (patch
+  notes as their own entity with open validity; transitions deferred until poe2db exists) and three new
+  risk rows (suffixed versions, repeated headings, snapshot URL recovery). The document stays Spanish
+  (S10) because the whole file is; everything new elsewhere is English.
 - T8: pending.
 
 ## Delivery slices
@@ -185,6 +192,7 @@ states.
 - Slice 4: T5 (local snapshot fetcher).
 - Slice 5: T6 (patch notes parser, fixtures and the beautifulsoup4 dependency); the delegated writer did not
   commit, so the slice is one parent commit.
+- Slice 6: T7 (architecture decisions, one documentation commit).
 
 ## Tooling notes
 - The pi-lens pass replays diagnostics from the RED state (unknown import symbols that exist by the time
