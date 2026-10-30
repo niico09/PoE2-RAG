@@ -14,6 +14,7 @@ from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
     PatchVersionNotFoundError,
     PatchVersionUnparseableError,
     ThreadUrlNotFoundError,
+    UnsupportedSourceTypeError,
 )
 from poe2_rag.ingestion.application import DocumentParser, RawDocument
 from poe2_rag.shared.domain import EntityRef, PatchVersion, SourceRef, Validity
@@ -26,12 +27,14 @@ def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def make_raw(name: str, locator: str | None = None) -> RawDocument:
+def make_raw(
+    name: str, locator: str | None = None, source_type: str = "patch_notes"
+) -> RawDocument:
     return RawDocument(
         locator=locator if locator is not None else f"data/raw/{name}",
         content=fixture(name),
         fetched_at=CAPTURED_AT,
-        source_type="patch_notes",
+        source_type=source_type,
     )
 
 
@@ -52,6 +55,12 @@ class TestVersionDetection:
     def test_missing_version_raises(self) -> None:
         with pytest.raises(PatchVersionNotFoundError):
             PatchNotesParser().parse(make_raw("no_version_thread.html"))
+
+    def test_finds_the_patch_version_after_another_number(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("title_with_game_name.html"))
+
+        assert chunks[0].validity.valid_from == PatchVersion.parse("0.5.0")
+        assert chunks[0].entity.slug == "0-5-0"
 
     def test_malformed_two_component_version_raises(self) -> None:
         with pytest.raises(PatchVersionUnparseableError) as exc_info:
@@ -106,6 +115,13 @@ class TestBodyExtraction:
         for chunk in chunks:
             assert "community reply" not in chunk.text.lower()
 
+    def test_later_staff_posts_are_not_notes(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("two_staff_posts_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["general-changes"]
+        assert "First post change." in chunks[0].text
+        assert "Staff reply about a skill" not in chunks[0].text
+
     def test_no_staff_post_raises(self) -> None:
         with pytest.raises(MissingPatchNotesBodyError):
             PatchNotesParser().parse(make_raw("community_only_thread.html"))
@@ -142,6 +158,36 @@ class TestSectionSplitting:
 
         for chunk in chunks:
             assert "0.2.0 Patch Notes" not in chunk.text
+            assert chunk.section != "0-2-0-patch-notes"
+
+    def test_title_heading_after_an_intro_is_not_a_section(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("title_not_first_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["overview", "general-changes"]
+        assert chunks[0].text == "Intro before the title heading."
+
+    def test_duplicate_sections_are_merged(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("duplicate_sections_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == [
+            "overview",
+            "general-changes",
+            "fireball-buffs",
+        ]
+        by_section = {chunk.section: chunk.text for chunk in chunks}
+        assert by_section["overview"] == "Intro paragraph.\nOverview body."
+        assert by_section["general-changes"] == (
+            "- First general change.\n- Second general change."
+        )
+        assert by_section["fireball-buffs"] == (
+            "Fireball buff detail.\nMore fireball buff detail."
+        )
+
+    def test_empty_headings_are_skipped(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("empty_heading_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["general-changes"]
+        assert chunks[0].text == "First change.\nSecond change.\nThird change."
 
     def test_a_document_with_only_a_title_raises(self) -> None:
         with pytest.raises(PatchNotesParseError) as exc_info:
@@ -169,6 +215,20 @@ class TestSectionSplitting:
 
 
 class TestTextRendering:
+    def test_renders_tables_and_nested_blocks_as_lines(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("table_and_blocks_thread.html"))
+
+        assert chunks[0].text == (
+            "Skill | Before | After\n"
+            "Fireball | 10 | 15\n"
+            "Ice Nova | 20 | 25\n"
+            "First paragraph.\n"
+            "Second paragraph.\n"
+            "- Cost 10\n"
+            "Effect: none\n"
+            "Fireball is a skill."
+        )
+
     def test_keeps_bullet_lines_and_strips_inline_markup(self) -> None:
         chunks = PatchNotesParser().parse(make_raw("full_020_thread.html"))
 
@@ -181,6 +241,16 @@ class TestTextRendering:
         assert "<strong>" not in general.text
         assert "<em>" not in general.text
         assert "<a" not in general.text
+
+
+class TestSourceType:
+    def test_rejects_a_document_from_another_source(self) -> None:
+        raw = make_raw("full_020_thread.html", source_type="poe2db")
+
+        with pytest.raises(UnsupportedSourceTypeError) as exc_info:
+            PatchNotesParser().parse(raw)
+
+        assert "poe2db" in str(exc_info.value)
 
 
 class TestErrors:
@@ -200,3 +270,4 @@ class TestErrors:
         assert issubclass(PatchVersionUnparseableError, PatchNotesParseError)
         assert issubclass(MissingPatchNotesBodyError, PatchNotesParseError)
         assert issubclass(ThreadUrlNotFoundError, PatchNotesParseError)
+        assert issubclass(UnsupportedSourceTypeError, PatchNotesParseError)
