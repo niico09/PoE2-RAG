@@ -234,17 +234,26 @@ El adaptador `ChromaVectorIndex` escribe y lee una colección de Chroma embebido
   registro guarda el chunk serializado y los dos enteros de vigencia de ADR-0003 (`valid_from_code`,
   `valid_until_code`), más su `chunk_id` como id.
 - **Filtro dentro de la consulta:** `where = {$and: [{valid_from_code: {$lte: v}}, {valid_until_code: {$gt: v}}]}`
-  antes de `n_results`, así el recorte de `limit` ocurre después de filtrar (D1).
+  se aplica dentro de la consulta de Chroma, así ningún registro obsoleto entra al ranking (D1).
 - **Swap atómico con puntero:** Chroma no renombra una colección de forma atómica, así que `rebuild` arma una
   colección nueva `«nombre»__«uuid»`, la llena por lotes y recién entonces escribe el puntero
-  `data/index/chroma/<nombre>.current.json` con `mkstemp` + `os.replace`. El lector solo confía en el puntero,
-  de modo que un rebuild fallido deja la colección anterior respondiendo; después del swap se borra la vieja.
-  Chroma no transacciona entre procesos: es un store local de un solo proceso (ADR-0003).
+  `data/index/chroma/<nombre>.current.json` con `mkstemp` + `os.replace`, y hace `fsync` del directorio antes
+  de borrar la colección anterior: un rename que no sobreviva a un corte no puede dejar el puntero nombrando
+  una colección ya borrada. El lector solo confía en el puntero y lo lee antes de abrir nada, así que una
+  consulta sobre un índice inexistente no crea el directorio. Chroma no transacciona entre procesos: es un
+  store local de un solo proceso (ADR-0003).
+- **Sin fugas de disco:** `delete_collection` de Chroma 1.5.9 borra las filas del catálogo pero deja el
+  directorio del segmento HNSW. Después de cada swap se leen los segmentos vivos del catálogo y se borran los
+  directorios de segmento que ninguna colección referencia; si esa lectura falla, no se borra nada.
 - **Identidad del modelo:** `search` compara `embedding_model` y `dimension` de la colección con el embedder
   configurado y falla con `EmbeddingModelMismatchError` si no coinciden; un vector de otro largo o no finito
-  falla con `InvalidVectorError`.
-- **Orden total:** puntaje descendente y, en empate, `chunk_id` ascendente; los resultados llevan solo
-  `scores.dense`.
+  falla con `InvalidVectorError`. El vector se normaliza con `float()`: un `ndarray` de numpy también entra.
+- **Orden total:** se piden todas las filas vigentes (`n_results = count()`), se ordenan por puntaje
+  descendente y `chunk_id` ascendente, y recién después se corta en `limit`. Pedir `limit` a Chroma dejaría
+  que el store decidiera el desempate entre distancias iguales, y el puerto promete un orden total. El costo
+  es el mismo perfil que BM25: una consulta recorre el corpus vigente.
+- **Fallos explícitos:** colección ausente, puntero ausente o ilegible, esquema desconocido, registro corrupto,
+  store ilegible y rebuild fallido tienen errores propios; ninguno se convierte en un resultado vacío.
 - **Fallos explícitos:** colección ausente, puntero ausente o ilegible, esquema desconocido, registro corrupto y
   rebuild fallido tienen errores propios; ninguno se convierte en un resultado vacío.
 
@@ -365,9 +374,10 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |
 | Un índice léxico queda desactualizado respecto del corpus | El índice persiste el `corpus_fingerprint` del corpus desde el que se construyó, y también la versión del tokenizador y los parámetros de puntuación, así que un archivo escrito con otras reglas se rechaza en vez de responder. Comparar el fingerprint con el corpus y reindexar automáticamente es trabajo del próximo corte. |
 | Un reindexado con dos escritores deja índices de versiones distintas | `rebuild` garantiza atomicidad por almacenamiento, no entre los dos escritores: un rebuild léxico exitoso seguido de uno vectorial fallido deja índices de corpus distintos. `ReindexCorpus` mitiga el caso barato (lee y embebe antes de escribir, así un corpus vacío o un modelo roto no tocan ningún índice) y el estado mixto restante queda como deuda explícita hasta que los dos índices compartan un puntero de versión. |
+| Los directorios de segmento de Chroma no se recolectan y el índice crece sin cota | `_reap_segment_directories` borra los directorios que ninguna colección viva referencia, leyendo los ids del catálogo del propio store; si el catálogo cambia de esquema, no borra nada y el costo queda como deuda visible en vez de borrar datos vivos. |
 | Un reindexado sobre un corpus vacío reemplaza índices buenos por índices vacíos | `ReindexCorpus` aborta con `EmptyCorpusError` antes de llamar al embedder o a ningún escritor, y `rebuild` rechaza una secuencia vacía: el índice anterior sobrevive. |
 | El modelo de embeddings cambia y los vectores del índice dejan de ser comparables | La colección guarda `embedding_model` y `dimension`, y `search` falla con `EmbeddingModelMismatchError` si el embedder configurado no coincide; cambiar de modelo implica reindexar, nunca comparar vectores de dos modelos (ADR-0004). |
-| Un rebuild del índice denso deja la colección a medio llenar si el proceso muere | La colección nueva se llena entera antes de escribir el puntero con `os.replace`: hasta ese momento los lectores siguen viendo la colección anterior, y la nueva se descarta. El puntero no transacciona entre procesos (store local de un solo proceso, ADR-0003). |
+| Un rebuild del índice denso deja la colección a medio llenar si el proceso muere | La colección nueva se llena entera antes de escribir el puntero con `os.replace` + `fsync` del directorio: hasta ese momento los lectores siguen viendo la colección anterior. Si el proceso muere, la colección sin promover sobrevive como huérfana y consume disco hasta que el siguiente rebuild exitoso la recolecta (`_reap_segment_directories`); no hay descarte automático en la muerte del proceso. El puntero no transacciona entre procesos (store local de un solo proceso, ADR-0003). |
 | Un chunk más largo que la ventana del modelo queda a medio indexar en el índice denso | El embedder reporta las posiciones que superan los 512 tokens con el truncado apagado, `ReindexCorpus` las expone como `truncated_chunk_ids` y el índice léxico sigue leyendo el texto completo: el punto ciego es visible en vez de silencioso (ADR-0004). |
 | La búsqueda léxica sin stemming no encuentra una palabra por su variante morfológica | Decisión deliberada (D2): `increased` y `more` son mecánicas distintas y `more` no es ruido. El recall semántico es trabajo del embedder y del reranker, no de la búsqueda léxica. |
 | El LLM inventa valores numéricos | Validación de citas y regla de "sin respaldo" en el dominio |

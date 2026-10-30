@@ -231,8 +231,8 @@ Chroma-backed `VectorIndex`, wired into `ReindexCorpus`, test-first.
   no PR; every command and its observed result is in Progress / Evidence.
 
 ## Close
-All tasks are done. `uv run pytest -q` → **813 passed, 6 deselected**; `uv run pytest -q -m integration` →
-**6 passed, 813 deselected**; `uvx ruff check --select I src tests` → clean; `uvx pyright==1.1.414` →
+All tasks are done, including the fix round below. `uv run pytest -q` → **823 passed, 6 deselected**;
+`uv run pytest -q -m integration` → **6 passed, 823 deselected**; `uvx ruff check --select I src tests` → clean; `uvx pyright==1.1.414` →
 0 errors. The branch holds nine commits and nothing is pushed.
 
 Open follow-ups, deliberately out of scope: a reranker over the fused candidates, the LLM adapter, the
@@ -240,6 +240,72 @@ Open follow-ups, deliberately out of scope: a reranker over the fused candidates
 comparing the persisted corpus fingerprint with the corpus to detect a stale index. The mixed-state risk
 between the two writers stays registered in `docs/architecture.md` §10 until both indexes share one
 version pointer.
+
+## Fix round 1 (Herdr ronda 1/2)
+Applied every qa and review finding of round 1, test-first: each one has a test that failed before the
+fix and passes after it, except the two documentation-only findings.
+
+- **Total order broken past the limit** (qa, `chroma_index.py`): `search` asked Chroma for `limit` results
+  and only then sorted by `(-score, chunk_id)`, so a tie group larger than the limit was cut by the store.
+  Ten identical vectors with `limit=3` returned the store's arbitrary picks, not `s00, s01, s02`. The query
+  now asks for every row matching the validity filter (`n_results = max(count(), limit)`), sorts, and cuts
+  after the tie-break, which is what the port and §5.5 promise and what `Bm25Index` already did. Pinned by
+  `test_a_tie_group_larger_than_the_limit_breaks_by_chunk_id` for `limit=3` and `limit=5`.
+- **`search` wrote to disk and leaked foreign exceptions** (qa): it opened the client (mkdir +
+  `PersistentClient`) before reading the pointer, so a read-only process materialized the index directory,
+  and a store that could not be opened escaped as a raw `chromadb`/sqlite error. `search` now reads the
+  pointer first, opens the client with `create_directory=False`, and maps any open/read/query failure to
+  `VectorIndexReadError`. Pinned by `test_a_search_that_finds_no_index_creates_nothing` and
+  `test_a_broken_store_raises_a_read_error`.
+- **`rebuild` only cleaned up after `ChromaError`** (qa): any other exception from `Collection.add` left the
+  half-built collection on disk and escaped unwrapped. The add and pointer paths now catch `Exception`,
+  delete the unpromoted collection and raise `VectorIndexWriteError`. Pinned by
+  `test_any_add_failure_cleans_up_and_wraps` (a `ValueError` from `add`).
+- **The swap was not durable** (qa): the pointer file was `fsync`ed but its directory entry was not, and the
+  previous collection was deleted immediately afterwards, so a lost rename would leave the pointer naming a
+  deleted collection with nothing to fall back to. `_write_pointer` now calls `_fsync_directory` after
+  `os.replace` and before the old collection is removed. Pinned by `test_the_pointer_replace_is_made_durable`
+  (a recording `os.fsync` proves a directory descriptor was flushed).
+- **§10 described a crash mitigation that does not exist** (qa): the row claimed the unpromoted collection is
+  discarded on process death. It is not; it survives as an orphan until the next successful rebuild reaps it.
+  The row now says exactly that, and the new segment reaping is recorded in §5.5 and in its own §10 row.
+- **ADR-0004 claimed a chunker enforces 512 tokens** (qa): there is no token-based chunker, and a patch-note
+  section exceeds the window routinely. The consequence now states that nothing guarantees the limit, that
+  the model truncates silently, and that `truncated_chunk_ids` exists precisely for that.
+- **`_truncated_chunk_ids` promised an order it did not impose** (qa): the report followed the embedder's
+  positions, so `(2, 0)` produced chunk 2 before chunk 0. The positions are now sorted before mapping, and
+  `test_reports_truncated_chunks_in_corpus_order` pins `(2, 0)` → `(chunk0, chunk2)`.
+- **Vectors were accepted only as `list`/`tuple`** (qa): `numpy.ndarray` is not a `Sequence`, so the natural
+  output of `SentenceTransformer.encode` was rejected. `_normalize_vector` now accepts any iterable of
+  numbers, converts with `float()` (which also accepts `numpy` scalars), rejects booleans and non-finite
+  values, and returns the dimension-checked list. Pinned by `test_an_ndarray_query_vector_is_accepted`.
+- **Disk leak: one HNSW segment directory per rebuild** (review): `delete_collection` removes the catalog rows
+  but leaves the segment directory, so every reindex leaked one full copy of the vectors, and the suppressed
+  `ChromaError` hid it. `_reap_segment_directories` reads the live segment ids from the store's own catalog
+  and deletes the unreferenced segment directories; if the catalog cannot be read it deletes nothing.
+  Pinned by `test_a_second_rebuild_reclaims_the_previous_segment_directory`.
+- **`BgeEmbedder` never applied `max_sequence_length`** (review): the model truncated at its own window while
+  the overflow report compared against the injected value, so the report could lie in both directions. The
+  limit is now assigned to `model.max_seq_length` on load. Pinned by
+  `test_applies_the_sequence_limit_to_the_loaded_model`.
+- **README contradicted the shipped slice** (review): the state line and the roadmap still said the dense half
+  was missing, and the tree listed `data/index/` as BM25 only. All three now describe what exists.
+- **ADR-0003 claimed BM25 shared the integer encoding** (review): the lexical adapter filters on domain
+  objects. The bullet now states that the encoding is exclusive to the Chroma adapter.
+- **The codec error escaped the adapter taxonomy** (review): `rebuild` propagated `VersionComponentError`,
+  a bare `ValueError`, while every other invalid input raised `VectorIndexError`. It is wrapped, and
+  `test_a_version_component_above_999_leaves_previous_index_intact` now expects `VectorIndexError`.
+- **A test asserted laziness while performing the write it denied** (review): it called `search`, which
+  created the store, and only checked the exception. It is now two tests: construction creates nothing, and a
+  search that finds no index creates nothing either.
+- **The Chroma unit suite duplicated the contract's hashing embedder** (review): two copies of the fake the
+  expected vectors depend on. It moved to `tests/hashing_embedder.py`, which both suites import; a new
+  `tests/conftest.py` puts `tests/` on `sys.path` so any suite can reach it.
+
+Gates after the round: `uv run pytest -q` → **823 passed, 6 deselected**; `uv run pytest -q -m integration` →
+**6 passed, 823 deselected**; `uvx ruff check --select I src tests` → `All checks passed`;
+`uvx pyright==1.1.414` → `0 errors, 0 warnings, 0 informations`. Per suite: Chroma adapter 34 (26 before),
+`BgeEmbedder` 29 (28), vector contract 13, dense composition 4, `ReindexCorpus` 25 (24), codec 54.
 
 ## Deviations from the brief
 - **Documentation language.** `docs/architecture.md` and `docs/adr/0004-embeddings-locales.md` were updated

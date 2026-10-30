@@ -39,9 +39,10 @@ Reglas que el adaptador implementa:
 
 - Sin costo por consulta ni dependencia de red para indexar o consultar.
 - La primera ejecución descarga el modelo; las siguientes funcionan sin conexión.
-- **El chunker respeta el límite de 512 tokens** del modelo; un chunk más largo se trunca en silencio y pierde
-  información. Los tests del chunker validan este límite, y el reindexado informa qué chunks el embedder tuvo
-  que cortar (`truncated_chunk_ids`).
+- **Nada garantiza que un chunk entre en los 512 tokens del modelo.** No existe un chunker por tokens: cada
+  chunk es una sección de primer nivel del documento, y una sección de notas de parche de PoE2 lo supera con
+  facilidad. El modelo corta en silencio, así que el embedder reporta las posiciones que desbordan y el
+  reindexado las expone en `truncated_chunk_ids`; el índice léxico sigue leyendo el texto completo.
 - **El índice guarda el identificador del modelo.** Si al consultar no coincide con el `Embedder` configurado,
   el sistema falla con un error explícito en lugar de comparar vectores incompatibles. Cambiar de modelo
   implica reindexar con `ReindexCorpus`.
