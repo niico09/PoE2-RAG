@@ -70,6 +70,14 @@ def embedder() -> BgeEmbedder:
     return BgeEmbedder()
 
 
+@pytest.fixture
+def index(embedder: BgeEmbedder, tmp_path: Path) -> ChromaVectorIndex:
+    """The real adapter over the tiny corpus, rebuilt with the real vectors."""
+    built = ChromaVectorIndex(tmp_path / "data" / "index" / "chroma", embedder=embedder)
+    built.rebuild(CORPUS, embedder.embed_documents([chunk.text for chunk in CORPUS]))
+    return built
+
+
 class TestModel:
     def test_embeds_a_query_into_a_normalized_768_dimension_vector(
         self, embedder: BgeEmbedder
@@ -99,11 +107,8 @@ class TestModel:
 
 class TestRetrieval:
     def test_ranks_the_relevant_chunk_above_an_unrelated_one(
-        self, embedder: BgeEmbedder, tmp_path: Path
+        self, embedder: BgeEmbedder, index: ChromaVectorIndex
     ) -> None:
-        index = ChromaVectorIndex(tmp_path / "data" / "index" / "chroma", embedder=embedder)
-        index.rebuild(CORPUS, embedder.embed_documents([chunk.text for chunk in CORPUS]))
-
         results = index.search(
             embedder.embed("which skill makes lightning jump from foe to foe"), TARGET, 3
         )
@@ -112,12 +117,9 @@ class TestRetrieval:
         assert results[0].scores.dense is not None
 
     def test_answers_a_paraphrase_that_shares_no_keyword_with_the_chunk(
-        self, embedder: BgeEmbedder, tmp_path: Path
+        self, embedder: BgeEmbedder, index: ChromaVectorIndex
     ) -> None:
         """Dense retrieval exists for the queries BM25 cannot answer; this is that query."""
-        index = ChromaVectorIndex(tmp_path / "data" / "index" / "chroma", embedder=embedder)
-        index.rebuild(CORPUS, embedder.embed_documents([chunk.text for chunk in CORPUS]))
-
         results = index.search(embedder.embed("how many companions can I have at once?"), TARGET, 3)
 
         assert results[0].chunk == CORPUS[2]
