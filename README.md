@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta y el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, los adaptadores de recuperación y generación y la CLI todavía no.
+> **Estado:** en implementación. El modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche) y el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido) existen con tests; el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el índice vectorial con su embedder, el reranker, el LLM y la CLI todavía no.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -67,7 +67,8 @@ poe2-rag/
 │   └── patches.toml         # Catálogo de parches: cuáles existen y cuál es el actual
 ├── data/
 │   ├── raw/                 # Snapshots de las fuentes sin procesar
-│   └── processed/           # Chunks normalizados en JSON con metadatos
+│   ├── processed/           # Chunks normalizados en JSON con metadatos
+│   └── index/               # Índices derivados (BM25 JSON), reconstruibles desde data/processed/
 ├── docs/
 │   ├── architecture.md      # Diseño del sistema
 │   └── adr/                 # Registro de decisiones de arquitectura
@@ -124,7 +125,10 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
 - [x] Primer corte de ingesta: notas de parche oficiales → chunks validados y persistidos (`IngestSource`, `ChunkRepository` JSON, fetcher de snapshots con metadatos y parser del foro) con fixtures mínimas. La ingesta HTTP queda pendiente.
 - [ ] Ingesta y chunking con metadatos de gemas de habilidad.
-- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia.
+- [x] Índice léxico BM25 (Okapi, puro Python) reconstruido desde el corpus con `ReindexCorpus`, con
+  pre-filtrado por vigencia, tokenizador determinista y tests unitarios, de contrato y de integración.
+- [ ] Retriever híbrido (BM25 + Chroma) con pre-filtrado por vigencia: falta la mitad densa (Chroma y
+  embedder) y la fusión con RRF en un adaptador de entrada.
 - [ ] Reranking con Cross-Encoder (`bge-reranker-base`).
 - [ ] Generación con citas nativas y CLI.
 - [ ] Dataset de evaluación y métricas.

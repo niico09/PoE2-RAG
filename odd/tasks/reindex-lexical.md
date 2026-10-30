@@ -248,6 +248,38 @@ All tasks are done. Open follow-ups, deliberately out of scope: the vector write
 comparing the persisted fingerprint against the corpus to detect a stale index, and wiring both halves in
 `bootstrap.py`.
 
+## Fix round 1 (Herdr ronda 1/2)
+Applied every qa and review finding of round 1, test-first.
+- **Tokenizer and non-ASCII letters** (qa `tokenizer.py:30`): the word class was `[a-z0-9]`, so an accented
+  letter acted as a separator (`naïve` → `na` + `ve`). It is now `[^\W_]` (any Unicode letter or digit,
+  underscore excluded), with cases for `naïve café Über`, an accented compound, and a pinned exact-output
+  test replacing the self-comparison that could never fail (review `test_tokenizer.py:88-91`).
+- **Tokenizer version** (qa, persisted artifact): `TOKENIZER_VERSION` is exported by the tokenizer and
+  recorded in the index; a file built with other tokenization rules is refused with
+  `UnsupportedIndexSchemaError` instead of answering with terms that no longer match.
+- **Recorded scoring parameters** (qa): `k1` and `b` are persisted at rebuild time and `search` scores with
+  the recorded values, so one file yields one ranking for every reader; a test builds with `b = 0` and reads
+  with defaults to pin it.
+- **Identity** (qa, duplicate `chunk_id`): `rebuild` rejects a repeated id with `DuplicateIndexEntryError`
+  before writing, and the loader rejects a file that stores one twice (`IndexCorruptError`), matching the
+  repository's guard.
+- **Empty iterable** (review `bm25_index.py:142`): `rebuild` materializes first and checks what it produced,
+  so a generator is guarded like a sequence; tests pass an empty generator and a non-empty one.
+- **Loader statistics** (review `:350`): `average_length > 0`, `0 <= df <= chunk_count`, finite `k1`/`b` in
+  range, and per-document `sum(tf) == length` with positive counts; each violation raises `IndexCorruptError`
+  instead of turning a bad file into an empty result.
+- **Cache freshness** (review `:204`): the reader re-checks the file stamp (mtime, size, inode) on every
+  search and reloads when another instance rebuilt it; a test rebuilds behind a live reader.
+- **Composition and encoding** (qa, no integration test; review, header claim): a committed integration suite
+  (`tests/unit/ingestion/test_reindex_lexical_pipeline.py`) runs `JsonChunkRepository` → `ReindexCorpus` →
+  `Bm25Index` with no fakes, pins the validity filter end to end and compares the chunk object both files
+  store, which is the cross-encoding check the duplicated layout needed.
+- **Architecture and README** (qa §7 rule; review §5.3, §10; qa README): §7 declares the
+  `LexicalIndexWriter` adapter-location exception, §5.3 scopes the atomicity sentence to today's single
+  writer and its stray leading space is gone, §10 records the mixed-state risk and the persisted rules, and
+  the README state, tree and roadmap match what this slice shipped. The header now says the pipeline is
+  proven end to end over the JSON repository, which is what the committed test does.
+
 ## Deviations from the brief
 - `docs/architecture.md` was updated in Spanish. The brief asks for documentation in English, but this
 document is written in Spanish throughout and the two previous features kept it that way; code, tests, the

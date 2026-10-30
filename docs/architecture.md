@@ -5,8 +5,9 @@
 > §5.1 con sus puertos de consulta (probado con *fakes*), el primer corte de ingesta de §5.2:
 > `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de
 > parche, y el índice léxico de §5.3: `ReindexCorpus`, el tokenizador determinista y el adaptador BM25
-> Okapi, probados contra el corpus procesado. Todavía no: el fetcher HTTP, los adaptadores de poe2db y
-> poe2wiki.net, el índice vectorial (Chroma), el embedder, el reranker, el LLM, la CLI y la evaluación de §8.
+> Okapi, probados con fakes y, de punta a punta, sobre el repositorio JSON del corpus. Todavía no: el fetcher
+> HTTP, los adaptadores de poe2db y poe2wiki.net, el índice vectorial (Chroma), el embedder, el reranker, el
+> LLM, la CLI y la evaluación de §8.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -172,13 +173,16 @@ Las notas de parche son la primera fuente implementada; el modelo de vigencia qu
    continuación del léxico. Hoy no está implementado.
 
 El orden importa: leer antes de rechazar y rechazar antes de escribir significa que una corrida fallida no
- deja el conjunto de índices en un estado mixto.
+reemplaza el índice que ya existía. Hoy hay un solo escritor, así que el caso de uso no puede prometer
+atomicidad *entre* escritores: cuando llegue el índice vectorial, un rebuild léxico exitoso seguido de uno
+vectorial fallido dejará índices de versiones distintas. Ese estado mixto se registra como riesgo en §10.
 
 ### 5.4 Flujo de búsqueda léxica
 
 El adaptador BM25 Okapi (puro Python, `k1 = 1.5` y `b = 0.75` configurables) escribe **un** archivo JSON
-con versión de esquema, el `corpus_fingerprint` del corpus, las estadísticas (frecuencia de documentos por
- término, longitud media) y los chunks completos que la consulta devuelve dentro de `RetrievedChunk`.
+con versión de esquema, versión del tokenizador, los parámetros `k1` y `b` con los que se construyó, el
+`corpus_fingerprint` del corpus, las estadísticas (frecuencia de documentos por término, longitud media) y
+los chunks completos que la consulta devuelve dentro de `RetrievedChunk`.
 
 - **Tokenización única para indexar y consultar:** minúsculas; separación por espacios y puntuación; números,
   decimales y valores con signo o porcentaje enteros (`+10%`, `1.5`, `-20%`); términos compuestos de juego
@@ -193,8 +197,18 @@ con versión de esquema, el `corpus_fingerprint` del corpus, las estadísticas (
 - **Escritura atómica:** archivo temporal en el mismo directorio más `os.replace`, así un rebuild fallido
   nunca deja un índice truncado. Los documentos se serializan ordenados por `chunk_id`, de modo que dos
   rebuilds del mismo corpus producen bytes idénticos.
-- **Fallos explícitos:** archivo ausente, versión de esquema desconocida y archivo corrupto tienen errores
-  propios; `limit <= 0` y una consulta en blanco también. Ninguno se convierte en un resultado vacío.
+- **Fallos explícitos:** archivo ausente, versión de esquema desconocida, versión de tokenizador distinta y
+  archivo corrupto tienen errores propios; `limit <= 0` y una consulta en blanco también. Ninguno se
+  convierte en un resultado vacío.
+- **Reglas y parámetros persistidos:** el archivo registra la versión del tokenizador y los valores de `k1` y
+  `b`, y todo lector puntúa con los valores registrados. Así un mismo archivo produce siempre el mismo
+  ranking, y un índice escrito con otras reglas de tokenización se rechaza en vez de responder con términos
+  que ya no coinciden con la consulta.
+- **Identidad única:** un corpus con dos chunks del mismo `chunk_id` se rechaza antes de escribir (`DuplicateIndexEntryError`),
+  y un archivo con la misma identidad repetida también (`IndexCorruptError`): la consulta siguiente los
+  convertiría en `DuplicateChunkError`.
+- **Archivo vigente:** el lector cachea el índice decodificado y revalida la identidad del archivo (mtime, tamaño, inodo)
+  en cada búsqueda, así un reindexado hecho por otra instancia no lo deja respondiendo con el índice viejo.
 
 ---
 
@@ -250,7 +264,7 @@ tests/
 └── eval/                    # dataset de preguntas con respuestas esperadas
 ```
 
-**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta.
+**Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` es la excepción deliberada: lo consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/lexical/` porque implementa también el puerto de lectura `LexicalIndex` y ambos comparten el archivo del índice; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta.
 
 RRF vive en el dominio de `answering` porque es una función pura sobre rankings, no depende de ninguna librería.
 
@@ -302,7 +316,8 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Dos hilos del mismo parche reclaman el mismo `chunk_id` (el id no incluye la URL) | `IngestSource` rechaza con `ChunkIdentityConflictError` un id ya almacenado desde otra URL; una recaptura de la misma URL es un update. |
 | Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
 | Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |
-| Un índice léxico queda desactualizado respecto del corpus | El índice persiste el `corpus_fingerprint` del corpus desde el que se construyó. Compararlo con el corpus y reindexar automáticamente es trabajo del próximo corte: hoy se registra y no se compara. |
+| Un índice léxico queda desactualizado respecto del corpus | El índice persiste el `corpus_fingerprint` del corpus desde el que se construyó, y también la versión del tokenizador y los parámetros de puntuación, así que un archivo escrito con otras reglas se rechaza en vez de responder. Comparar el fingerprint con el corpus y reindexar automáticamente es trabajo del próximo corte. |
+| Un reindexado con dos escritores deja índices de versiones distintas | Hoy hay un solo escritor. Cuando exista el índice vectorial, `rebuild` garantiza atomicidad por archivo, no entre escritores: `ReindexCorpus` deberá reconstruir ambos desde el mismo snapshot y decidir qué hacer si el segundo falla. Se registra como riesgo del próximo corte. |
 | Un reindexado sobre un corpus vacío reemplaza índices buenos por índices vacíos | `ReindexCorpus` aborta con `EmptyCorpusError` antes de llamar a ningún escritor, y `rebuild` rechaza una secuencia vacía: el índice anterior sobrevive. |
 | La búsqueda léxica sin stemming no encuentra una palabra por su variante morfológica | Decisión deliberada (D2): `increased` y `more` son mecánicas distintas y `more` no es ruido. El recall semántico es trabajo del embedder y del reranker, no de la búsqueda léxica. |
 | El LLM inventa valores numéricos | Validación de citas y regla de "sin respaldo" en el dominio |
