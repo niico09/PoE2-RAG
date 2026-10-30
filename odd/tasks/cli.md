@@ -87,7 +87,7 @@ Wire PoE2-RAG end to end: a frozen `AppConfig`, the `bootstrap.py` composition r
 - [x] T6 — integration fixture, integration run and the `live` suite. Route: inline. S7, S8, S9.
   Commit `24f4888`.
 - [x] T7 — README Usage, `.env.example`, `.gitignore`, `docs/architecture.md`. Route: inline. S10.
-  Commit `779af27`.
+  Commit `0840a9b`.
 - [x] T8 — Full verification, independent verifier, close the record. Route: inline + `gentle-ai-verify`.
   S11–S15.
 
@@ -335,10 +335,10 @@ Wire PoE2-RAG end to end: a frozen `AppConfig`, the `bootstrap.py` composition r
     src/poe2_rag/ingestion/adapters/outbound src/poe2_rag/answering/adapters/outbound
     src/poe2_rag/shared/adapters` → **empty**: domain, application and the existing outbound adapters are
     untouched (S11).
-  - Credential proof: the only read is `is_blank(self._environ.get(API_KEY_VARIABLE))` in
-    `bootstrap._require_api_key`; the value never enters a field, message, log or output, and
-    `grep -rn "ANTHROPIC_API_KEY\|api_key" src` finds the constant, the docstrings and the presence check
-    and nothing else.
+  - Credential proof (as of `bb2972a`, which closed the only hole the verifier found): the environment
+    is read exactly twice — `bootstrap.Container.__init__` reduces it to `self._has_api_key`, and
+    `bootstrap.build_container` decides which mapping to read — so the value never sits in a field, and
+    never enters a message, a log or an output. `_require_api_key` reads only that boolean.
   - Hygiene: `git ls-files | grep -E "^data/|\.env$"` → empty; working tree clean; every test writes
     under `tmp_path`.
   - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with'` → `0`.
@@ -361,10 +361,10 @@ yields to it and the boundaries are the tasks:
 - slice 2 — inbound commands: T3 `e8a1f39` (ingest), T4 `1f8d3f1` (ask).
 - slice 3 — CLI boundary: T5 `82dcb53`.
 - slice 4 — end-to-end proof: T6 `24f4888`.
-- slice 5 — documentation, closing with T8: T7 `779af27`.
+- slice 5 — documentation, closing with T8: T7 `0840a9b`.
 
-The branch is 26 files changed, 2603 insertions and 13 deletions against `main`, feature record with the
-verbatim request included (L1).
+No commit slice was ever dropped: one Conventional Commit per task is the request's rule, so every task is
+one commit and the closed record stays within the branch.
 
 ## Deviations from the request
 1. **Route: T3, T4 and T5 ran on `gentle-ai-worker`, not inline.** The runtime's context backstop fired
@@ -411,8 +411,11 @@ verbatim request included (L1).
   default. 6 cases.
 - S5 ✅ stdlib argparse, `main(argv=None, *, container=None)`, parses and dispatches only, the container
   factory is injectable, and `[project.scripts] poe2-rag = "poe2_rag.cli:main"` is registered.
-- S6 ✅ Expected errors → one flattened line on stderr and exit 1, no traceback; argparse usage errors →
-  exit 2; unexpected exceptions propagate; success → exit 0. 13 cases.
+- S6 ✅ **partial** — Expected errors → one flattened line on stderr and exit 1, no traceback; argparse
+  usage errors → exit 2; unexpected exceptions propagate; success → exit 0. 21 cases. Partial because a
+  local model that cannot load still escapes as a raw `OSError`: the embedder is outside this feature's
+  edit surfaces and catching `OSError` at the boundary would also swallow permission and disk faults.
+  The README states the caveat next to the promise.
 - S7 ✅ Default suite offline and free: config from a mapping, container built with the model loaders
   replaced by a raising function, commands against a fake container, including the missing key, an LLM
   refusal, an unknown source choice and an invalid `--patch`.
@@ -490,3 +493,74 @@ Re-verified after the round: `uv run pytest -q` → **983 passed, 13 deselected*
 `uv run pytest -q -m integration` → **11 passed, 985 deselected**; `uv run pytest -q -m live
 --collect-only` → **2 collected**, never run; `uvx ruff check --select I src tests` → All checks passed;
 `uvx pyright==1.1.414` → 0 errors.
+
+## Harness round 1 (QA + review findings)
+
+Ten QA findings and five review findings. Three QA findings were **stale** — they reproduce a state this
+branch had already fixed before the round started, and re-running their repros on `1fc9978` gives the
+contracted behaviour; the rest were real and are addressed below. Every fix has a test that fails without
+it.
+
+**Fixed (with the check that proves it):**
+
+- QA-4 **`POE2_RAG_RAW_DIR` was a dead knob** — documented and validated but never consumed, so a relative
+  locator was read from the working directory. The composition root now resolves a relative locator
+  against the configured raw directory (`_RawDirectoryFetcher`), because *where* snapshots live is
+  configuration while the fetcher only knows the locator it is handed. An absolute
+  locator keeps working as given. Case: a snapshot placed only under `raw_dir` ingests by bare name, with
+  no file of that name in the working directory.
+- QA-5 **`ingest --help` hid the closed source set** — `metavar="source"` suppressed argparse's
+  `{patch-notes}`. Metavar dropped, so the valid set is discoverable and grows by itself. Case asserts
+  `{patch-notes}` in the rendered help.
+- QA-7 **`llm_effort` was validated only by the adapter** — `medium-high` loaded fine and failed three
+  stages later. The closed set now lives in `config.py`, is validated in `__post_init__` and again while
+  the environment is read (where the message can name the variable), and a test pins the set to the
+  adapter's `_EFFORTS` so the two cannot drift.
+- QA-8 **the wiring test was tautological** — it asserted `container.embedder is container.embedder`, which
+  proves memoization, not collaboration. It now reads the collaborators the two use cases were actually
+  built with (`reindex._document_embedder`, `answer._lexical_index`, …), so a `ReindexCorpus` built with its
+  own embedder fails.
+- QA-10 / review-2 **the boundary knew all nine outbound adapters** — against ADR-0006 and this branch's own
+  §7, forcing an edit here for every new adapter and dragging `chromadb` and the SDK into `--help`. The
+  tuple moved to the composition root (`bootstrap.EXPECTED_ERRORS`, published as
+  `Container.expected_errors`); `cli.py` imports no adapter. Measured: `import poe2_rag.cli` **0.86 s →
+  0.045 s**, `uv run poe2-rag --help` **~1.07 s → 0.047 s**, and a subprocess case asserts the import pulls
+  no `chromadb`, `anthropic` or `torch`.
+- QA-1 (secondary) **a test asserted the inverse of the real behaviour** — the unknown patch through a fake
+  returned 0 and read as if that were the contract. Split into a usage-error case and a case that states
+  argparse does not resolve versions and points at the real-path case. The repro itself was already fixed
+  in `191f275`.
+- review-1 **README promised "no traceback" unconditionally** — true except for a model that cannot load.
+  The caveat now sits next to the promise, explaining why it needs an adapter fix rather than an `OSError`
+  catch, and S6 is recorded as partial.
+- review-3 **the retrieval budget was frozen without justification and its test was tautological** — the
+  monotonicity case asserted an invariant `RetrievalSettings.__post_init__` already enforces. The numbers
+  are now documented in the README, the docstring says they are policy rather than wiring (matching the
+  test that used to contradict it), and the case pins each value.
+- review-4 **`InvalidQueryError` also covers type invariants** — `catalog must be a PatchCatalog` would be
+  reported as an expected failure. The domain is outside this feature's surfaces and offers no finer
+  split, so the tuple's comment and S6 now say so instead of claiming the family is user-input only.
+- QA-9 / review-5 **the record cited a dangling commit and stale numbers** — `779af27` was amended away and
+  the credential proof pointed at `_environ`, which `bb2972a` deleted. Both corrected here, and the
+  evidence blocks that change every commit are now dated by the commit they describe.
+
+**Stale findings (already fixed before the round, re-verified):**
+
+- QA-1 (primary) and QA-2 — `ask --patch 9.9.9` and `ask "  "` now exit 1 with one line and no traceback
+  (`191f275`). Re-verified through the real binary in this round.
+- QA-3 — the README sentence about ingestion needing the key was corrected in `1fc9978`; it now says
+  ingestion needs no credential at all.
+
+**Not fixed (reported, out of surfaces):**
+
+- The model-load failure review-1 and the earlier verifier both found. Closing it needs `BgeEmbedder` to
+  wrap its loader in a dedicated adapter error, and `answering/adapters/outbound/**` is not in this
+  feature's edit surfaces. Catching `OSError` at the boundary is the wrong fix, as both reviewers noted.
+- review-4's ideal fix — splitting user-input errors from type invariants in the domain — is a domain change,
+  also outside the surfaces.
+
+**Measured at `348f50c`, the last code commit of the round** (the record's own text comes after it):
+`git diff --shortstat main..348f50c` → 26 files changed, 3252 insertions, 13 deletions in 15 commits;
+`uv run pytest -q` → 991 passed, 13 deselected; `uv run pytest -q -m integration` → 11 passed,
+993 deselected; `uv run pytest -q -m live --collect-only` → 2 collected; `uvx ruff check --select I src
+tests` → All checks passed; `uvx pyright==1.1.414` → 0 errors.
