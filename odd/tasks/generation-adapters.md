@@ -81,7 +81,7 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
 ## Tasks
 - [ ] T1 — Branch `feat/generation-adapters`, feature doc, `uv add anthropic`, verify the installed
   SDK shapes and the documented custom-http-client injection. Route: inline. S2, S5, S8, S9.
-- [ ] T2 — `CrossEncoderReranker` unit tests then the adapter. Route: inline. S1, S10.
+- [x] T2 — `CrossEncoderReranker` unit tests then the adapter. Route: inline. S1, S10.
 - [ ] T3 — `ClaudeLanguageModel` unit tests then the adapter. Route: inline. S2–S7, S9.
 - [ ] T4 — Integration reranker test and the `live` Claude test (written, never run). Route: inline.
   S11, S12.
@@ -217,6 +217,21 @@ Implement the generation stage of PoE2-RAG: a cross-encoder `Reranker` adapter a
 - **L3 (decision, parent):** the "no information" sentence is `NO_INFORMATION_TEXT` from
   `poe2_rag.answering.application`, reused instead of redefined: `AnswerQuestion` already returns that
   exact text when nothing was delivered, and one sentence must not exist twice.
+- T2: RED → collection `ModuleNotFoundError: No module named
+  'poe2_rag.answering.adapters.outbound.rerank'`, 0 tests run (32 cases written). GREEN → **32 passed**;
+  full suite **855 passed, 6 deselected** (baseline on `main`, measured with the new file ignored:
+  823 passed, **+32**).
+  - The pairs are asserted as data: one `predict` call, `(query, chunk.text)` per candidate in candidate
+    order, the configured `batch_size` and `show_progress_bar=False`. A model that scores a different
+    text than the one delivered would rank the wrong corpus.
+  - `rerank` rebuilds each result with `dataclasses.replace`, so the returned chunk is the delivered one
+    with `scores.rerank` added and `lexical`/`dense`/`fused` untouched; the test compares the whole
+    `StageScores` value, not only the new field.
+  - The score check converts with `float` (the real model returns numpy scalars) but rejects `bool`,
+    `str` and `bytes` first, because `float("0.5")` and `float(True)` would otherwise pass. A wrong
+    score count, a non-finite value and a non-sequence are `RerankScoringError`, never a silent zip.
+  - `scorer=` is the injection point; the lazy-load case monkeypatches `_load_scorer` instead, proving
+    the model is not loaded at construction and is loaded once across two calls.
 - **L4 (decision, parent):** the adapter raises its own errors for a refused, truncated or malformed
   response before `GeneratedAnswer` is constructed, so an application-layer
   `InvalidGeneratedAnswerError` never leaks out of an adapter.
