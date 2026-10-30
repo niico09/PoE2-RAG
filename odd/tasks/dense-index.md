@@ -110,33 +110,185 @@ Chroma-backed `VectorIndex`, wired into `ReindexCorpus`, test-first.
 - **L5 (decision, parent):** the embed occurs before any write, so a broken model leaves both
   indexes untouched; the residual mixed state is only the lexical-then-vector rebuild risk already
   recorded in `docs/architecture.md` §10.
-
-## Progress / Evidence
-- T1: branch `feat/dense-index` from `main` (`9e85960`). Baseline on that base: `uv run pytest -q` →
-  **671 passed**. `data/index/` already covers the Chroma directory:
-  `git check-ignore -v data/index/chroma/chroma.sqlite3` → `.gitignore:11:data/index/`; `git ls-files
-  data` is empty. Dependencies: `uv add chromadb sentence-transformers` installed the CUDA build of
-  torch first, because `[tool.uv.sources]` only applies to a direct dependency: `uv add torch` after
-  the index configuration replaced it with `torch==2.15.0+cpu` from
-  `https://download.pytorch.org/whl/cpu`, `uv sync` pruned the 17 `nvidia-*`/`triton` packages and
-  `grep -c nvidia uv.lock` → `0` (venv 5.7G → 1.4G). No RED applicable (configuration only).
+- T2: RED → collection `ModuleNotFoundError: No module named
+  'poe2_rag.answering.adapters.outbound.dense'`, 0 tests run (47 cases written). GREEN → 47 passed; full
+  suite **718 passed**. Seven error-path cases were added while green (non-`Validity`, non-integer bound,
+  non-integer code) → 54 cases.
+  - The encoding is hand-computed in the tests, not recomputed with the production formula: `0.1.2` →
+    `1_002`, `0.10.0` → `10_000`, `0.1.10` → `1_010` and `0.11.0` → `11_000`, and the ordering test pairs
+    `0.1.9 < 0.1.10`, `0.9.99 < 0.10.0`, `0.999.999 < 1.0.0` across component boundaries.
+  - `decode_version` rejects every code whose components cannot fit in `0..999`, so the open-validity
+    sentinel decodes only through `decode_bound`, never as a version (`major 2147`).
+- T3: RED → `ImportError: cannot import name 'DocumentEmbedder' from
+  'poe2_rag.ingestion.application'`, 0 tests run in the two touched files (4 new port cases).
+  GREEN → full suite **735 passed**.
+  - The embed runs before either writer: a model that cannot load leaves both persisted indexes untouched,
+    and the test asserts the journal stops at `all, embed_documents`.
+  - `EmbedderContractError` covers the two ways an embedder can break the batch pair: a vector count that
+    does not match the corpus (checked before asking for overflow) and an overflow position outside the
+    batch (checked before any writer runs). Neither can reach the writers.
+  - Three existing `ReindexCorpus` cases asserted the exact port journal, so their expected sequence grew
+    the two new calls; every other assertion is unchanged. The lexical pipeline test needed two local
+    stand-ins for the dense half (see Deviations).
+- T4: RED → `ModuleNotFoundError: ... dense.bge_embedder`, 0 tests run (28 cases written). First GREEN
+  attempt: **1 failed, 27 passed**, and the failure was mine — the ordering test asked for a 3-wide
+  embedder while the stub model produced 768, which the new dimension guard correctly rejected. Test
+  corrected, then **28 passed**; full suite **770 passed**.
+  - The model is never loaded in this suite: `_load_model` is monkeypatched, so the two rules that only
+    the adapter owns (instruction on queries, never on documents; one `encode` call with the injected
+    `batch_size`, `normalize_embeddings=True`, no progress bar) are pinned without importing torch.
+  - The dimension guard closes the `model_id`/`dimension` loophole: a smaller model id left on the default
+    768 configuration fails on first use instead of writing an index of the wrong width.
+  - `overflowing_indices` counts tokens with `truncation=False`; a recording tokenizer pins that argument,
+    because counting with truncation on would always report nothing.
+- T5: delegated to `gentle-ai-worker` for the module, its unit suite and the reusable contract suite, after
+  the parent fixed the surface, the error taxonomy and the swap design. RED was observed by the parent
+  before the module existed: the two new suites failed collection with
+  `ModuleNotFoundError: ... dense.chroma_index` (39 cases). The worker delivered; the parent reviewed it,
+  found and fixed three defects, and added one test:
+  - the pointer-write failure path was dead code: `_write_pointer` already wrapped `OSError` in
+    `VectorIndexWriteError`, so `except OSError` never ran and the half-built collection leaked. Now the
+    rebuild drops the unpromoted collection and re-raises, pinned by a new test that also proves the
+    previous index still answers and that no orphan collection remains;
+  - `collection.metadata` could be `None` on a foreign collection and raised `AttributeError`; it now falls
+    back to `{}` so the schema check reports `UnsupportedIndexSchemaError`;
+  - a record without a metadata object or without the `chunk` key raised `KeyError`; both now raise
+    `IndexCorruptError` with the record id.
+  GREEN → 26 adapter cases + 13 contract cases + 4 composition cases; full suite **813 passed**.
+  - The swap is a pointer file written with the BM25 adapter's `mkstemp` + `fsync` + `os.replace` pattern:
+    Chroma cannot rename a collection atomically, and a crash between two renames would leave no collection
+    under the canonical name. The test that injects a failed `add` proves the old collection answers; the
+    new test that injects a failed `mkstemp` proves the unpromoted collection is not left behind.
+  - The contract suite imports `VALIDITY_CASES`, `make_chunk` and `chunk_ids` from
+    `test_lexical_index_contract.py`, so the five validity boundaries and the filter-before-limit rule are
+    the same data for both ports, and a deterministic 64-dimension hashed bag-of-words embedder keeps it
+    offline.
+- T6: documentation only, no RED applicable. `docs/architecture.md`: state header, §5.1 steps 2-3, §5.3
+  rewritten for two writers and the embed-first order, a new §5.5 for the dense flow (embedder rules,
+  collection metadata, in-query filter, pointer swap, identity check, total order, explicit failures), §6
+  with the four ports and their write/read split, §7 with the adapter-only dependency rule and
+  `data/index/chroma/`, §8 with the `VectorIndex` contract and the offline-by-default strategy, and §10
+  with five risks (mixed state, model change, half-built collection, truncation blind spot) replacing the
+  two stale rows. `docs/adr/0004-embeddings-locales.md`: the five implemented rules and the verified MIT
+  license, plus the truncation consequence.
+- T7: close. `uv run pytest -q` → **813 passed, 6 deselected** (baseline 671, **+142**).
+  `uv run pytest -q -m integration` → **6 passed, 813 deselected in 4.29s** (first run 21.04s; the model
+  is cached afterwards). Per suite: version codec 54, `BgeEmbedder` 28, `ChromaVectorIndex` 26, vector
+  contract 13, dense composition 4, `ReindexCorpus` 24 (11 before), ingestion ports 28 (24 before).
+  - `uvx ruff check --select I src tests` → `All checks passed`; `uvx pyright==1.1.414` (whole workspace,
+    repo config) → `0 errors, 0 warnings, 0 informations`.
+  - Import boundary: `grep -rl "import chromadb|from chromadb|sentence_transformers" src` lists exactly
+    the two dense adapters (plus bytecode); `ingestion/application` and `answering/application` import only
+    the standard library, `typing` and the domain.
+  - `git ls-files data` → 0 files; `git check-ignore -v data/index/chroma/chroma.sqlite3` →
+    `.gitignore:11:data/index/`; `git log main..HEAD --format=%B | grep -ci 'co-authored-by|generated
+    with|claude|anthropic'` → `0`; `git ls-remote --heads origin feat/dense-index` → nothing.
+  - Environment note, same class the previous feature recorded: the editor LSP reports `poe2_rag` imports
+    in test files as unresolved and flags an import-order error that the repository's own tools do not
+    see. Proof that the code is fine: `uv run python -c "from
+    poe2_rag.answering.adapters.outbound.dense.chroma_index import ChromaVectorIndex"` imports,
+    `uv run pytest -q -m integration --collect-only` collects 6 tests, `uvx ruff check --select I src tests`
+    passes from the repository root, and `uvx pyright` over the workspace reports 0 errors. Run from
+    outside the repository root, ruff reproduces the LSP message, which places the cause in the analyzer's
+    working directory rather than in the imports.
 
 ## Per-spec verdict
-- S1 ✅ …
-- S2 ✅ …
-- S3 ✅ …
-- S4 ✅ …
-- S5 ✅ …
-- S6 ✅ …
-- S7 ✅ …
-- S8 ✅ …
-- S9 ✅ …
-- S10 ✅ …
-- S11 ✅ …
-- S12 ✅ …
+- S1 ✅ `version_codec.py` encodes `major * 1_000_000 + minor * 1_000 + patch` with components `0..999`,
+  the `2**31 - 1` sentinel for an open bound and a specific error above `999`; 54 cases pin round-trip,
+  cross-component order, `0.1.10` vs `0.11.0`, the sentinel and the rejected codes. The filter
+  `valid_from_code <= v AND valid_until_code > v` is applied inside the Chroma query (§5.5).
+- S2 ✅ `BgeEmbedder` defaults to `BAAI/bge-base-en-v1.5`, loads lazily, applies the retrieval instruction to
+  queries only, asks for L2 normalization, injects model id, device, batch size, dimension, instruction and
+  the 512-token limit, exposes `model_id`/`dimension`, verifies the loaded width and reports overflow
+  positions with truncation off. 28 offline cases plus the real-model integration cases.
+- S3 ✅ `ChromaVectorIndex(directory, collection_name, embedder=…)` over `chromadb.PersistentClient`; the
+  collection stores `index_schema_version`, `embedding_model`, `dimension` and `chunk_count`; a model or
+  dimension mismatch raises `EmbeddingModelMismatchError`; the rebuild builds a new collection, promotes it
+  through an atomically replaced pointer and deletes the old one; `search` filters inside the query, breaks
+  ties by `chunk_id`, uses cosine distance and sets only `scores.dense`. 26 adapter cases.
+- S4 ✅ `DocumentEmbedder.embed_documents`/`overflowing_indices` and `VectorIndexWriter.rebuild(chunks,
+  vectors)` live in `ingestion/application/ports.py`; `ReindexCorpus` takes both, embeds the whole corpus
+  before writing, rebuilds both indexes from one snapshot and reports `truncated_chunk_ids`; the answering
+  `Embedder`/`VectorIndex` ports are unchanged; one adapter serves each pair. 24 `ReindexCorpus` cases and
+  4 composition cases.
+- S5 ✅ `chromadb`, `sentence-transformers` and `torch` are adapter-only dependencies; `torch` resolves from
+  `https://download.pytorch.org/whl/cpu` (`torch==2.15.0+cpu`, no `nvidia-*`/`triton` in `uv.lock`);
+  `ingestion/application` and `answering/application` import only the standard library and the domain.
+- S6 ✅ `data/index/` already covered the Chroma directory; `git check-ignore -v
+  data/index/chroma/chroma.sqlite3` → `.gitignore:11:data/index/` and `git ls-files data` is empty.
+- S7 ✅ the `integration` marker is registered and excluded by `addopts`; the default suite drives
+  `ChromaVectorIndex` with a deterministic hashed bag-of-words embedder in `tmp_path`; the codec, the
+  fakes-based `ReindexCorpus`, the model mismatch, the missing collection and the persistence round-trip all
+  have offline tests; the contract suite reuses `VALIDITY_CASES` for `VectorIndex`.
+- S8 ✅ `tests/integration/test_dense_retrieval_integration.py` (6 cases) passes against the real model:
+  768-dimension unit vectors, the 512-token overflow report and both rankings.
+- S9 ✅ no reranker, LLM adapter, `bootstrap.py`, CLI or fusion change; `AnswerQuestion` and its ports are
+  untouched.
+- S10 ✅ code, tests, feature document and commit messages in English. The two Markdown documents under
+  `docs/` stay Spanish (see Deviations).
+- S11 ✅ the heuristic is recorded in Delivery slices; the largest task is justified there.
+- S12 ✅ branch `feat/dense-index` from `main`, one Conventional Commit per task, no attribution, no push,
+  no PR; every command and its observed result is in Progress / Evidence.
 
 ## Close
-(Pending.)
+All tasks are done. `uv run pytest -q` → **813 passed, 6 deselected**; `uv run pytest -q -m integration` →
+**6 passed, 813 deselected**; `uvx ruff check --select I src tests` → clean; `uvx pyright==1.1.414` →
+0 errors. The branch holds nine commits and nothing is pushed.
+
+Open follow-ups, deliberately out of scope: a reranker over the fused candidates, the LLM adapter, the
+`bootstrap.py` composition root that wires one embedder and one store to both halves, the CLI commands, and
+comparing the persisted corpus fingerprint with the corpus to detect a stale index. The mixed-state risk
+between the two writers stays registered in `docs/architecture.md` §10 until both indexes share one
+version pointer.
 
 ## Deviations from the brief
-(Pending.)
+- **Documentation language.** `docs/architecture.md` and `docs/adr/0004-embeddings-locales.md` were updated
+  in Spanish. The brief asks for docs in English, but both files are written in Spanish throughout and the
+  two previous features kept them that way; code, tests, the feature document and commit messages are
+  English.
+- **Batching.** The brief puts "embeds all chunk texts in batches" on `ReindexCorpus`; batching lives in the
+  embedder adapter instead (injected `batch_size`, one `embed_documents` call per corpus). The batch size is
+  a property of the model and the device, and a second knob in the use case would duplicate it (L4).
+- **The pointer file.** Chroma cannot rename a collection atomically, so the swap-promise is implemented as
+  a pointer file written with the BM25 adapter's atomic-replace pattern (L3). The collection is still built
+  new and the old one deleted, as the brief describes.
+- **`torch` is a direct dependency.** `[tool.uv.sources]` only redirects a direct dependency, so
+  `uv add chromadb sentence-transformers` alone installed the CUDA build. Declaring `torch` on the CPU index
+  and running `uv sync` replaced it with `torch==2.15.0+cpu` and pruned 17 accelerator packages.
+- **The embedder identity.** `search` receives only a vector, so the Chroma adapter is constructed with the
+  embedder it is paired with and reads `model_id`/`dimension` from it (a `runtime_checkable`
+  `EmbedderIdentity` protocol local to the adapter). That is how "search with an embedder whose model id or
+  dimension differs" is detected; the answering `Embedder` port keeps its single `embed` method.
+- **Two ports grew one method each.** `DocumentEmbedder` carries `overflowing_indices(texts)` so the
+  truncation report has a source, and `ReindexCorpus` gained `EmbedderContractError` to reject a batch that
+  does not pair one vector with one chunk. Neither changes an existing port.
+- **One file outside the allowed surfaces.** `tests/unit/ingestion/test_reindex_lexical_pipeline.py` composes
+  `ReindexCorpus` and had to learn the two new required constructor arguments; the change is two local
+  stand-ins plus a helper. Making the ports optional would have been the alternative, and it would weaken
+  production code to spare a test edit.
+- **`ReindexCorpus` call sites.** The constructor parameters are required keyword-only arguments, so the
+  existing tests were adapted (a `Harness` dataclass and the extended port journal); their assertions are
+  otherwise unchanged. `ReindexReport.truncated_chunk_ids` defaults to `()`, so a report can still be built
+  without it.
+- **T1 landed as two commits** (plan document, then dependencies) instead of one, so the dependency change is
+  reviewable apart from the plan.
+- **T2 was split out of T3 with a rebase** after it had been committed together, to honour one commit per
+  task. The branch is local, so the rewrite touched nothing published.
+- **An extra `fix(...)` commit** updates the dimension read to `get_embedding_dimension`, the name the
+  installed sentence-transformers uses; the deprecated call worked but warned on every run.
+- **An extra `[tool.ruff.lint.isort]` section** in `pyproject.toml` declares `poe2_rag` as first-party. The
+  repository does not depend on ruff, but any isort-compatible tool run from outside the repository root
+  otherwise classifies the package as third-party and disagrees with the repository's own check.
+- **T5 was delegated.** The module and its two suites were written by `gentle-ai-worker` against a fixed
+  surface and error taxonomy; the parent authored the dense composition suite, reviewed the delivered code,
+  fixed three defects (dead pointer-failure cleanup, a `None` collection metadata crash, a `KeyError` on a
+  malformed record) and added the test that pins the pointer failure path.
+
+## Delivery slices
+- One commit per task, except T1 (plan + dependencies) and T7 (integration suite + this close record), and
+  the `fix(...)` follow-up for the renamed sentence-transformers method.
+- T5 is ~1,450 authored lines across the adapter, its 26 cases and the 13-case contract suite. It does not
+  split: the adapter and both suites pin the same `search`/`rebuild` surface and cannot reach green in
+  separate commits, so the task lands whole, as the previous feature did for its BM25 adapter.
+- T3 (452 lines) includes the mechanical adaptation of the lexical pipeline test and three existing
+  `ReindexCorpus` cases; the behaviour it adds is the embed-then-rebuild wiring.
