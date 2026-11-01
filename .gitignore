@@ -9,3 +9,7 @@ data/processed/
 
 # Indexes rebuilt from that corpus: derived from it, so they carry the same licence (ADR-0002)
 data/index/
+
+# Local secrets: the Anthropic API key lives in `.env` and nowhere else (ADR-0005).
+# `.env.example` documents the variable names and is committed.
+.env
