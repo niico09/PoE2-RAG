@@ -12,6 +12,7 @@ dependencies = [
     "chromadb>=1.5.9",
     "sentence-transformers>=6.2.0",
     "torch>=2.15.0",
+    "httpx2>=2.16.0",
 ]
 
 [project.scripts]
@@ -23,7 +24,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16.0",
     "pytest>=9.2.0",
 ]
 

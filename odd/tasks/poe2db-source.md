@@ -109,7 +109,7 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - [x] T3 — `PoliteHttpFetcher` and its cache, with the offline test suite. Route: inline. S5, S7, S8, S11.
 - [x] T4 — Network-marked Spark fetch; one manual run to capture the real markup. Route: inline. S14.
 - [x] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
-- [ ] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
+- [x] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
   runtime dependency, CLI tests. Route: inline. S10, S11, S14.
 - [ ] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
 - [ ] T8 — README, ADR, architecture, full suite, independent verification, close. Route: inline +
@@ -180,6 +180,24 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
     URL raises `MissingPageUrlError` instead of inventing a citation URL. The fetcher always supplies
     the page URL, and the integration test goes through it.
   Commit: `feat(ingestion): parse poe2db gem pages`.
+
+- **T6** — RED → 11 new failing cases across three files: the ingest CLI rejected `poe2db` and the
+  `SourceFetcher` set was still patch-notes only (2), the top-level CLI help and the refresh-aware
+  dispatch failed (3), and bootstrap had no poe2db runner, settings or expected-error entries (6).
+  GREEN → focused 54 passed; full suite **1090 passed, 14 deselected**.
+  - `uv run poe2-rag ingest --help` → `usage: poe2-rag ingest [-h] [--refresh]
+    {patch-notes,poe2db} path`, with `--refresh  fetch poe2db again instead of reading the local
+    cache (poe2db only)`.
+  - `Container.poe2db_ingest_source(refresh=...)` builds one runner per cache policy on first use,
+    sharing `chunk_repository` and `patch_catalog` with the patch-notes runner. The HTTP client is
+    built on first use (or injected), so wiring makes no request.
+  - `--refresh` is rejected with exit 2 for any other source. The top-level CLI gained only the flag
+    and the runner selection (L2); `Poe2dbIngestContainer` is cast at the one call site, so the base
+    `CliContainer` protocol and the existing fake containers still satisfy it.
+  - `httpx2` moved from the dev group to `[project].dependencies` (L5): the adapter is a runtime
+    import, so an installed wheel needs it. `uv lock` resolved 115 packages and `uv sync` reinstalled
+    the project; the version is unchanged (2.16.0).
+  Commit: `feat(cli): wire the poe2db source into ingest`.
 
 ## Log
 

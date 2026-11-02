@@ -92,7 +92,7 @@ def test_ingest_help_shows_the_closed_source_set(capsys: pytest.CaptureFixture[s
         main(["ingest", "--help"])
 
     assert exc_info.value.code == 0
-    assert "{patch-notes}" in capsys.readouterr().out
+    assert "{patch-notes,poe2db}" in capsys.readouterr().out
 
 
 def test_importing_the_cli_pulls_in_no_adapter_dependency(
@@ -121,10 +121,62 @@ def test_unknown_source_is_usage_error(capsys: pytest.CaptureFixture[str]) -> No
     fake = FakeContainer()
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["ingest", "poe2db", "x"], container=fake)
+        main(["ingest", "poe2wiki", "x"], container=fake)
 
     assert exc_info.value.code == 2
-    assert "poe2db" in capsys.readouterr().err
+    assert "poe2wiki" in capsys.readouterr().err
+
+
+class FakePoe2dbContainer(FakeContainer):
+    """A container that answers the poe2db runner request and records the refresh flag."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refresh_calls: list[bool] = []
+
+    def poe2db_ingest_source(self, *, refresh: bool) -> object:
+        self.refresh_calls.append(refresh)
+        return self.ingest_source
+
+
+@pytest.mark.parametrize(
+    ("argv", "refresh"),
+    [
+        (["ingest", "poe2db", "https://poe2db.tw/us/Spark"], False),
+        (["ingest", "poe2db", "https://poe2db.tw/us/Spark", "--refresh"], True),
+    ],
+    ids=["cached", "refresh"],
+)
+def test_poe2db_runs_the_source_aware_runner_and_reindexes(
+    argv: list[str], refresh: bool
+) -> None:
+    """`--refresh` selects a fetcher that ignores the cache; the source decides which runner runs."""
+    container = FakePoe2dbContainer()
+
+    assert main(argv, container=container) == 0
+    assert container.refresh_calls == [refresh]
+    assert container.ingest_source.calls == ["https://poe2db.tw/us/Spark"]
+    assert len(container.reindex_corpus.calls) == 1
+
+
+def test_refresh_is_a_usage_error_for_another_source(capsys: pytest.CaptureFixture[str]) -> None:
+    """`--refresh` means "fetch poe2db again"; accepting it for a local snapshot would be a lie."""
+    container = FakePoe2dbContainer()
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["ingest", "patch-notes", "x.html", "--refresh"], container=container)
+
+    assert exc_info.value.code == 2
+    assert "--refresh" in capsys.readouterr().err
+    assert container.ingest_source.calls == []
+
+
+def test_patch_notes_still_uses_the_shared_ingest_runner() -> None:
+    container = FakePoe2dbContainer()
+
+    assert main(["ingest", "patch-notes", "x.html"], container=container) == 0
+    assert container.refresh_calls == []
+    assert container.ingest_source.calls == ["x.html"]
 
 
 def test_missing_api_key_prints_one_line_and_exits_one(

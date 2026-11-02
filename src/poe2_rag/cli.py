@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Protocol, cast
 
 from poe2_rag.answering.adapters.inbound import cli as ask_cli
 from poe2_rag.config import ConfigurationError
@@ -53,6 +53,14 @@ class CliContainer(Protocol):
     @property
     def answer_question(self) -> ask_cli.AnswerQuestionRunner:
         """Runner that answers a question for an optional patch."""
+        ...
+
+
+class Poe2dbIngestContainer(Protocol):
+    """The extra capability the poe2db source needs: a runner for each cache policy."""
+
+    def poe2db_ingest_source(self, *, refresh: bool) -> ingest_cli.IngestSourceRunner:
+        """Return a runner whose fetcher ignores the cache when `refresh` is true."""
         ...
 
 
@@ -100,7 +108,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument(
         "locator",
         metavar="path",
-        help="path of the source snapshot, relative paths resolve against POE2_RAG_RAW_DIR",
+        help="path of a patch-notes snapshot, or the poe2db page URL; relative paths resolve "
+        "against POE2_RAG_RAW_DIR",
+    )
+    ingest.add_argument(
+        "--refresh",
+        action="store_true",
+        help="fetch poe2db again instead of reading the local cache (poe2db only)",
     )
 
     ask = subparsers.add_parser("ask", help="ask a question about the corpus")
@@ -121,10 +135,19 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
     """Dispatch a parsed command to the inbound adapter that owns it."""
     if args.command == "ingest":
+        # Only poe2db fetches over HTTP, so only it needs a refresh-aware runner. `cast` keeps the
+        # base container protocol small enough that every existing fake still satisfies it.
+        ingest_runner = (
+            cast(Poe2dbIngestContainer, container).poe2db_ingest_source(
+                refresh=args.refresh
+            )
+            if args.source == "poe2db"
+            else container.ingest_source
+        )
         ingest_cli.run(
             source=args.source,
             locator=args.locator,
-            ingest=container.ingest_source,
+            ingest=ingest_runner,
             reindex=container.reindex_corpus,
         )
     elif args.command == "ask":
@@ -153,7 +176,10 @@ def main(argv: Sequence[str] | None = None, *, container: CliContainer | None = 
     ``--help`` raises it with code 0, and anything else propagates untouched — an unexpected exception is
     a bug, and a traceback is the honest thing to show for it.
     """
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "ingest" and args.refresh and args.source != "poe2db":
+        parser.error("--refresh is only supported by the poe2db source")
 
     try:
         runtime = container if container is not None else _default_container()

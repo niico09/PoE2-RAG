@@ -13,8 +13,9 @@ from typing import Protocol
 from poe2_rag.ingestion.application.ingest_source import IngestReport
 from poe2_rag.ingestion.application.reindex_corpus import ReindexReport
 
-SOURCES: tuple[str, ...] = ("patch-notes",)
-"""The closed set of source names the `ingest` command accepts. poe2db and the wiki are added here."""
+SOURCES: tuple[str, ...] = ("patch-notes", "poe2db")
+"""The closed set of source names the `ingest` command accepts. The wiki is added here when its
+adapter exists."""
 
 
 class IngestSourceRunner(Protocol):
@@ -33,13 +34,19 @@ class ReindexCorpusRunner(Protocol):
         ...
 
 
-def _run_patch_notes(*, locator: str, ingest: IngestSourceRunner, reindex: ReindexCorpusRunner) -> None:
-    """Ingest a patch-notes document and rebuild the indexes from the resulting corpus."""
+def _run_source(
+    source: str,
+    *,
+    locator: str,
+    ingest: IngestSourceRunner,
+    reindex: ReindexCorpusRunner,
+) -> None:
+    """Ingest one source document, then rebuild the indexes from the resulting corpus."""
     ingest_report = ingest.execute(locator)
     reindex_report = reindex.execute()
 
     print(
-        f"Ingested patch-notes from {ingest_report.locator}: "
+        f"Ingested {source} from {ingest_report.locator}: "
         f"{len(ingest_report.chunk_ids)} chunks produced, {ingest_report.skipped} skipped."
     )
 
@@ -54,8 +61,19 @@ def _run_patch_notes(*, locator: str, ingest: IngestSourceRunner, reindex: Reind
     print(reindex_line)
 
 
+def _run_patch_notes(*, locator: str, ingest: IngestSourceRunner, reindex: ReindexCorpusRunner) -> None:
+    """Ingest a patch-notes document and rebuild the indexes from the resulting corpus."""
+    _run_source("patch-notes", locator=locator, ingest=ingest, reindex=reindex)
+
+
+def _run_poe2db(*, locator: str, ingest: IngestSourceRunner, reindex: ReindexCorpusRunner) -> None:
+    """Ingest one poe2db page and rebuild the indexes from the resulting corpus."""
+    _run_source("poe2db", locator=locator, ingest=ingest, reindex=reindex)
+
+
 _SOURCE_HANDLERS: dict[str, Callable[..., None]] = {
     "patch-notes": _run_patch_notes,
+    "poe2db": _run_poe2db,
 }
 
 
