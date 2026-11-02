@@ -11,6 +11,7 @@ Anthropic SDK reads the value itself, so no configuration object ever holds a cr
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,6 +29,9 @@ RERANKER_MODEL_VARIABLE = "POE2_RAG_RERANKER_MODEL"
 LLM_MODEL_VARIABLE = "POE2_RAG_LLM_MODEL"
 LLM_MAX_TOKENS_VARIABLE = "POE2_RAG_LLM_MAX_TOKENS"
 LLM_EFFORT_VARIABLE = "POE2_RAG_LLM_EFFORT"
+HTTP_CONTACT_VARIABLE = "POE2_RAG_HTTP_CONTACT"
+HTTP_REQUEST_INTERVAL_VARIABLE = "POE2_RAG_HTTP_REQUEST_INTERVAL"
+HTTP_TIMEOUT_VARIABLE = "POE2_RAG_HTTP_TIMEOUT"
 
 API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 """The one credential, read by the SDK. Configuration only checks that the variable is present."""
@@ -41,6 +45,8 @@ DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-base"
 DEFAULT_LLM_MODEL = "claude-sonnet-5-5"
 DEFAULT_LLM_MAX_TOKENS = 1024
 DEFAULT_LLM_EFFORT = "medium"
+DEFAULT_HTTP_REQUEST_INTERVAL = 1.0
+DEFAULT_HTTP_TIMEOUT = 30.0
 
 LLM_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 """The reasoning depths the generation adapter accepts. Validated here so a typo fails at startup.
@@ -51,6 +57,8 @@ on what the API takes, and a drift between the two must break a test instead of 
 
 _PATHS = ("raw_dir", "processed_dir", "index_dir", "patch_catalog_path")
 _TEXT_FIELDS = ("embedder_model_id", "reranker_model_id", "llm_model", "llm_effort")
+_SECONDS_FIELDS = ("http_request_interval", "http_timeout")
+_CONTACT_FORBIDDEN = frozenset("()")
 
 
 class ConfigurationError(ValueError):
@@ -83,6 +91,12 @@ class AppConfig:
     llm_model: str
     llm_max_tokens: int
     llm_effort: str
+    http_contact: str | None = None
+    """Contact for the poe2db `User-Agent`. `None` means "not configured": fetching fails."""
+    http_request_interval: float = DEFAULT_HTTP_REQUEST_INTERVAL
+    """Minimum seconds between two requests to the same host (respectful access, ADR-0002)."""
+    http_timeout: float = DEFAULT_HTTP_TIMEOUT
+    """Seconds a single HTTP request may take before it fails."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "project_root", _require_path("project_root", self.project_root))
@@ -102,6 +116,27 @@ class AppConfig:
         max_tokens = self.llm_max_tokens
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ConfigurationError(f"llm_max_tokens must be a positive int, got {max_tokens!r}")
+        self._require_contact()
+        for name in _SECONDS_FIELDS:
+            seconds = _require_positive_seconds(name, getattr(self, name))
+            object.__setattr__(self, name, seconds)
+
+    def _require_contact(self) -> None:
+        """Accept no contact or a header-safe one; a blank string is a bug, not "unset"."""
+        contact = self.http_contact
+        if contact is None:
+            return
+        if not isinstance(contact, str) or is_blank(contact):
+            raise ConfigurationError(
+                f"http_contact must be a non-blank string or None, got {contact!r}"
+            )
+        if any(character in _CONTACT_FORBIDDEN for character in contact) or any(
+            character.isspace() for character in contact.strip()
+        ):
+            raise ConfigurationError(
+                f"http_contact must not contain parentheses or whitespace, got {contact!r}"
+            )
+        object.__setattr__(self, "http_contact", contact.strip())
 
 
 def load_config(environ: Mapping[str, str] | None = None) -> AppConfig:
@@ -125,6 +160,11 @@ def load_config(environ: Mapping[str, str] | None = None) -> AppConfig:
         llm_model=_text(source, LLM_MODEL_VARIABLE, DEFAULT_LLM_MODEL),
         llm_max_tokens=_positive_int(source, LLM_MAX_TOKENS_VARIABLE, DEFAULT_LLM_MAX_TOKENS),
         llm_effort=_choice(source, LLM_EFFORT_VARIABLE, DEFAULT_LLM_EFFORT, LLM_EFFORTS),
+        http_contact=_optional_text(source, HTTP_CONTACT_VARIABLE),
+        http_request_interval=_positive_seconds(
+            source, HTTP_REQUEST_INTERVAL_VARIABLE, DEFAULT_HTTP_REQUEST_INTERVAL
+        ),
+        http_timeout=_positive_seconds(source, HTTP_TIMEOUT_VARIABLE, DEFAULT_HTTP_TIMEOUT),
     )
 
 
@@ -133,6 +173,28 @@ def _text(source: Mapping[str, str], variable: str, default: str) -> str:
     value = source.get(variable)
     if value is None or is_blank(value):
         return default
+    return value
+
+
+def _optional_text(source: Mapping[str, str], variable: str) -> str | None:
+    """Return the override for a variable that has no default, or `None` when it is unset or blank."""
+    value = source.get(variable)
+    if value is None or is_blank(value):
+        return None
+    return value
+
+
+def _positive_seconds(source: Mapping[str, str], variable: str, default: float) -> float:
+    """Return a positive, finite number of seconds, naming the variable when it is unusable."""
+    raw = source.get(variable)
+    if raw is None or is_blank(raw):
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{variable} must be a number, got {raw!r}") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigurationError(f"{variable} must be a positive finite number, got {raw!r}")
     return value
 
 
@@ -165,6 +227,16 @@ def _positive_int(source: Mapping[str, str], variable: str, default: int) -> int
     if value <= 0:
         raise ConfigurationError(f"{variable} must be a positive integer, got {raw!r}")
     return value
+
+
+def _require_positive_seconds(name: str, value: object) -> float:
+    """Return `value` as a positive, finite float, rejecting bools and non-numbers."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError(f"{name} must be a positive number, got {value!r}")
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ConfigurationError(f"{name} must be a positive finite number, got {value!r}")
+    return seconds
 
 
 def _require_path(name: str, value: object) -> Path:

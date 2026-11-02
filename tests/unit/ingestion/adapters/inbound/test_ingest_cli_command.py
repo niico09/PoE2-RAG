@@ -197,8 +197,8 @@ def test_ingest_runs_before_reindex_with_exact_locator(
     assert ingest.calls[0].endswith(locator)
 
 
-def test_sources_is_only_patch_notes() -> None:
-    assert SOURCES == ("patch-notes",)
+def test_sources_are_the_closed_set_the_cli_accepts() -> None:
+    assert SOURCES == ("patch-notes", "poe2db")
 
 
 def test_unknown_source_raises_value_error_without_calling_runners(
@@ -249,3 +249,24 @@ def test_nothing_written_to_stderr_on_success(
 
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+def test_poe2db_run_names_the_source_and_rebuilds_after_it(
+    capsys: CaptureFixture[str],
+    rebuilt_at: datetime,
+) -> None:
+    """The dispatch table sends poe2db through the same two-step flow with its own report label."""
+    locator = "https://poe2db.tw/us/Spark"
+    ingest_report = IngestReport(locator=locator, chunk_ids=("chunk-1", "chunk-2"), skipped=0)
+    reindex_report = ReindexReport(chunk_count=2, rebuilt_at=rebuilt_at, truncated_chunk_ids=())
+    ingest = FakeIngestRunner(ingest_report)
+    reindex = FakeReindexRunner(reindex_report)
+
+    run(source="poe2db", locator=locator, ingest=ingest, reindex=reindex)
+
+    captured = capsys.readouterr()
+    assert f"Ingested poe2db from {locator}" in captured.out
+    assert "2 chunks produced, 0 skipped" in captured.out
+    assert "Reindexed 2 chunks" in captured.out
+    assert ingest.calls == [f"ingest:{locator}"]
+    assert reindex.calls == ["reindex"]

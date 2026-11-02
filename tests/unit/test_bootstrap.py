@@ -12,9 +12,11 @@ import json
 import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import httpx2
 import pytest
 
 from poe2_rag.answering.adapters.outbound.dense import bge_embedder
@@ -23,6 +25,15 @@ from poe2_rag.answering.application import AnswerQuestion, LanguageModel
 from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, EXPECTED_ERRORS, Container
 from poe2_rag.config import AppConfig, MissingApiKeyError
+from poe2_rag.ingestion.adapters.outbound.http import (
+    HttpFetchError,
+    MissingHttpContactError,
+    PoliteHttpFetcher,
+)
+from poe2_rag.ingestion.adapters.outbound.poe2db import (
+    Poe2dbGemPageParser,
+    Poe2dbParseError,
+)
 from poe2_rag.ingestion.application import (
     EmptyCorpusError,
     IngestSource,
@@ -264,7 +275,13 @@ def test_the_expected_errors_are_the_operational_families_only() -> None:
     assert RuntimeError not in EXPECTED_ERRORS
     assert ValueError not in EXPECTED_ERRORS
     assert OSError not in EXPECTED_ERRORS
-    for family in (MissingApiKeyError, EmptyCorpusError, InvalidQueryError):
+    for family in (
+        MissingApiKeyError,
+        EmptyCorpusError,
+        InvalidQueryError,
+        HttpFetchError,
+        Poe2dbParseError,
+    ):
         assert issubclass(family, EXPECTED_ERRORS)
 
 
@@ -308,3 +325,85 @@ def test_no_field_of_the_container_retains_the_api_key(
 
     for slot in Container.__slots__:
         assert API_KEY not in repr(getattr(container, slot)), slot
+
+
+def _with_contact(config: AppConfig) -> AppConfig:
+    """The poe2db pair refuses to build without a contact; tests give it a harmless one."""
+    return replace(config, http_contact="ops@example.com")
+
+
+def test_poe2db_ingest_is_built_lazily_from_its_own_fetcher_and_parser(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """One refresh-aware runner per cache policy, sharing the corpus and the catalog."""
+    container = build(_with_contact(config))
+
+    runner = container.poe2db_ingest_source(refresh=False)
+
+    assert isinstance(runner, IngestSource)
+    assert isinstance(runner._fetcher, PoliteHttpFetcher)
+    assert isinstance(runner._parser, Poe2dbGemPageParser)
+    assert runner._repository is container.chunk_repository
+    assert runner._catalog is container.patch_catalog
+    assert runner is container.poe2db_ingest_source(refresh=False)
+
+
+def test_refresh_selects_a_distinct_runner(config: AppConfig, no_model_load: None) -> None:
+    container = build(_with_contact(config))
+
+    cached = container.poe2db_ingest_source(refresh=False)
+    refreshed = container.poe2db_ingest_source(refresh=True)
+
+    assert cached is not refreshed
+    cached_fetcher = cast(PoliteHttpFetcher, cached._fetcher)
+    refreshed_fetcher = cast(PoliteHttpFetcher, refreshed._fetcher)
+    assert cached_fetcher._refresh is False
+    assert refreshed_fetcher._refresh is True
+
+
+def test_the_poe2db_fetcher_receives_the_configured_http_settings(
+    config: AppConfig, no_model_load: None
+) -> None:
+    configured = replace(
+        _with_contact(config), http_request_interval=2.5, http_timeout=15.0
+    )
+
+    runner = build(configured).poe2db_ingest_source(refresh=False)
+    fetcher = cast(PoliteHttpFetcher, runner._fetcher)
+
+    assert fetcher._request_interval == 2.5
+    assert fetcher._timeout == 15.0
+    assert fetcher._cache_dir == configured.raw_dir
+    assert "ops@example.com" in fetcher._user_agent()
+
+
+def test_a_missing_contact_fails_when_the_poe2db_runner_is_asked_for(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """The read path and patch-notes keep working without a contact; fetching does not."""
+    container = build(config)
+
+    assert isinstance(container.ingest_source, IngestSource)
+    with pytest.raises(MissingHttpContactError) as raised:
+        container.poe2db_ingest_source(refresh=False)
+
+    assert "POE2_RAG_HTTP_CONTACT" in str(raised.value)
+
+
+def test_building_the_poe2db_runner_makes_no_request(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """Lazily means lazy: wiring the fetcher must not touch the network."""
+    requests: list[object] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        raise AssertionError("the runner made a request while being built")
+
+    client = httpx2.Client(transport=httpx2.MockTransport(handler))
+    container = Container(_with_contact(config), environ={}, http_client=client)
+
+    runner = container.poe2db_ingest_source(refresh=False)
+
+    assert isinstance(runner, IngestSource)
+    assert requests == []

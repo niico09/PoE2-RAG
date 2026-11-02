@@ -58,6 +58,7 @@ from poe2_rag.config import (
     MissingApiKeyError,
     load_config,
 )
+from poe2_rag.ingestion.adapters.outbound.http import HttpFetchError, PoliteHttpFetcher
 from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
     ChunkRepositoryLoadError,
     ChunkRepositoryWriteError,
@@ -70,6 +71,10 @@ from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import (
 from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
     PatchNotesParseError,
     PatchNotesParser,
+)
+from poe2_rag.ingestion.adapters.outbound.poe2db import (
+    Poe2dbGemPageParser,
+    Poe2dbParseError,
 )
 from poe2_rag.ingestion.application import (
     IngestionError,
@@ -85,6 +90,7 @@ from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
 from poe2_rag.shared.domain import PatchCatalog, is_blank
 
 if TYPE_CHECKING:
+    import httpx2
     from anthropic import Anthropic
 
 CHROMA_DIRECTORY_NAME = "chroma"
@@ -113,6 +119,8 @@ EXPECTED_ERRORS: tuple[type[Exception], ...] = (
     IngestionError,
     PatchNotesParseError,
     LocalSnapshotError,
+    HttpFetchError,
+    Poe2dbParseError,
     ChunkRepositoryLoadError,
     ChunkRepositoryWriteError,
     # answering: retrieval, the index rebuilds `ingest` performs through it, and the model that scored
@@ -170,10 +178,14 @@ class Container:
         "_config",
         "_embedder",
         "_has_api_key",
+        "_http_client_instance",
         "_ingest_source",
+        "_injected_http_client",
         "_language_model",
         "_lexical_index",
         "_patch_catalog",
+        "_poe2db_ingest",
+        "_poe2db_refresh_ingest",
         "_reindex_corpus",
         "_reranker",
         "_vector_index",
@@ -186,6 +198,7 @@ class Container:
         environ: Mapping[str, str] | None = None,
         client_factory: ClientFactory | None = None,
         language_model: LanguageModel | None = None,
+        http_client: httpx2.Client | None = None,
     ) -> None:
         self._config = config
         # The environment is reduced to one flag while the container is built: the mapping itself is
@@ -203,6 +216,10 @@ class Container:
         self._vector_index: ChromaVectorIndex | None = None
         self._reranker: CrossEncoderReranker | None = None
         self._ingest_source: IngestSource | None = None
+        self._poe2db_ingest: IngestSource | None = None
+        self._poe2db_refresh_ingest: IngestSource | None = None
+        self._injected_http_client = http_client
+        self._http_client_instance: httpx2.Client | None = None
         self._reindex_corpus: ReindexCorpus | None = None
         self._answer_question: AnswerQuestion | None = None
 
@@ -285,6 +302,45 @@ class Container:
                 catalog=self.patch_catalog,
             )
         return self._ingest_source
+
+    def poe2db_ingest_source(self, *, refresh: bool) -> IngestSource:
+        """Fetch one poe2db page over HTTP, parse it and upsert the chunks it produces.
+
+        One runner per cache policy: `refresh` is a property of the fetcher, so a cached run and a
+        forced run cannot share one instance without one of them changing the other's behaviour.
+        Both runners share the corpus and the catalog, exactly like the patch-notes pair.
+        """
+        existing = self._poe2db_refresh_ingest if refresh else self._poe2db_ingest
+        if existing is not None:
+            return existing
+        runner = IngestSource(
+            fetcher=PoliteHttpFetcher(
+                client=self._http_client(),
+                cache_dir=self._config.raw_dir,
+                contact=self._config.http_contact,
+                request_interval=self._config.http_request_interval,
+                timeout=self._config.http_timeout,
+                refresh=refresh,
+            ),
+            parser=Poe2dbGemPageParser(self.patch_catalog),
+            repository=self.chunk_repository,
+            catalog=self.patch_catalog,
+        )
+        if refresh:
+            self._poe2db_refresh_ingest = runner
+        else:
+            self._poe2db_ingest = runner
+        return runner
+
+    def _http_client(self) -> httpx2.Client:
+        """Build the HTTP client on first use, or return the one a test injected."""
+        if self._injected_http_client is not None:
+            return self._injected_http_client
+        if self._http_client_instance is None:
+            import httpx2
+
+            self._http_client_instance = httpx2.Client(timeout=self._config.http_timeout)
+        return self._http_client_instance
 
     @property
     def reindex_corpus(self) -> ReindexCorpus:
