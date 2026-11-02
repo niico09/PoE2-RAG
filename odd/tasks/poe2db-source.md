@@ -111,7 +111,7 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - [x] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
 - [x] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
   runtime dependency, CLI tests. Route: inline. S10, S11, S14.
-- [ ] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
+- [x] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
 - [ ] T8 — README, ADR, architecture, full suite, independent verification, close. Route: inline +
   read-only verifier. S19.
 
@@ -198,6 +198,15 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
     import, so an installed wheel needs it. `uv lock` resolved 115 packages and `uv sync` reinstalled
     the project; the version is unchanged (2.16.0).
   Commit: `feat(cli): wire the poe2db source into ingest`.
+
+- **T7** — `uv run pytest -q -m integration tests/integration/test_poe2db_pipeline_integration.py`
+  → **1 passed in 11.81 s**; then the whole opt-in suite, `uv run pytest -q -m integration` → **12
+  passed, 1093 deselected in 16.36 s**. The test serves `robots.txt` and the trimmed Spark page
+  through `httpx2.MockTransport`, so the real fetcher, cache, parser, JSON corpus, catalog,
+  `ReindexCorpus`, BM25 + Chroma indexes and `AnswerQuestion` all run under `tmp_path`; only the
+  transport and the language model are fake. A second, freshly built container reads the artifacts
+  back and the scripted model cites a real `chunk_id` whose URL is the poe2db page.
+  Commit: `test(ingestion): cover the poe2db pipeline end to end`.
 
 ## Log
 
