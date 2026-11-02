@@ -87,7 +87,7 @@ from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
     PatchCatalogLoadError,
     TomlPatchCatalog,
 )
-from poe2_rag.shared.domain import PatchCatalog, is_blank
+from poe2_rag.shared.domain import PatchCatalog, PatchNotReleasedError, is_blank
 
 if TYPE_CHECKING:
     import httpx2
@@ -121,6 +121,9 @@ EXPECTED_ERRORS: tuple[type[Exception], ...] = (
     LocalSnapshotError,
     HttpFetchError,
     Poe2dbParseError,
+    # A cached capture older than the first known release: the catalog cannot date it, and the
+    # operator has to add the patch or discard the cache, so it is reported, not a traceback.
+    PatchNotReleasedError,
     ChunkRepositoryLoadError,
     ChunkRepositoryWriteError,
     # answering: retrieval, the index rebuilds `ingest` performs through it, and the model that scored

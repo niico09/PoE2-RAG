@@ -102,7 +102,7 @@ so no entity ever holds two open versions.
   `IngestReport` counts and the CLI line. Route: inline. S3, S5.
 - [x] T6 — Integration: the Spark fixture captured under patch A, then under patch B, then reindex;
   BM25 and Chroma per version. Route: inline + one integration run. S6.
-- [ ] T7 — Docs (§4, §5.2, `patches.toml`), close L3/L4, full suite and verification. Route: inline.
+- [x] T7 — Docs (§4, §5.2, `patches.toml`), close L3/L4, full suite and verification. Route: inline.
   S7, S9.
 
 ## Evidence
@@ -180,6 +180,54 @@ so no entity ever holds two open versions.
     the A ids and BM25 only A ids (non-empty); at 0.1.1 the dense search returned exactly the B ids
     and BM25 only B ids.
   Commit: `test(ingestion): prove a second capture supersedes the first end to end`.
+
+- **T7** — Docs and close. `docs/architecture.md` §4.2 gained `PatchRelease` and a `PatchCatalog` row
+  with `current_at`; §5.2 step 6 is now the supersession rule (identity, close, remove, out-of-order,
+  counts) instead of the "sections are not pruned" debt; the poe2db paragraphs keep the fetcher and
+  parser description and replace the two debt paragraphs with the capture-date rule; §10.1 states that
+  patch notes carry the version in the entity slug, so supersession never closes one with the next.
+  `odd/tasks/poe2db-source.md` closes L3 and L4 with pointers to this feature and marks D3 superseded.
+  - One wiring fix the new error made necessary: `PatchNotReleasedError` joins `EXPECTED_ERRORS`, so a
+    cached capture older than the first known release prints one line (exit 1) instead of a traceback,
+    like every other operator-facing failure (ADR-0006). A bootstrap test pins it.
+  - **Commands**
+    - `uv run pytest -q` → **1183 passed, 16 deselected** (offline default suite; the new integration
+      test is collected and deselected by its marker).
+    - `uv run pytest -q -m integration` → **13 passed, 1186 deselected in 17.58 s** (opt-in; includes
+      the new supersession test).
+    - `uv run pytest -q -m integration tests/integration/test_snapshot_supersession_integration.py` →
+      **1 passed in 3.84 s**.
+    - `uvx pyright==1.1.414 src tests` → **0 errors, 0 warnings, 0 informations**.
+    - `uvx ruff check --select I src tests` → `All checks passed!`.
+    - `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated with\|claude'` → `0`.
+  Commit: `docs: close the poe2db validity gaps in the architecture`.
+
+## Delivery slices
+
+One Conventional Commit per task (S8), which is the strategy this feature follows instead of cutting a
+commit at roughly 400 authored lines: the prompt fixes that number as planning guidance, not a cap, and a
+task is the smallest slice that keeps a rule, the tests that pin it and the feature document together.
+The commits and their changed-line totals are: T1 230 (feature doc), T2 562 (release dates, the domain
+value object, both catalog implementations, the contract suite and every construction site), T3 109 (the
+parser's capture date), T4 184 (the repository `remove` capability), T5 423 (supersession, the report and
+the CLI line), T6 186 (the integration test) and T7 (documentation and the error classification). T2 and
+T5 pass the heuristic because their two halves are one contract: splitting the domain invariants from the
+TOML mapping, or the supersession rules from the report, would separate a rule from its proof. A reviewer
+who wants smaller slices can read each of those two commits in its two halves.
+
+## Deviations
+
+- **Tests outside the listed edit surfaces.** The catalog constructor and the `ChunkRepository` and
+  `PatchCatalog` protocols changed, so `tests/contract/**`, the answering fakes (`SpyCatalog` gained
+  `current_at`), `tests/unit/answering/**` and `tests/unit/ingestion/test_ingest_patch_notes_pipeline.py`
+  had to move with them. No production code outside the listed surfaces changed.
+- **`PatchNotReleasedError` in `EXPECTED_ERRORS`.** T3 makes a normal ingest path raise it (a cached
+  capture older than the first known release), so the composition root classifies it as an expected
+  failure: one line and exit 1 instead of a traceback (ADR-0006). The prompt does not ask for it.
+- **`config/patches.toml` in T2.** Its `PatchCatalog` note changed meaning with the adapter, so it
+  travels with that commit instead of the documentation one.
+- **pyright and ruff reported.** The prompt verifies pytest; both extra gates are the repository's
+  precedent and pyright caught a real issue (`SpyCatalog` no longer satisfied `PatchCatalog`).
 
 ## Log
 

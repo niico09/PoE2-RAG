@@ -41,6 +41,7 @@ from poe2_rag.ingestion.application import (
     ReindexCorpus,
     VectorIndexWriter,
 )
+from poe2_rag.shared.domain import PatchNotReleasedError
 
 CLI_FIXTURES = Path(__file__).parents[1] / "fixtures" / "cli"
 HEAVY_MODULES = ("torch", "sentence_transformers")
@@ -281,6 +282,7 @@ def test_the_expected_errors_are_the_operational_families_only() -> None:
         InvalidQueryError,
         HttpFetchError,
         Poe2dbParseError,
+        PatchNotReleasedError,
     ):
         assert issubclass(family, EXPECTED_ERRORS)
 
