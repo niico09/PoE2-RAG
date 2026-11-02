@@ -103,7 +103,7 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - [x] T2 — `config.py`: `POE2_RAG_HTTP_CONTACT`, `POE2_RAG_HTTP_REQUEST_INTERVAL`,
   `POE2_RAG_HTTP_TIMEOUT`, validated, with tests. Route: inline. S6, S10.
 - [x] T3 — `PoliteHttpFetcher` and its cache, with the offline test suite. Route: inline. S5, S7, S8, S11.
-- [ ] T4 — Network-marked Spark fetch; one manual run to capture the real markup. Route: inline. S14.
+- [x] T4 — Network-marked Spark fetch; one manual run to capture the real markup. Route: inline. S14.
 - [ ] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
 - [ ] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
   runtime dependency, CLI tests. Route: inline. S10, S11, S14.
@@ -138,6 +138,13 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
     and a cache hit describe the same source. An unparseable port is rejected before any request.
   - Robots is fetched with the injected client (not `urllib.request`), so the default suite stays
     offline and the robots request obeys the same User-Agent, timeout and per-host interval.
+- **T4** — `POE2_RAG_HTTP_CONTACT="<author>" uv run pytest -q -s -m network tests/network
+  --basetemp=/tmp/poe2db-capture` → **1 passed in 3.42 s**; the adapter fetched robots.txt and then
+  `https://poe2db.tw/us/Spark`, wrote 700,297 characters into
+  `/tmp/poe2db-capture/.../poe2db/poe2db.tw-us-Spark.html`, and the sidecar carried the URL, the
+  fetch time, status 200 and the digest. This is the single authorized live run; the page stayed
+  outside the repository and is not committed. It confirmed the ~700 KB observation from S3.
+  Commit: `test(ingestion): add the network-marked poe2db fetch`.
 
 ## Delivery slices
 
