@@ -1,8 +1,10 @@
 """Configuration: documented overrides from a mapping, defaults relative to the project root (S1).
 
 Every case passes a `Mapping` instead of touching `os.environ`, so the suite pins the exact
-documented variable names without depending on the shell that runs it. The last block checks the one
-thing configuration must never do: read or keep the API key.
+documented variable names without depending on the shell that runs it. The HTTP block covers the
+poe2db settings added for the polite fetcher: no committed contact, a positive request interval and a
+positive timeout. The last block checks the one thing configuration must never do: read or keep the
+API key.
 """
 
 from __future__ import annotations
@@ -21,7 +23,14 @@ from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
 from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     DEFAULT_MODEL_NAME,
 )
-from poe2_rag.config import LLM_EFFORTS, AppConfig, ConfigurationError, load_config
+from poe2_rag.config import (
+    DEFAULT_HTTP_REQUEST_INTERVAL,
+    DEFAULT_HTTP_TIMEOUT,
+    LLM_EFFORTS,
+    AppConfig,
+    ConfigurationError,
+    load_config,
+)
 
 PROJECT_ROOT = Path("/srv/poe2-rag")
 
@@ -84,6 +93,9 @@ def test_every_documented_variable_overrides_its_value() -> None:
         POE2_RAG_LLM_MODEL="claude-opus-5-5",
         POE2_RAG_LLM_MAX_TOKENS="2048",
         POE2_RAG_LLM_EFFORT="high",
+        POE2_RAG_HTTP_CONTACT="ops@example.com",
+        POE2_RAG_HTTP_REQUEST_INTERVAL="2.5",
+        POE2_RAG_HTTP_TIMEOUT="15",
     )
 
     assert config.raw_dir == PROJECT_ROOT / "snapshots"
@@ -95,6 +107,9 @@ def test_every_documented_variable_overrides_its_value() -> None:
     assert config.llm_model == "claude-opus-5-5"
     assert config.llm_max_tokens == 2048
     assert config.llm_effort == "high"
+    assert config.http_contact == "ops@example.com"
+    assert config.http_request_interval == 2.5
+    assert config.http_timeout == 15.0
 
 
 def test_an_absolute_override_stays_absolute() -> None:
@@ -180,7 +195,7 @@ def test_the_effort_set_matches_the_adapter_that_has_to_accept_it() -> None:
     """One closed set, two readers: the adapter owns it, this configuration must not drift from it."""
     from poe2_rag.answering.adapters.outbound.llm.claude_language_model import _EFFORTS
 
-    assert LLM_EFFORTS == frozenset(_EFFORTS)
+    assert frozenset(_EFFORTS) == LLM_EFFORTS
 
 
 def test_the_configuration_is_frozen() -> None:
@@ -202,3 +217,76 @@ def test_the_api_key_is_never_read_into_the_configuration() -> None:
         isinstance(value, str) and value.startswith("sk-")
         for value in (getattr(config, field.name) for field in fields(config))
     )
+
+
+def test_the_http_settings_default_to_no_contact_and_a_conservative_pace() -> None:
+    """The contact has no committed default; the interval and timeout are safe values."""
+    config = resolve()
+
+    assert config.http_contact is None
+    assert config.http_request_interval == DEFAULT_HTTP_REQUEST_INTERVAL
+    assert config.http_timeout == DEFAULT_HTTP_TIMEOUT
+
+
+def test_a_contact_override_is_kept() -> None:
+    config = resolve(POE2_RAG_HTTP_CONTACT="ops@example.com")
+
+    assert config.http_contact == "ops@example.com"
+
+
+def test_a_blank_contact_means_unset() -> None:
+    """The same rule as every other value: a copied `.env.example` leaves it empty, not blank."""
+    assert resolve(POE2_RAG_HTTP_CONTACT="   ").http_contact is None
+
+
+def test_a_blank_contact_built_by_hand_is_rejected() -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        AppConfig(**values(http_contact=" "))  # type: ignore[arg-type]
+
+    assert "http_contact" in str(raised.value)
+
+
+@pytest.mark.parametrize("contact", ["line\nbreak", "paren)", "tab\there"])
+def test_a_contact_that_would_break_the_user_agent_header_is_rejected(contact: str) -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        AppConfig(**values(http_contact=contact))  # type: ignore[arg-type]
+
+    assert "http_contact" in str(raised.value)
+
+
+def test_the_http_seconds_can_be_overridden() -> None:
+    config = resolve(
+        POE2_RAG_HTTP_REQUEST_INTERVAL="2.5",
+        POE2_RAG_HTTP_TIMEOUT="15",
+    )
+
+    assert config.http_request_interval == 2.5
+    assert config.http_timeout == 15.0
+
+
+@pytest.mark.parametrize("variable", ["POE2_RAG_HTTP_REQUEST_INTERVAL", "POE2_RAG_HTTP_TIMEOUT"])
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "inf", "nan"])
+def test_an_unusable_http_seconds_value_names_the_variable(variable: str, value: str) -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        resolve(**{variable: value})
+
+    assert variable in str(raised.value)
+    assert repr(value) in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("http_request_interval", 0),
+        ("http_request_interval", float("inf")),
+        ("http_timeout", -0.5),
+        ("http_timeout", True),
+    ],
+)
+def test_direct_construction_rejects_an_unusable_http_seconds_value(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        AppConfig(**values(**{field: value}))  # type: ignore[arg-type]
+
+    assert field in str(raised.value)
