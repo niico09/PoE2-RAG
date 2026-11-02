@@ -99,10 +99,10 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 
 ## Tasks
 
-- [ ] T1 — Branch `feat/poe2db-source`, feature doc, Engram mirror. Route: inline. S18.
-- [ ] T2 — `config.py`: `POE2_RAG_HTTP_CONTACT`, `POE2_RAG_HTTP_REQUEST_INTERVAL`,
+- [x] T1 — Branch `feat/poe2db-source`, feature doc, Engram mirror. Route: inline. S18.
+- [x] T2 — `config.py`: `POE2_RAG_HTTP_CONTACT`, `POE2_RAG_HTTP_REQUEST_INTERVAL`,
   `POE2_RAG_HTTP_TIMEOUT`, validated, with tests. Route: inline. S6, S10.
-- [ ] T3 — `PoliteHttpFetcher` and its cache, with the offline test suite. Route: inline. S5, S7, S8, S11.
+- [x] T3 — `PoliteHttpFetcher` and its cache, with the offline test suite. Route: inline. S5, S7, S8, S11.
 - [ ] T4 — Network-marked Spark fetch; one manual run to capture the real markup. Route: inline. S14.
 - [ ] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
 - [ ] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
@@ -110,6 +110,44 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - [ ] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
 - [ ] T8 — README, ADR, architecture, full suite, independent verification, close. Route: inline +
   read-only verifier. S19.
+
+## Evidence
+
+- **T1** — `git switch -c feat/poe2db-source main` → branch created at `d47c870`; feature doc written;
+  Engram mirror saved. No RED (documentation only). Commit `afd61e6`.
+- **T2** — RED (implementation stashed after authoring the tests) → `ImportError: cannot import name
+  'DEFAULT_HTTP_REQUEST_INTERVAL' from 'poe2_rag.config'`, collection error, 0 tests run (19 cases
+  added). GREEN → `uv run pytest -q tests/unit/test_config.py` 44 passed; full suite 1013 passed, 13
+  deselected. Contact defaults to `None`, a blank override means unset, and a header-breaking contact
+  is rejected; interval and timeout are positive finite floats with the variable named on failure.
+  Commit `7bea6f4`.
+
+- **T3** — Delegated to `gentle-ai-worker` (context backstop) and reviewed inline. RED → collection
+  error (`ModuleNotFoundError` for the new module, then the test directory shadowing the stdlib
+  `http` package); the first implementation run showed 12 failed, 33 passed. GREEN → focused suite
+  45 passed after the worker's fix, then 48 passed after the parent review; full suite 1061 passed, 13
+  deselected. Commit: `feat(ingestion): fetch poe2db pages politely over HTTP`.
+  - Review changes (test-first): the test file moved from `tests/unit/ingestion/adapters/outbound/http/`
+    to `tests/unit/ingestion/adapters/outbound/` and the worker's `_httpx2` path-removal helper was
+    deleted: the required production path is `outbound/http/`, but a *test* directory of that name
+    is put on `sys.path` by pytest and shadows the stdlib `http` package that `httpx2` imports.
+  - The sidecar gained `sha256` beside the required `url`, `fetched_at` and `status`: a failed
+    sidecar replace could otherwise pair new HTML with an older sidecar's capture date. A digest
+    mismatch raises `Poe2dbCacheError` and `--refresh` repairs it.
+  - `fetch` returns the canonical URL as the locator (uppercase host canonicalizes), so a cache miss
+    and a cache hit describe the same source. An unparseable port is rejected before any request.
+  - Robots is fetched with the injected client (not `urllib.request`), so the default suite stays
+    offline and the robots request obeys the same User-Agent, timeout and per-host interval.
+
+## Delivery slices
+
+- One commit per task (S18). The feature branches from `main` at `d47c870`.
+- The offline fetcher suite is the largest unit (48 cases plus the adapter); it lands as its own
+  commit so the adapter and its tests are reviewable alone. The feature document is large because L1
+  quotes the request verbatim; it travels with T1 and is extended with each task's evidence.
+- The prompt's ~400 authored lines per task is a planning heuristic, not a cap (S17): the fetcher
+  commit carries the adapter and the suite that proves it, rather than splitting a port
+  implementation from its own tests.
 
 ## Log
 
