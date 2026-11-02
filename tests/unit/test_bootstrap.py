@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 import pytest
@@ -355,8 +355,10 @@ def test_refresh_selects_a_distinct_runner(config: AppConfig, no_model_load: Non
     refreshed = container.poe2db_ingest_source(refresh=True)
 
     assert cached is not refreshed
-    assert cached._fetcher._refresh is False
-    assert refreshed._fetcher._refresh is True
+    cached_fetcher = cast(PoliteHttpFetcher, cached._fetcher)
+    refreshed_fetcher = cast(PoliteHttpFetcher, refreshed._fetcher)
+    assert cached_fetcher._refresh is False
+    assert refreshed_fetcher._refresh is True
 
 
 def test_the_poe2db_fetcher_receives_the_configured_http_settings(
@@ -366,7 +368,8 @@ def test_the_poe2db_fetcher_receives_the_configured_http_settings(
         _with_contact(config), http_request_interval=2.5, http_timeout=15.0
     )
 
-    fetcher = build(configured).poe2db_ingest_source(refresh=False)._fetcher
+    runner = build(configured).poe2db_ingest_source(refresh=False)
+    fetcher = cast(PoliteHttpFetcher, runner._fetcher)
 
     assert fetcher._request_interval == 2.5
     assert fetcher._timeout == 15.0
@@ -392,7 +395,7 @@ def test_building_the_poe2db_runner_makes_no_request(
     """Lazily means lazy: wiring the fetcher must not touch the network."""
     requests: list[object] = []
 
-    def handler(request: object) -> object:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         raise AssertionError("the runner made a request while being built")
 

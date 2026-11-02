@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ _PATH_PREFIX = "/us/"
 _CACHE_SUBDIR = "poe2db"
 _SIDE_CAR_SUFFIX = ".meta.json"
 _TEMP_SUFFIX = ".tmp"
+_CACHE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class HttpFetchError(RuntimeError):
@@ -256,13 +258,18 @@ class PoliteHttpFetcher:
         return response
 
     def _throttle(self, host: str) -> None:
-        """Sleep if the previous request to `host` was too recent, then record this one."""
+        """Sleep if the previous request to `host` was too recent, then record this one.
+
+        The clock is read again after sleeping: recording the pre-sleep moment would make the next
+        request look a full interval old and let it leave immediately, back to back with this one.
+        """
         now = self._clock()
         last = self._last_request.get(host)
         if last is not None:
             deficit = self._request_interval - (now - last)
             if deficit > 0:
                 self._sleep(deficit)
+                now = self._clock()
         self._last_request[host] = now
 
     def _user_agent(self) -> str:
@@ -270,10 +277,15 @@ class PoliteHttpFetcher:
         return f"poe2-rag/{_package_version()} (+{self._contact})"
 
     def _cache_paths(self, url: str) -> tuple[Path, Path]:
-        """Return the HTML path and its JSON sidecar for `url`."""
+        """Return the HTML path and its JSON sidecar for `url`.
+
+        The name comes from the URL, so every character outside the safe set becomes a dash: a slug
+        with a path separator must not turn the cache write into a write outside the cache directory.
+        """
         parsed = urlparse(url)
         safe_path = parsed.path.strip("/").replace("/", "-")
-        filename = f"{parsed.hostname}-{safe_path}.html"
+        raw_name = f"{parsed.hostname}-{safe_path}"
+        filename = f"{_CACHE_NAME_UNSAFE.sub('-', raw_name)}.html"
         html_path = self._cache_dir / _CACHE_SUBDIR / filename
         meta_path = html_path.with_name(html_path.name + _SIDE_CAR_SUFFIX)
         return html_path, meta_path

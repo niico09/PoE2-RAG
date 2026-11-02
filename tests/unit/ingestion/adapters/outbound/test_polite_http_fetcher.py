@@ -296,7 +296,12 @@ class TestRateLimit:
 
     def test_no_sleep_when_clock_already_advanced(self, tmp_path: Path) -> None:
         sleeps: list[float] = []
-        times = iter([0.0, 0.0, 2.0])
+        now = [0.0]
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
         handler = RecordingHandler(
             {
                 ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
@@ -306,12 +311,40 @@ class TestRateLimit:
         )
         with make_client(handler) as client:
             fetcher = make_fetcher(
-                client, tmp_path, interval=1.0, clock=lambda: next(times), sleep=sleeps.append
+                client, tmp_path, interval=1.0, clock=lambda: now[0], sleep=sleep
+            )
+            fetcher.fetch(BASE_URL)
+            now[0] += 2.0
+            fetcher.fetch(OTHER_URL)
+
+        assert sleeps == [1.0]
+
+    def test_the_interval_is_measured_between_the_actual_requests(self, tmp_path: Path) -> None:
+        """A recorded pre-sleep timestamp would let the next page go out right after the first."""
+        now = [0.0]
+        request_times: list[tuple[str, float]] = []
+        routes = {
+            ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+            BASE_URL: Response(200, text="Spark"),
+            OTHER_URL: Response(200, text="Ice Nova"),
+        }
+
+        def handler(request: Request) -> Response:
+            url = str(request.url)
+            request_times.append((url, now[0]))
+            return routes[url]
+
+        def sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        with Client(transport=MockTransport(handler)) as client:
+            fetcher = make_fetcher(
+                client, tmp_path, interval=1.0, clock=lambda: now[0], sleep=sleep
             )
             fetcher.fetch(BASE_URL)
             fetcher.fetch(OTHER_URL)
 
-        assert sleeps == [1.0]
+        assert request_times == [(ROBOTS_URL, 0.0), (BASE_URL, 1.0), (OTHER_URL, 2.0)]
 
 
 class TestCache:
@@ -364,6 +397,26 @@ class TestCache:
         assert cached.content == original.content
         assert cached.fetched_at == original.fetched_at
         assert len(second_handler.requests) == 0
+
+    def test_a_slug_with_separators_stays_inside_the_cache_directory(self, tmp_path: Path) -> None:
+        """The filename is derived from a URL, so it must never become a path with separators."""
+        hostile = "https://poe2db.tw/us/..\\..\\evil"
+        handler = RecordingHandler(
+            {
+                ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                hostile: Response(200, text="<html>hostile</html>"),
+            }
+        )
+        with make_client(handler) as client:
+            fetcher = make_fetcher(client, tmp_path)
+            fetcher.fetch(hostile)
+
+        cache_directory = tmp_path / "poe2db"
+        written = [path for path in cache_directory.iterdir() if path.suffix == ".html"]
+        assert len(written) == 1
+        assert written[0].parent == cache_directory
+        assert "\\" not in written[0].name
+        assert written[0].read_text(encoding="utf-8") == "<html>hostile</html>"
 
     def test_refresh_skips_cache_and_refetches(self, tmp_path: Path) -> None:
         first_handler = RecordingHandler(
