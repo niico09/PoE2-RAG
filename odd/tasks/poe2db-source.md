@@ -112,7 +112,7 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - [x] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
   runtime dependency, CLI tests. Route: inline. S10, S11, S14.
 - [x] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
-- [ ] T8 — README, ADR, architecture, full suite, independent verification, close. Route: inline +
+- [x] T8 — README, ADR, architecture, full suite, independent verification, close. Route: inline +
   read-only verifier. S19.
 
 ## Evidence
@@ -207,6 +207,40 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
   transport and the language model are fake. A second, freshly built container reads the artifacts
   back and the scripted model cites a real `chunk_id` whose URL is the poe2db page.
   Commit: `test(ingestion): cover the poe2db pipeline end to end`.
+
+### T8 — close
+
+- **Independent verification** (`gentle-ai-verify`, read-only): 4 of 5 areas PASS; **1 FAIL**, a real
+  defect: `_throttle` recorded the clock value read *before* sleeping, so after the robots fetch two
+  page requests could leave back to back. Fixed test-first in
+  `759c263` (`fix(ingestion): enforce the per-host request interval`) with a request-time regression
+  test (`[robots@0.0, Spark@1.0, IceNova@2.0]`), and the URL-derived cache filename was sanitized so a
+  slug with separators cannot escape `data/raw/poe2db/`. The integration suite was rerun after the
+  fix.
+- **Commands**
+  - `uv run pytest -q` → **1092 passed, 15 deselected** (offline default suite).
+  - `uv run pytest -q -m integration` → **12 passed, 1095 deselected in 16.50 s** (opt-in; includes
+    the new poe2db pipeline test).
+  - `uv run pytest -q -s -m network tests/network` → **1 passed in 3.42 s**, one manual run, 700,297
+    characters captured under `/tmp`, not run again and not in CI.
+  - `uv run poe2-rag ingest --help` → lists `{patch-notes,poe2db}` and `--refresh`.
+  - `uvx pyright==1.1.414` → **0 errors, 0 warnings, 0 informations** (after narrowing the new
+    tests' private fetcher access and annotating the mock handler).
+  - `uv run ruff check --select I` over the changed directories → `All checks passed`.
+  - `git diff main..HEAD -- src/poe2_rag/shared src/poe2_rag/ingestion/application` → empty.
+  - `git ls-files data` → empty; `git log main..HEAD --format=%B | grep -ci 'co-authored-by\|generated
+    with\|claude'` → `0`.
+- **Per-spec verdict**: S1 ✅, S2 ✅, S3 ✅, S4 ✅ (implemented with `catalog.current()`; the missing
+  date lookup and the open-ended overlap are reported, L3/L4), S5 ✅, S6 ✅, S7 ✅ (after `759c263`),
+  S8 ✅, S9 ✅, S10 ✅, S11 ✅, S12 ✅ (active excerpt; support reconstruction labelled), S13 ✅,
+  S14 ✅, S15 ✅, S16 ✅, S17 ✅, S18 ✅, S19 ✅.
+- **Deviations**: L2 (`src/poe2_rag/cli.py` was needed for `--refresh` and the help listing and is not
+  in the listed edit surfaces), L3 (no release dates in `PatchCatalog`), L4 (the validity-overlap gap
+  exists and was not patched), L5 (`httpx2` dev → runtime), L6 (fixture provenance). The Spanish
+  README/ADR/architecture keep their document language, following the repository convention and the
+  precedent recorded in `odd/tasks/ingest-patch-notes.md` (S10); the feature doc, code, tests and
+  commit messages are English.
+- **Risk**: item 5 (the `httpx2` runtime dependency change).
 
 ## Log
 

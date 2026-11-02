@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI. Todavía no: el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el comando `eval` y la evaluación de §8.
+> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el fetcher HTTP respetuoso y el adaptador de poe2db (caché local, `robots.txt`, límite de pedidos y parser de páginas de gemas), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI. Todavía no: el adaptador de poe2wiki.net, el comando `eval` y la evaluación de §8.
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -68,9 +68,15 @@ Requisitos: Python ≥ 3.12 y [`uv`](https://docs.astral.sh/uv/). Los artefactos
 ```bash
 # Ingiere un snapshot local de notas de parche y reconstruye los dos índices
 uv run poe2-rag ingest patch-notes data/raw/patch-notes-0.1.1.html
+
+# Ingiere una página de gema de poe2db (usa la caché local si ya la descargaste)
+uv run poe2-rag ingest poe2db https://poe2db.tw/us/Spark
+
+# Fuerza una descarga nueva de esa página
+uv run poe2-rag ingest poe2db https://poe2db.tw/us/Spark --refresh
 ```
 
-El snapshot necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. `patch-notes` es la única fuente disponible por ahora: `poe2db` y `poe2wiki.net` se suman al mismo comando cuando existan sus adaptadores, sin cambiar la forma del comando. La ingesta **no necesita ninguna clave**: los embeddings del índice denso los produce un modelo local, así que el comando funciona en una máquina que nunca llama a la API. `ANTHROPIC_API_KEY` solo hace falta para `ask`.
+El snapshot de notas de parche necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. La fuente `poe2db` solo acepta páginas `https://poe2db.tw/us/<slug>` y exige `POE2_RAG_HTTP_CONTACT`: el valor viaja en el `User-Agent` para que el sitio sepa quién lo consulta, no tiene default y la corrida falla sin él. La descarga respeta `robots.txt`, espera `POE2_RAG_HTTP_REQUEST_INTERVAL` entre pedidos al mismo host, usa un timeout y guarda la página en `data/raw/poe2db/` con un sidecar (`url`, `fetched_at`, `status`, digest); una segunda corrida sin `--refresh` lee la caché y no toca la red. El contenido de poe2db es de Grinding Gear Games y del tipo wiki bajo CC BY-NC-SA 3.0: se usa sin fines comerciales, cada chunk conserva su `SourceRef` y el corpus no se redistribuye ([ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md)). `poe2wiki.net` se sumará al mismo comando cuando exista su adaptador. La ingesta **no necesita ninguna clave**: los embeddings del índice denso los produce un modelo local, así que el comando funciona en una máquina que nunca llama a la API. `ANTHROPIC_API_KEY` solo hace falta para `ask`.
 
 ### Consulta
 
@@ -111,6 +117,9 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 | `POE2_RAG_LLM_MODEL` | `claude-sonnet-5-5` | modelo de generación |
 | `POE2_RAG_LLM_MAX_TOKENS` | `1024` | tope de tokens de la respuesta |
 | `POE2_RAG_LLM_EFFORT` | `medium` | profundidad de razonamiento del modelo |
+| `POE2_RAG_HTTP_CONTACT` | — | contacto obligatorio de `ingest poe2db`; viaja en el `User-Agent` |
+| `POE2_RAG_HTTP_REQUEST_INTERVAL` | `1.0` | segundos mínimos entre pedidos al mismo host |
+| `POE2_RAG_HTTP_TIMEOUT` | `30.0` | segundos que puede durar un pedido HTTP |
 
 ---
 
@@ -121,7 +130,7 @@ poe2-rag/
 ├── config/
 │   └── patches.toml         # Catálogo de parches: cuáles existen y cuál es el actual
 ├── data/
-│   ├── raw/                 # Snapshots de las fuentes sin procesar
+│   ├── raw/                 # Snapshots y caché de poe2db (HTML + sidecar) sin procesar
 │   ├── processed/           # Chunks normalizados en JSON con metadatos
 │   └── index/               # Índices derivados (BM25 JSON y Chroma), reconstruibles desde data/processed/
 ├── docs/
@@ -181,7 +190,9 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
 - [x] Primer corte de ingesta: notas de parche oficiales → chunks validados y persistidos (`IngestSource`, `ChunkRepository` JSON, fetcher de snapshots con metadatos y parser del foro) con fixtures mínimas. La ingesta HTTP queda pendiente.
-- [ ] Ingesta y chunking con metadatos de gemas de habilidad.
+- [x] Ingesta y chunking con metadatos de gemas de habilidad: fetcher HTTP respetuoso, caché local y
+  parser de páginas de gemas de poe2db (`active_gem` y `support_gem`). Ítems y mecánicas quedan
+  fuera de este corte.
 - [x] Índice léxico BM25 (Okapi, puro Python) reconstruido desde el corpus con `ReindexCorpus`, con
   pre-filtrado por vigencia, tokenizador determinista y tests unitarios, de contrato y de integración.
 - [x] Índice denso: embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido, con pre-filtrado

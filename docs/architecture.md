@@ -4,14 +4,15 @@
 > generación y CLI implementados**.
 > Implementados el modelo de dominio de §4, el puerto `PatchCatalog` con su adaptador TOML, el caso de uso
 > `AnswerQuestion` de §5.1 con sus puertos de consulta (probado con *fakes*), el primer corte de ingesta de
-> §5.2: `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales y el parser de notas de
-> parche, los dos índices de §5.3 a §5.5: `ReindexCorpus`, el tokenizador determinista, el adaptador BM25
+> §5.2: `IngestSource`, el repositorio JSON de chunks, el fetcher de snapshots locales, el parser de notas de
+> parche y la fuente poe2db (fetcher HTTP respetuoso con caché y parser de páginas de gemas), los dos índices
+> de §5.3 a §5.5: `ReindexCorpus`, el tokenizador determinista, el adaptador BM25
 > Okapi, el embedder local `bge-base-en-v1.5` y el índice vectorial sobre Chroma embebido, el reranker
 > cross-encoder y el adaptador de Claude con citas nativas, todos probados con fakes, con un embedder
 > determinista y, de punta a punta, sobre el repositorio JSON del corpus. La configuración (`config.py`), el
 > composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI de [ADR-0006](adr/0006-cli-como-interfaz.md)
-> cierran el recorrido de §5. Todavía no: el fetcher HTTP, los adaptadores de poe2db y poe2wiki.net, el
-> comando `eval` y la evaluación de §8.
+> cierran el recorrido de §5. Todavía no: el adaptador de poe2wiki.net, el comando `eval` y la evaluación
+> de §8.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -167,6 +168,24 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 6. **Upsert:** se leen los chunks ya persistidos y solo se escriben los nuevos o cambiados. Un documento ya ingestado no reescribe el corpus y reporta sus chunks como `skipped`. Las secciones que desaparecen de la fuente no se podan: el chunk viejo sigue en el corpus con su vigencia (deuda explícita hasta que el puerto exprese el alcance de un documento).
 
 Las notas de parche son la primera fuente implementada; el modelo de vigencia que usan se registra en §10.1.
+
+La fuente poe2db reutiliza los seis pasos con dos diferencias. El `PoliteHttpFetcher` valida el locator
+antes de tocar la red (solo `https://poe2db.tw/us/<slug>`), consulta `robots.txt` una vez por host, impone
+un intervalo mínimo por host, aplica un timeout, no reintenta y cachea la página en `data/raw/poe2db/` con
+un sidecar (`url`, `fetched_at`, `status` y `sha256`); una segunda corrida lee la caché y no hace ningún
+pedido, y `--refresh` fuerza la descarga. El parser elige `active_gem` o `support_gem` desde el type line
+de la página y produce `description`, `properties`, `implicit-modifiers`, `explicit-modifiers` y `levels`,
+con el texto exacto de la página. Solo las formas limpias (`N% increased|reduced|more|less X`, `+N X`) se
+mapean a `Modifier`; un rango como `(1—11)` conserva su texto porque tiene dos números. La tabla por nivel
+es una sola sección `levels` (41 líneas en la página observada): el índice denso la reportará truncada y el
+léxico la leerá completa, la deuda visible de ADR-0004.
+
+Dos límites quedan como deuda explícita. `PatchCatalog` no expone fechas de publicación (`TomlPatchCatalog`
+valida `released_on` y la descarta), así que la vigencia de un snapshot usa `catalog.current()` en vez de
+"la última release en o antes de `fetched_at`". Y como `chunk_id` no incluye el documento y `IngestSource`
+solo hace upsert, ingerir un snapshot nuevo después de subir el parche deja dos versiones abiertas de la
+misma entidad (`valid_until=None`) en vez de cerrar la anterior; cerrarla exige un puerto con alcance de
+documento, fuera de este corte.
 
 ### 5.3 Flujo de `ReindexCorpus`
 
@@ -401,6 +420,9 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Encabezados repetidos, o dos encabezados que slugifican igual, producen un `chunk_id` repetido | El parser fusiona las secciones con el mismo slug en orden de documento, incluido el `overview` sintético; `IngestSource` conserva el rechazo con `DuplicateChunkIdError` como red de seguridad. |
 | Dos hilos del mismo parche reclaman el mismo `chunk_id` (el id no incluye la URL) | `IngestSource` rechaza con `ChunkIdentityConflictError` un id ya almacenado desde otra URL; una recaptura de la misma URL es un update. |
 | Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
+| Las páginas de poe2db no declaran versión de parche | El snapshot se marca desde `catalog.current()`: la página muestra valores actuales y el catálogo es la única fuente de "parche actual". |
+| `PatchCatalog` no expone fechas de publicación, solo versiones | La vigencia no puede calcular "la última release en o antes de `fetched_at`"; se usa `catalog.current()` y la ampliación del puerto queda reportada, no parcheada. |
+| Un snapshot nuevo de la misma gema deja dos vigencias abiertas | `IngestSource` hace upsert por `chunk_id` y no cierra la versión anterior; el límite es explícito y se resolverá con un puerto con alcance de documento. |
 | Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |
 | Un índice léxico queda desactualizado respecto del corpus | El índice persiste el `corpus_fingerprint` del corpus desde el que se construyó, y también la versión del tokenizador y los parámetros de puntuación, así que un archivo escrito con otras reglas se rechaza en vez de responder. Comparar el fingerprint con el corpus y reindexar automáticamente es trabajo del próximo corte. |
 | Un reindexado con dos escritores deja índices de versiones distintas | `rebuild` garantiza atomicidad por almacenamiento, no entre los dos escritores: un rebuild léxico exitoso seguido de uno vectorial fallido deja índices de corpus distintos. `ReindexCorpus` mitiga el caso barato (lee y embebe antes de escribir, así un corpus vacío o un modelo roto no tocan ningún índice) y el estado mixto restante queda como deuda explícita hasta que los dos índices compartan un puntero de versión. |
@@ -422,6 +444,7 @@ Una nota de parche **es su propia entidad**, no una transición aplicada a chunk
 - `Validity(valid_from=<parche detectado>, valid_until=None)`: un cambio es un hecho desde ese parche en adelante.
 
 Aplicar las notas como transiciones que cierran el `valid_until` de chunks de gemas exige primero los datos
-completos de cada gema en poe2db; queda fuera del MVP y se retomará cuando esa fuente exista. Con este
+completos de cada gema en poe2db; la fuente poe2db ya está implementada (§5.2), pero el modelado de
+transiciones sigue fuera de este corte. Con este
 modelo el filtro de vigencia de §5.1 sigue funcionando: una nota es válida desde su parche y el catálogo
 decide cuál es el actual.

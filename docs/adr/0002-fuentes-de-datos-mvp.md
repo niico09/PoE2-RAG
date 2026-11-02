@@ -52,3 +52,26 @@ Reglas que adopta el proyecto:
    - un límite de pedidos por segundo;
    - caché local para no volver a descargar páginas sin cambios;
    - respetar `robots.txt`.
+
+## Implementación de las reglas de acceso (2026-11-01)
+
+El adaptador `PoliteHttpFetcher` implementa las cuatro reglas: `User-Agent` `poe2-rag/<versión>
+(+<contacto>)` con el contacto obligatorio en `POE2_RAG_HTTP_CONTACT` (sin default en el
+repositorio), un intervalo mínimo por host con reloj e *sleeper* inyectables, caché en disco bajo
+`data/raw/poe2db/` (un HTML y un sidecar con `url`, `fetched_at`, `status` y `sha256`) y `robots.txt`
+consultado una vez por host con `urllib.robotparser`. Solo se aceptan páginas
+`https://poe2db.tw/us/<slug>`; cualquier otro locator se rechaza antes de la red. No hay reintentos.
+
+El snapshot del 2026-11-01 (`https://poe2db.tw/us/Spark`, 700.297 caracteres) fue la única descarga
+manual; `robots.txt` solo bloquea `/*/marked` y `/*/markdown_history`. El fixture que se versiona es
+un recorte de esa captura, con atribución y sin la página completa. La captura de un gem de soporte
+no se hizo, así que su fixture es una reconstrucción estructural, marcada como tal.
+
+Dos límites conocidos y no parcheados en este corte:
+
+- La página no declara versión de parche y `PatchCatalog` no expone fechas de publicación
+  (`TomlPatchCatalog` valida `released_on` y la descarta). La vigencia del snapshot usa
+  `catalog.current()` en vez de "la última release en o antes de `fetched_at`".
+- `IngestSource` hace upsert por `chunk_id` y el id no incluye el documento ni cierra versiones
+  anteriores. Ingerir un snapshot nuevo después de subir el parche deja dos versiones abiertas de la
+  misma entidad. Cerrar la anterior exige un puerto con alcance de documento, fuera de este corte.
