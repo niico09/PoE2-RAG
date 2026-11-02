@@ -1,6 +1,9 @@
 """Contract every `PatchCatalog` implementation must honour (architecture §8)."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,8 @@ from poe2_rag.shared.domain import (
     InMemoryPatchCatalog,
     InvalidPatchCatalogError,
     PatchCatalog,
+    PatchNotReleasedError,
+    PatchRelease,
     PatchVersion,
 )
 
@@ -18,16 +23,28 @@ BuildCatalog = Callable[[tuple[str, ...], str], PatchCatalog]
 
 VERSIONS = ("0.1.0", "0.1.1", "0.2.0")
 CURRENT = "0.1.1"
+FIRST_RELEASE = date(2024, 12, 6)
 
 
 def v(raw: str) -> PatchVersion:
     return PatchVersion.parse(raw)
 
 
+def released_on(versions: tuple[str, ...], version: str) -> date:
+    """Return a release day for `version`, one day later per version, so dates strictly increase."""
+    position = sorted(v(raw) for raw in versions).index(v(version))
+    return FIRST_RELEASE + timedelta(days=position)
+
+
 def catalog_toml(versions: tuple[str, ...], current: str) -> str:
     lines = [f'current = "{current}"', ""]
     for version in versions:
-        lines += ["[[patches]]", f'version = "{version}"', "released_on = 2024-12-06", ""]
+        lines += [
+            "[[patches]]",
+            f'version = "{version}"',
+            f"released_on = {released_on(versions, version).isoformat()}",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -35,7 +52,14 @@ def catalog_toml(versions: tuple[str, ...], current: str) -> str:
 def build_catalog(request: pytest.FixtureRequest, tmp_path: Path) -> BuildCatalog:
     """Build the same catalog through either implementation, so one suite proves both."""
     if request.param == "in-memory":
-        return lambda versions, current: InMemoryPatchCatalog([v(item) for item in versions], v(current))
+
+        def build(versions: tuple[str, ...], current: str) -> PatchCatalog:
+            return InMemoryPatchCatalog(
+                [PatchRelease(v(item), released_on(versions, item)) for item in versions],
+                v(current),
+            )
+
+        return build
 
     def build(versions: tuple[str, ...], current: str) -> PatchCatalog:
         path = tmp_path / "patches.toml"
@@ -105,6 +129,48 @@ class TestContains:
     def test_rejects_a_non_version_argument(self, build_catalog: BuildCatalog, value: object) -> None:
         with pytest.raises(InvalidPatchCatalogError):
             build_catalog(VERSIONS, CURRENT).contains(value)  # type: ignore[arg-type]
+
+
+class TestCurrentAt:
+    def test_returns_the_patch_released_on_that_day(self, build_catalog: BuildCatalog) -> None:
+        patch_catalog = build_catalog(VERSIONS, CURRENT)
+
+        assert patch_catalog.current_at(FIRST_RELEASE) == v("0.1.0")
+
+    def test_returns_the_latest_release_on_or_before_the_day(
+        self, build_catalog: BuildCatalog
+    ) -> None:
+        patch_catalog = build_catalog(VERSIONS, CURRENT)
+
+        assert patch_catalog.current_at(FIRST_RELEASE + timedelta(days=1)) == v("0.1.1")
+
+    def test_returns_the_last_release_after_everything(self, build_catalog: BuildCatalog) -> None:
+        patch_catalog = build_catalog(VERSIONS, CURRENT)
+
+        assert patch_catalog.current_at(date(2030, 1, 1)) == v("0.2.0")
+
+    def test_a_day_before_the_first_release_is_a_specific_error(
+        self, build_catalog: BuildCatalog
+    ) -> None:
+        patch_catalog = build_catalog(VERSIONS, CURRENT)
+
+        with pytest.raises(PatchNotReleasedError):
+            patch_catalog.current_at(FIRST_RELEASE - timedelta(days=1))
+
+    def test_does_not_derive_the_answer_from_the_current_pointer(
+        self, build_catalog: BuildCatalog
+    ) -> None:
+        patch_catalog = build_catalog(VERSIONS, "0.1.0")
+
+        assert patch_catalog.current_at(date(2030, 1, 1)) == v("0.2.0")
+        assert patch_catalog.current() == v("0.1.0")
+
+    @pytest.mark.parametrize("value", ["2025-01-17", None, 1])
+    def test_rejects_a_non_date_argument(
+        self, build_catalog: BuildCatalog, value: object
+    ) -> None:
+        with pytest.raises(InvalidPatchCatalogError):
+            build_catalog(VERSIONS, CURRENT).current_at(value)  # type: ignore[arg-type]
 
 
 class TestInvariants:

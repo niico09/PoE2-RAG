@@ -17,6 +17,7 @@ from poe2_rag.shared.domain.errors import (
     InvalidPatchVersionError,
 )
 from poe2_rag.shared.domain.patch_catalog import InMemoryPatchCatalog
+from poe2_rag.shared.domain.patch_release import PatchRelease
 from poe2_rag.shared.domain.patch_version import PatchVersion
 
 _ROOT_KEYS = frozenset({"current", "patches"})
@@ -41,6 +42,9 @@ class TomlPatchCatalog:
 
     def current(self) -> PatchVersion:
         return self._catalog.current()
+
+    def current_at(self, day: date) -> PatchVersion:
+        return self._catalog.current_at(day)
 
     def known(self) -> tuple[PatchVersion, ...]:
         return self._catalog.known()
@@ -74,9 +78,11 @@ def _build(path: Path, data: dict[str, Any]) -> InMemoryPatchCatalog:
     entries = data.get("patches", [])
     if not isinstance(entries, list):
         raise PatchCatalogLoadError(f"{path}: 'patches' must be an array of tables, got {entries!r}")
-    versions = tuple(_entry_version(path, index, entry) for index, entry in enumerate(entries, start=1))
+    releases = tuple(
+        _entry_release(path, index, entry) for index, entry in enumerate(entries, start=1)
+    )
     try:
-        return InMemoryPatchCatalog(versions, current)
+        return InMemoryPatchCatalog(releases, current)
     except InvalidPatchCatalogError as exc:
         raise InvalidPatchCatalogError(f"{path}: {exc}") from exc
 
@@ -90,8 +96,12 @@ def _parse_current(path: Path, raw: object) -> PatchVersion:
         raise PatchCatalogLoadError(f"{path}: invalid 'current': {exc}") from exc
 
 
-def _entry_version(path: Path, position: int, entry: object) -> PatchVersion:
-    """Validate one `[[patches]]` table and return the version it declares."""
+def _entry_release(path: Path, position: int, entry: object) -> PatchRelease:
+    """Validate one `[[patches]]` table and return the release it declares.
+
+    `released_on` is required: a known patch without a date cannot answer "which patch was current
+    on this day", which is what the poe2db snapshot needs to place its values on the timeline.
+    """
     where = f"{path}: patches[{position}]"
     if not isinstance(entry, dict):
         raise PatchCatalogLoadError(f"{where} must be a table, got {entry!r}")
@@ -100,13 +110,16 @@ def _entry_version(path: Path, position: int, entry: object) -> PatchVersion:
         raise PatchCatalogLoadError(f"{where}: unknown key(s) {sorted(unknown)}")
     if "version" not in entry:
         raise PatchCatalogLoadError(f"{where}: missing 'version'")
-    released_on = entry.get("released_on")
-    if released_on is not None and type(released_on) is not date:
-        raise PatchCatalogLoadError(f"{where}: 'released_on' must be a TOML date, got {released_on!r}")
+    if "released_on" not in entry:
+        raise PatchCatalogLoadError(f"{where}: missing 'released_on'")
     raw = entry["version"]
     if not isinstance(raw, str):
         raise PatchCatalogLoadError(f"{where}: 'version' must be a string, got {raw!r}")
     try:
-        return PatchVersion.parse(raw)
+        version = PatchVersion.parse(raw)
     except InvalidPatchVersionError as exc:
         raise PatchCatalogLoadError(f"{where}: invalid version: {exc}") from exc
+    released_on = entry["released_on"]
+    if type(released_on) is not date:
+        raise PatchCatalogLoadError(f"{where}: 'released_on' must be a TOML date, got {released_on!r}")
+    return PatchRelease(version, released_on)

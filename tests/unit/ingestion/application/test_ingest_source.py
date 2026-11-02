@@ -23,10 +23,19 @@ from poe2_rag.ingestion.application import (
     IngestSource,
     UnknownPatchError,
 )
-from poe2_rag.shared.domain import Chunk, InMemoryPatchCatalog, PatchVersion, SourceRef
+from poe2_rag.shared.domain import (
+    Chunk,
+    InMemoryPatchCatalog,
+    PatchRelease,
+    PatchVersion,
+    SourceRef,
+)
 
 CATALOG = InMemoryPatchCatalog(
-    [PatchVersion.parse("0.1.0"), PatchVersion.parse("0.1.1")],
+    [
+        PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
+        PatchRelease(PatchVersion.parse("0.1.1"), date(2025, 1, 17)),
+    ],
     PatchVersion.parse("0.1.1"),
 )
 LOCATOR = "data/raw/patch-notes-0.1.0.html"

@@ -37,6 +37,7 @@ from poe2_rag.shared.domain import (
     Chunk,
     EntityRef,
     InMemoryPatchCatalog,
+    PatchRelease,
     PatchVersion,
     SourceRef,
     Validity,
@@ -79,7 +80,13 @@ def retrieved(
 
 
 def catalog() -> InMemoryPatchCatalog:
-    return InMemoryPatchCatalog([CURRENT, NEXT], current=CURRENT)
+    return InMemoryPatchCatalog(
+        [
+            PatchRelease(CURRENT, date(2025, 1, 17)),
+            PatchRelease(NEXT, date(2025, 2, 7)),
+        ],
+        current=CURRENT,
+    )
 
 
 def default_settings() -> RetrievalSettings:

@@ -7,7 +7,7 @@ its locator, exactly as the HTTP fetcher returns it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ from poe2_rag.ingestion.application import DocumentParser, RawDocument
 from poe2_rag.shared.domain import (
     InMemoryPatchCatalog,
     ModifierKind,
+    PatchRelease,
     PatchVersion,
 )
 
@@ -36,7 +37,11 @@ CURRENT = PatchVersion.parse("0.1.1")
 
 def build_parser() -> Poe2dbGemPageParser:
     catalog = InMemoryPatchCatalog(
-        [PatchVersion.parse("0.1.0"), CURRENT], CURRENT
+        [
+            PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
+            PatchRelease(CURRENT, date(2025, 1, 17)),
+        ],
+        CURRENT,
     )
     return Poe2dbGemPageParser(catalog)
 

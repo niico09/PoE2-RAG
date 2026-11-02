@@ -12,9 +12,11 @@ from poe2_rag.shared.domain.errors import (
     InvalidPatchVersionError,
     InvalidSourceRefError,
     InvalidValidityError,
+    PatchNotReleasedError,
 )
 from poe2_rag.shared.domain.modifier import Modifier, ModifierKind
 from poe2_rag.shared.domain.patch_catalog import InMemoryPatchCatalog, PatchCatalog
+from poe2_rag.shared.domain.patch_release import PatchRelease
 from poe2_rag.shared.domain.patch_version import PatchVersion
 from poe2_rag.shared.domain.source_ref import SourceRef
 from poe2_rag.shared.domain.validity import Validity
@@ -36,6 +38,8 @@ __all__ = [
     "Modifier",
     "ModifierKind",
     "PatchCatalog",
+    "PatchNotReleasedError",
+    "PatchRelease",
     "PatchVersion",
     "SourceRef",
     "Validity",

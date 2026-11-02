@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,13 +9,19 @@ from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
     PatchCatalogLoadError,
     TomlPatchCatalog,
 )
-from poe2_rag.shared.domain import DomainError, InvalidPatchCatalogError, PatchVersion
+from poe2_rag.shared.domain import (
+    DomainError,
+    InvalidPatchCatalogError,
+    PatchNotReleasedError,
+    PatchVersion,
+)
 
 MINIMAL = """\
 current = "0.1.1"
 
 [[patches]]
 version = "0.1.0"
+released_on = 2024-12-06
 
 [[patches]]
 version = "0.1.1"
@@ -43,10 +52,19 @@ class TestLoad:
         assert catalog.current() == v("0.1.1")
         assert catalog.known() == (v("0.1.0"), v("0.1.1"))
 
-    def test_release_date_is_optional(self, tmp_path: Path) -> None:
-        text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
+    def test_release_dates_round_trip_into_current_at(self, tmp_path: Path) -> None:
+        catalog = TomlPatchCatalog(write_catalog(tmp_path, MINIMAL))
 
-        assert TomlPatchCatalog(write_catalog(tmp_path, text)).known() == (v("0.1.0"),)
+        assert catalog.current_at(date(2024, 12, 6)) == v("0.1.0")
+        assert catalog.current_at(date(2025, 1, 16)) == v("0.1.0")
+        assert catalog.current_at(date(2025, 1, 17)) == v("0.1.1")
+        assert catalog.current_at(date(2026, 11, 1)) == v("0.1.1")
+
+    def test_a_day_before_the_first_toml_release_is_the_domain_error(self, tmp_path: Path) -> None:
+        catalog = TomlPatchCatalog(write_catalog(tmp_path, MINIMAL))
+
+        with pytest.raises(PatchNotReleasedError):
+            catalog.current_at(date(2024, 12, 5))
 
     def test_accepts_a_string_path(self, tmp_path: Path) -> None:
         assert TomlPatchCatalog(str(write_catalog(tmp_path, MINIMAL))).current() == v("0.1.1")
@@ -57,6 +75,7 @@ class TestLoad:
         assert catalog.known()
         assert catalog.current() in catalog.known()
         assert list(catalog.known()) == sorted(catalog.known())
+        assert catalog.current_at(date(2024, 12, 6)) == catalog.known()[0]
 
 
 class TestLoadErrors:
@@ -72,11 +91,21 @@ class TestLoadErrors:
 
     def test_missing_current_is_a_load_error(self, tmp_path: Path) -> None:
         with pytest.raises(PatchCatalogLoadError, match="current"):
-            TomlPatchCatalog(write_catalog(tmp_path, '[[patches]]\nversion = "0.1.0"\n'))
+            TomlPatchCatalog(
+                write_catalog(
+                    tmp_path, '[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n'
+                )
+            )
 
     def test_non_string_current_is_a_load_error(self, tmp_path: Path) -> None:
         with pytest.raises(PatchCatalogLoadError, match="current"):
             TomlPatchCatalog(write_catalog(tmp_path, 'current = 112\n\n[[patches]]\nversion = "0.1.0"\n'))
+
+    def test_missing_release_date_is_a_load_error(self, tmp_path: Path) -> None:
+        text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
+
+        with pytest.raises(PatchCatalogLoadError, match="released_on"):
+            TomlPatchCatalog(write_catalog(tmp_path, text))
 
     def test_malformed_current_version_is_a_load_error(self, tmp_path: Path) -> None:
         with pytest.raises(PatchCatalogLoadError, match="current"):
@@ -157,14 +186,31 @@ class TestCatalogInvariants:
             TomlPatchCatalog(write_catalog(tmp_path, 'current = "0.1.0"\n'))
 
     def test_repeated_version_is_rejected(self, tmp_path: Path) -> None:
-        text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
+        text = (
+            'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n'
+            '\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n'
+        )
 
         with pytest.raises(InvalidPatchCatalogError, match="duplicate"):
             TomlPatchCatalog(write_catalog(tmp_path, text))
 
+    def test_non_increasing_release_dates_are_rejected(self, tmp_path: Path) -> None:
+        text = (
+            'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2025-01-17\n'
+            '\n[[patches]]\nversion = "0.1.1"\nreleased_on = 2024-12-06\n'
+        )
+
+        with pytest.raises(InvalidPatchCatalogError, match="strictly increase"):
+            TomlPatchCatalog(write_catalog(tmp_path, text))
+
     def test_current_absent_from_the_list_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(InvalidPatchCatalogError, match="current"):
-            TomlPatchCatalog(write_catalog(tmp_path, 'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\n'))
+            TomlPatchCatalog(
+                write_catalog(
+                    tmp_path,
+                    'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n',
+                )
+            )
 
     def test_empty_catalog_error_names_the_path(self, tmp_path: Path) -> None:
         path = write_catalog(tmp_path, 'current = "0.1.0"\n')
@@ -175,7 +221,10 @@ class TestCatalogInvariants:
         assert str(path) in str(exc_info.value)
 
     def test_duplicate_version_error_names_the_path(self, tmp_path: Path) -> None:
-        text = 'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\n'
+        text = (
+            'current = "0.1.0"\n\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n'
+            '\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n'
+        )
         path = write_catalog(tmp_path, text)
 
         with pytest.raises(InvalidPatchCatalogError) as exc_info:
@@ -184,7 +233,10 @@ class TestCatalogInvariants:
         assert str(path) in str(exc_info.value)
 
     def test_unknown_current_error_names_the_path(self, tmp_path: Path) -> None:
-        path = write_catalog(tmp_path, 'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\n')
+        path = write_catalog(
+            tmp_path,
+            'current = "0.1.1"\n\n[[patches]]\nversion = "0.1.0"\nreleased_on = 2024-12-06\n',
+        )
 
         with pytest.raises(InvalidPatchCatalogError) as exc_info:
             TomlPatchCatalog(path)

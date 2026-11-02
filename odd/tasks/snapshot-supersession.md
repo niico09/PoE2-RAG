@@ -90,8 +90,8 @@ so no entity ever holds two open versions.
 
 ## Tasks
 
-- [ ] T1 — Branch `feat/snapshot-supersession`, feature doc, Engram mirror. Route: inline. S8.
-- [ ] T2 — Release dates in the catalog: `PatchRelease`, `PatchCatalog.current_at`,
+- [x] T1 — Branch `feat/snapshot-supersession`, feature doc, Engram mirror. Route: inline. S8.
+- [x] T2 — Release dates in the catalog: `PatchRelease`, `PatchCatalog.current_at`,
   `InMemoryPatchCatalog`, `TomlPatchCatalog`, domain/contract/adapter tests and every construction
   site. Route: inline. S1, S7.
 - [ ] T3 — poe2db parser: `valid_from` from `current_at(fetched_at)` normalized to UTC, naive
@@ -110,6 +110,24 @@ so no entity ever holds two open versions.
 - **T1** — `git switch -c feat/snapshot-supersession main` → branch created at `cd1d018`; feature doc
   written; Engram mirror saved. No RED (documentation only). Baseline before any change:
   `uv run pytest -q` → **1102 passed, 15 deselected**.
+
+- **T2** — RED (domain) → `ImportError: cannot import name 'PatchNotReleasedError'`, 2 collection
+  errors, 0 tests run (`test_patch_release.py` and the rewritten `test_patch_catalog.py`). GREEN
+  (domain) → 47 passed after `PatchRelease`, `PatchNotReleasedError` and `current_at` landed. RED
+  (adapter) → 8 failed, 21 passed on the rewritten `test_toml_patch_catalog.py` (`current_at` missing,
+  `released_on` still optional). GREEN → 236 passed across `tests/unit/shared`, 54 passed on the
+  catalog contract for both implementations. Full suite **1148 passed, 15 deselected** (was 1102
+  before the task). `uvx pyright==1.1.414 src tests` → **0 errors, 0 warnings, 0 informations**.
+  - `InMemoryPatchCatalog` now takes `Iterable[PatchRelease]`; a bare `PatchVersion` is a patch with
+    no date and is rejected, and release dates must strictly increase with the versions (equal or
+    backwards dates fail). `current_at` rejects a `datetime` because it is a `date` subclass whose
+    comparison against dates raises `TypeError`.
+  - `TomlPatchCatalog` requires `released_on` per entry (a missing one is a `PatchCatalogLoadError`
+    naming the entry) and delegates `current_at`, so a date round-trips from the file to the answer.
+  - Every in-memory construction site moved to releases: the answering fakes and the `SpyCatalog`
+    (which also gained `current_at`, caught by pyright), the ingestion fakes and the patch-notes
+    pipeline. `config/patches.toml` documents that `released_on` is now part of the model.
+  Commit: `feat(shared): date every known patch and look one up by day`.
 
 ## Log
 

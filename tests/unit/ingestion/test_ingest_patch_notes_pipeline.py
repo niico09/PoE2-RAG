@@ -21,7 +21,7 @@ from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import (
 )
 from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import PatchNotesParser
 from poe2_rag.ingestion.application import IngestSource
-from poe2_rag.shared.domain import InMemoryPatchCatalog, PatchVersion
+from poe2_rag.shared.domain import InMemoryPatchCatalog, PatchRelease, PatchVersion
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "patch_notes"
 CAPTURED_AT = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
@@ -43,7 +43,7 @@ def build_pipeline(
         fetcher=LocalFileFetcher(),
         parser=PatchNotesParser(),
         repository=repository,
-        catalog=InMemoryPatchCatalog([version], version),
+        catalog=InMemoryPatchCatalog([PatchRelease(version, CAPTURED_AT.date())], version),
     )
     return snapshot, repository, ingest
 
