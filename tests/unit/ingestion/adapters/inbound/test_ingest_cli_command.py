@@ -82,7 +82,7 @@ def test_successful_run_prints_locator_chunk_count_and_skipped_count(
     )
 
     captured = capsys.readouterr()
-    assert f"{locator}: 3 chunks produced, 1 skipped" in captured.out
+    assert f"{locator}: 3 chunks produced, 1 skipped, 0 closed, 0 removed" in captured.out
 
 
 def test_successful_run_prints_reindexed_chunk_count_and_iso_rebuild_moment(
@@ -251,6 +251,33 @@ def test_nothing_written_to_stderr_on_success(
     assert captured.err == ""
 
 
+def test_successful_run_prints_the_superseded_counts(
+    capsys: CaptureFixture[str],
+    locator: str,
+    rebuilt_at: datetime,
+) -> None:
+    ingest_report = IngestReport(
+        locator=locator,
+        chunk_ids=("chunk-1", "chunk-2"),
+        skipped=0,
+        closed=3,
+        removed=1,
+    )
+    reindex_report = ReindexReport(chunk_count=4, rebuilt_at=rebuilt_at, truncated_chunk_ids=())
+
+    run(
+        source="poe2db",
+        locator=locator,
+        ingest=FakeIngestRunner(ingest_report),
+        reindex=FakeReindexRunner(reindex_report),
+    )
+
+    captured = capsys.readouterr()
+    assert (
+        f"{locator}: 2 chunks produced, 0 skipped, 3 closed, 1 removed" in captured.out
+    )
+
+
 def test_poe2db_run_names_the_source_and_rebuilds_after_it(
     capsys: CaptureFixture[str],
     rebuilt_at: datetime,
@@ -266,7 +293,7 @@ def test_poe2db_run_names_the_source_and_rebuilds_after_it(
 
     captured = capsys.readouterr()
     assert f"Ingested poe2db from {locator}" in captured.out
-    assert "2 chunks produced, 0 skipped" in captured.out
+    assert "2 chunks produced, 0 skipped, 0 closed, 0 removed" in captured.out
     assert "Reindexed 2 chunks" in captured.out
     assert ingest.calls == [f"ingest:{locator}"]
     assert reindex.calls == ["reindex"]

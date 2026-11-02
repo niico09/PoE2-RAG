@@ -47,7 +47,8 @@ def _run_source(
 
     print(
         f"Ingested {source} from {ingest_report.locator}: "
-        f"{len(ingest_report.chunk_ids)} chunks produced, {ingest_report.skipped} skipped."
+        f"{len(ingest_report.chunk_ids)} chunks produced, {ingest_report.skipped} skipped, "
+        f"{ingest_report.closed} closed, {ingest_report.removed} removed."
     )
 
     reindex_line = (

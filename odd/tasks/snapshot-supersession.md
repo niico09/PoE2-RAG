@@ -98,7 +98,7 @@ so no entity ever holds two open versions.
   `fetched_at` rejected. Route: inline. S2.
 - [x] T4 — `ChunkRepository.remove` and an atomic `JsonChunkRepository.remove`, with contract tests
   and the port fakes. Route: inline. S4.
-- [ ] T5 — Supersession in `IngestSource` (close, remove, out-of-order, one version per identity),
+- [x] T5 — Supersession in `IngestSource` (close, remove, out-of-order, one version per identity),
   `IngestReport` counts and the CLI line. Route: inline. S3, S5.
 - [ ] T6 — Integration: the Spark fixture captured under patch A, then under patch B, then reindex;
   BM25 and Chroma per version. Route: inline + one integration run. S6.
@@ -148,6 +148,23 @@ so no entity ever holds two open versions.
   `save` uses. A failed replace leaves the previous corpus and no temporary file; a read failure
   stops the removal.
   Commit: `feat(ingestion): let the chunk repository drop stored chunks`.
+
+- **T5** — RED → `ImportError: cannot import name 'MixedSnapshotVersionError'`, 1 collection error,
+  0 tests run (13 cases authored: 12 supersession scenarios plus the property-style invariant).
+  GREEN → the application suite passes 31 cases. The CLI line was then reverted alone to observe its
+  own RED: 3 failed, 7 passed with the old `... skipped.` line, 10 passed with the counts added.
+  Full suite **1183 passed, 15 deselected**; `uvx pyright==1.1.414 src tests` → **0 errors**.
+  - `IngestSource` groups the document by snapshot identity `(source.type, entity.key)` and rejects
+    a document holding two versions of one identity (`MixedSnapshotVersionError`). It closes every
+    stored open range that starts earlier at the incoming version with `dataclasses.replace`, removes
+    the stored ids at the same version the document no longer contains, and rejects a stored chunk
+    that reaches past the incoming version (`OutOfOrderSnapshotError`) before the first write.
+  - A range closed by an earlier run is history and is neither re-closed nor counted, so a second run
+    over the same snapshot is a no-op. Patch notes never supersede each other because the version is
+    part of their entity slug, which a test pins.
+  - `IngestReport.closed` and `.removed` default to zero, and the CLI prints
+    `N chunks produced, S skipped, C closed, R removed`.
+  Commit: `feat(ingestion): close the previous snapshot of an entity at ingest`.
 
 ## Log
 
