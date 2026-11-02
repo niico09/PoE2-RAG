@@ -82,11 +82,15 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 
 ## Decisions
 
-- **D1 — Per-level tables are one `levels` section.** The page's gem-level table is the source of the
-  numbers a citation quotes (mana cost, damage per level), so it is kept, but as one chunk whose
-  lines are the table rows joined exactly as rendered. One chunk per level would multiply identities
-  and citations without adding precision. A page without the table simply has no `levels` chunk.
-  (S9; confirmed against the captured fixture, see the Log.)
+- **D1 — Per-level tables are one `levels` section.** The captured page's per-level table has 41 rows
+  (header plus levels 1–40) and 9 columns, including both the base and the Cold-Infused variant. It is
+  kept as one chunk whose lines are the header and each row joined exactly as rendered. One chunk per
+  level would multiply identities and citations without adding precision for an MVP without
+  level-aware retrieval; the ~2.9 KB table will be reported as a truncated chunk by the dense index,
+  while the lexical index reads it whole (the visible debt ADR-0004 documents). A page without the
+  table simply has no `levels` chunk. The page's "gem tabs" (`Base`, `Cold-Infused`) are variants, not
+  per-level tabs; only the first (`Base`) contributes modifiers, so cold variant text is never
+  attributed to the base gem. (S9, confirmed against the capture.)
 - **D2 — Modifier parsing is deliberately conservative.** Only `N% increased|reduced|more|less X`
   and `+N X` become `Modifier`; a range such as `Adds 1 to 12 Lightning Damage` keeps its exact text
   and stays out of the structured tuple, because collapsing two numbers into one `value` would
@@ -104,7 +108,7 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
   `POE2_RAG_HTTP_TIMEOUT`, validated, with tests. Route: inline. S6, S10.
 - [x] T3 — `PoliteHttpFetcher` and its cache, with the offline test suite. Route: inline. S5, S7, S8, S11.
 - [x] T4 — Network-marked Spark fetch; one manual run to capture the real markup. Route: inline. S14.
-- [ ] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
+- [x] T5 — `Poe2dbGemPageParser`, trimmed fixtures and tests. Route: inline. S3, S9, S12.
 - [ ] T6 — Wiring: `SOURCES`, dispatch, `--refresh`, bootstrap, `pyproject` markers and httpx2 as a
   runtime dependency, CLI tests. Route: inline. S10, S11, S14.
 - [ ] T7 — Integration test through the real pipeline, run once. Route: inline. S13.
@@ -155,6 +159,27 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 - The prompt's ~400 authored lines per task is a planning heuristic, not a cap (S17): the fetcher
   commit carries the adapter and the suite that proves it, rather than splitting a port
   implementation from its own tests.
+
+- **T5** — RED → `ModuleNotFoundError: No module named
+  'poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser'`, 0 tests run (19 cases authored).
+  GREEN → `uv run pytest -q tests/unit/ingestion/adapters/outbound/test_poe2db_gem_page_parser.py`
+  19 passed; full suite 1080 passed, 14 deselected (the network test is excluded).
+  - The parser was then run offline on the captured page (not committed): 4 chunks — description
+    (184 chars), properties (205 chars, tags `Projectile/Lightning/Duration/Repeatable`),
+    explicit-modifiers (194 chars, 4 lines, ranges preserved, no structured modifier because a range
+    has two numbers) and levels (2,873 chars, 41 lines).
+  - The tests caught two real defects before the fixtures passed: implicit mods sit nested inside the
+    Base `Stats` block (the first search only looked at direct children), and a support modifier
+    reads `Supported Skills deal 10% increased Projectile Damage`, so the percentage is not always the
+    first token; the pattern now anchors on the percentage anywhere in the line and keeps the stat
+    after it. `+12 to maximum Mana` maps to `Modifier("maximum Mana", 12.0, FLAT)`.
+  - Only the first `.GemPopup` is read: the page repeats it four times for responsive layouts. The
+    later variant tab (`Cold-Infused`) is excluded from modifiers so its cold values are never
+    attributed to the base gem; quality mods are excluded too.
+  - The page has neither a canonical link nor an `h1`, so a locator that is not an absolute http(s)
+    URL raises `MissingPageUrlError` instead of inventing a citation URL. The fetcher always supplies
+    the page URL, and the integration test goes through it.
+  Commit: `feat(ingestion): parse poe2db gem pages`.
 
 ## Log
 
@@ -327,8 +352,11 @@ independent verifier at close.
 
 ### L6 — Fixture provenance
 
-The repository has no committed poe2db capture and the prompt forbids fetching outside `network`
-tests, so the committed fixtures are a trimmed excerpt of the page captured by the single
-`network`-marked run into `tmp_path` (T4). If that run is not possible the fixtures are minimal
-reconstructions from the class names in S3; either way they are trimmed to the markup the parser
-reads, carry an attribution comment, and the full page is never committed.
+The repository had no committed poe2db capture and the prompt forbids fetching outside `network`
+tests. The single authorized `network` run (T4) captured Spark into `tmp_path`; the committed
+`active_gem_spark.html` is a trimmed excerpt of that capture (header, properties, description, Base
+modifier tab and three rows of the level table; 6.8 KB instead of the 700 KB page; remote/interactive
+attributes stripped; attribution comment included). The captured page contained no support-gem
+markup at all, so `support_gem_pierce.html` is a structural reconstruction of the same observed
+shape, labelled as such in its comment, with illustrative values for the parser tests. Neither file
+is a full page and both stay well under a page's worth of markup.
