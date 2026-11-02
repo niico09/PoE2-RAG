@@ -64,6 +64,12 @@ def test_ingest_poe2db_then_ask_reads_the_same_indexes_from_disk(
     assert "Reindexed" in ingested.out
     assert "error: " not in ingested.err
 
+    cached_html = config.raw_dir / "poe2db" / "poe2db.tw-us-Spark.html"
+    assert cached_html.is_file()
+    assert cached_html.read_bytes().decode("utf-8") == (
+        FIXTURES / "active_gem_spark.html"
+    ).read_text(encoding="utf-8")
+
     corpus = JsonChunkRepository(config.processed_dir).all()
     spark_chunks = [chunk for chunk in corpus if chunk.entity.slug == "spark"]
     assert {chunk.section for chunk in spark_chunks} == {

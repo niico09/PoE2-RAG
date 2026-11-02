@@ -89,8 +89,8 @@ def _patch_version(raw: str) -> PatchVersion:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Return the argument parser for ``poe2-rag``."""
+def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
+    """Return the root parser and the `ingest` subparser (for its own usage errors)."""
     parser = argparse.ArgumentParser(
         prog="poe2-rag",
         description="Ask patch-aware questions about Path of Exile 2 and ingest its sources.",
@@ -129,7 +129,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="patch version to answer for (default: current patch)",
     )
 
-    return parser
+    return parser, ingest
 
 
 def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
@@ -176,10 +176,10 @@ def main(argv: Sequence[str] | None = None, *, container: CliContainer | None = 
     ``--help`` raises it with code 0, and anything else propagates untouched — an unexpected exception is
     a bug, and a traceback is the honest thing to show for it.
     """
-    parser = _build_parser()
+    parser, ingest_parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "ingest" and args.refresh and args.source != "poe2db":
-        parser.error("--refresh is only supported by the poe2db source")
+        ingest_parser.error("--refresh is only supported by the poe2db source")
 
     try:
         runtime = container if container is not None else _default_container()

@@ -373,6 +373,7 @@ def test_the_poe2db_fetcher_receives_the_configured_http_settings(
 
     assert fetcher._request_interval == 2.5
     assert fetcher._timeout == 15.0
+    assert fetcher._cache_dir == configured.raw_dir
     assert "ops@example.com" in fetcher._user_agent()
 
 

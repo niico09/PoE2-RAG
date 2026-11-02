@@ -62,6 +62,19 @@ def by_section(chunks: tuple, section: str):
     return next(chunk for chunk in chunks if chunk.section == section)
 
 
+def gem_page(content: str, *, name: str = "Probe", type_line: str = "Spell") -> str:
+    """Wrap `content` in the header shape the real page renders."""
+    return f"""
+    <div class="newItemPopup GemPopup">
+      <div class="itemHeader">
+        <div class="itemName"><span class="lc">{name}</span></div>
+        <div class="itemName typeLine"><span class="lc">{type_line}</span></div>
+      </div>
+      <div class="content">{content}</div>
+    </div>
+    """
+
+
 def line_set(text: str) -> list[str]:
     return text.splitlines()
 
@@ -286,3 +299,150 @@ class TestRejections:
     def test_a_locator_that_is_not_a_page_url_is_rejected(self) -> None:
         with pytest.raises(MissingPageUrlError):
             build_parser().parse(raw_document(locator="data/raw/spark.html"))
+
+
+class TestLayoutRobustness:
+    def test_implicit_modifiers_are_not_duplicated_without_a_tab_header(self) -> None:
+        """Without `gemTabs` the fallback can make one block serve as properties and modifiers."""
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="implicitMod">+5 to maximum Life</div>
+              <div class="explicitMod">10% increased Life</div>
+            </div>
+            """
+        )
+
+        chunks = build_parser().parse(raw_document(content=content))
+        implicit = by_section(chunks, "implicit-modifiers")
+
+        assert implicit.text == "+5 to maximum Life"
+        assert len(implicit.modifiers) == 1
+
+    def test_a_separator_between_the_tab_header_and_its_stats_keeps_the_modifiers(self) -> None:
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            <div class="hybridHeader gemTabs"><span class="ItemType">Base</span></div>
+            <div class="separator"></div>
+            <div class="Stats"><div class="explicitMod">10% increased Life</div></div>
+            """
+        )
+
+        explicit = by_section(
+            build_parser().parse(raw_document(content=content)), "explicit-modifiers"
+        )
+
+        assert explicit.text == "10% increased Life"
+
+    def test_a_wrapper_between_the_tab_header_and_its_stats_keeps_the_modifiers(self) -> None:
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            <div class="hybridHeader gemTabs"><span class="ItemType">Base</span></div>
+            <div class="wrapper"><div class="Stats"><div class="explicitMod">10% increased Life</div></div></div>
+            """
+        )
+
+        explicit = by_section(
+            build_parser().parse(raw_document(content=content)), "explicit-modifiers"
+        )
+
+        assert explicit.text == "10% increased Life"
+
+    def test_a_first_tab_that_is_not_base_does_not_contribute_modifiers(self) -> None:
+        """The documented guarantee is that variant text is never attributed to the base gem."""
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            <div class="hybridHeader gemTabs"><span class="ItemType">Cold-Infused</span></div>
+            <div class="Stats"><div class="explicitMod">Deals 7 to 11 Cold Damage</div></div>
+            """
+        )
+
+        chunks = build_parser().parse(raw_document(content=content))
+
+        assert "explicit-modifiers" not in {chunk.section for chunk in chunks}
+        assert all("Cold Damage" not in chunk.text for chunk in chunks)
+
+    def test_a_level_table_before_the_gem_block_is_ignored(self) -> None:
+        content = """
+        <table>
+          <tr><th>Level</th><th>Mana</th></tr>
+          <tr><td>1</td><td>99</td></tr>
+        </table>
+        """ + gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            """
+        ) + """
+        <table>
+          <tr><th>Level</th><th>Mana</th></tr>
+          <tr><td>20</td><td>56</td></tr>
+        </table>
+        """
+
+        levels = by_section(build_parser().parse(raw_document(content=content)), "levels")
+
+        assert "56" in levels.text
+        assert "99" not in levels.text
+
+    def test_empty_level_cells_keep_their_column(self) -> None:
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property">Spell</div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            """
+        ) + """
+        <table>
+          <tr><th>Level</th><th>Duration</th><th>Mana</th></tr>
+          <tr><td>1</td><td></td><td>5</td></tr>
+        </table>
+        """
+
+        levels = by_section(build_parser().parse(raw_document(content=content)), "levels")
+
+        assert levels.text.splitlines()[-1] == "1 |  | 5"
+
+    def test_a_single_tag_keeps_the_tag_tuple(self) -> None:
+        content = gem_page(
+            """
+            <div class="Stats">
+              <div class="property"><a class="GemTags">Attack</a></div>
+              <div class="secDescrText">A probe.</div>
+            </div>
+            """
+        )
+
+        properties = by_section(
+            build_parser().parse(raw_document(content=content)), "properties"
+        )
+
+        assert properties.tags == ("Attack",)
+        assert properties.text == "Attack"
+
+    def test_a_gem_page_with_only_a_level_table_is_rejected(self) -> None:
+        content = gem_page("") + """
+        <table>
+          <tr><th>Level</th><th>Mana</th></tr>
+          <tr><td>1</td><td>5</td></tr>
+        </table>
+        """
+
+        with pytest.raises(EmptyGemPageError):
+            build_parser().parse(raw_document(content=content))

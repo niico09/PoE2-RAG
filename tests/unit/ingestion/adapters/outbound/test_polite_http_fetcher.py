@@ -104,14 +104,13 @@ def make_fetcher(
     )
 
 
-def cache_html_path(cache_dir: Path, url: str = BASE_URL) -> Path:
+def cache_html_path(cache_dir: Path) -> Path:
     return cache_dir / "poe2db" / "poe2db.tw-us-Spark.html"
 
 
-def cache_meta_path(cache_dir: Path, url: str = BASE_URL) -> Path:
-    return cache_html_path(cache_dir, url).with_name(
-        cache_html_path(cache_dir, url).name + ".meta.json"
-    )
+def cache_meta_path(cache_dir: Path) -> Path:
+    path = cache_html_path(cache_dir)
+    return path.with_name(path.name + ".meta.json")
 
 
 class TestPortAndValidation:
@@ -182,6 +181,15 @@ class TestPortAndValidation:
             with pytest.raises(UnsupportedLocatorError):
                 fetcher.fetch(url)
         assert len(handler.requests) == 0
+
+    def test_a_trailing_slash_is_reported_as_a_trailing_slash(self, tmp_path: Path) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client:
+            with pytest.raises(UnsupportedLocatorError) as exc_info:
+                make_fetcher(client, tmp_path).fetch("https://poe2db.tw/us/Spark/")
+
+        assert "trailing slash" in str(exc_info.value)
+        assert handler.requests == []
 
 
 class TestUserAgent:
@@ -375,6 +383,27 @@ class TestCache:
 
         assert raw.content == "<html>Spark</html>"
         assert raw.fetched_at == fetched_at
+
+    def test_cache_hit_preserves_crlf_newlines(self, tmp_path: Path) -> None:
+        """`read_text` would normalize CRLF and break the digest of every such cached page."""
+        content = "<html>\r\n<body>Spark\r\n</body>\r\n</html>"
+        first_handler = RecordingHandler(
+            {
+                ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                BASE_URL: Response(200, text=content),
+            }
+        )
+        with make_client(first_handler) as client:
+            original = make_fetcher(client, tmp_path).fetch(BASE_URL)
+        assert original.content == content
+
+        second_handler = RecordingHandler({})
+        with make_client(second_handler) as client:
+            cached = make_fetcher(client, tmp_path).fetch(BASE_URL)
+
+        assert cached.content == content
+        assert cached.fetched_at == original.fetched_at
+        assert second_handler.requests == []
 
     def test_cache_hit_by_second_fetcher_returns_original_fetched_at_with_zero_requests(
         self, tmp_path: Path

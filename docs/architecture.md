@@ -185,7 +185,9 @@ valida `released_on` y la descarta), así que la vigencia de un snapshot usa `ca
 "la última release en o antes de `fetched_at`". Y como `chunk_id` no incluye el documento y `IngestSource`
 solo hace upsert, ingerir un snapshot nuevo después de subir el parche deja dos versiones abiertas de la
 misma entidad (`valid_until=None`) en vez de cerrar la anterior; cerrarla exige un puerto con alcance de
-documento, fuera de este corte.
+documento, fuera de este corte. Por la misma razón, una captura cacheada reingerida después de subir el
+parche se marca con el parche nuevo aunque sus valores sean del anterior: `--refresh` después de cambiar
+el catálogo es la mitigación operativa hasta que el puerto exponga las fechas.
 
 ### 5.3 Flujo de `ReindexCorpus`
 
@@ -420,7 +422,7 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Encabezados repetidos, o dos encabezados que slugifican igual, producen un `chunk_id` repetido | El parser fusiona las secciones con el mismo slug en orden de documento, incluido el `overview` sintético; `IngestSource` conserva el rechazo con `DuplicateChunkIdError` como red de seguridad. |
 | Dos hilos del mismo parche reclaman el mismo `chunk_id` (el id no incluye la URL) | `IngestSource` rechaza con `ChunkIdentityConflictError` un id ya almacenado desde otra URL; una recaptura de la misma URL es un update. |
 | Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
-| Las páginas de poe2db no declaran versión de parche | El snapshot se marca desde `catalog.current()`: la página muestra valores actuales y el catálogo es la única fuente de "parche actual". |
+| Las páginas de poe2db no declaran versión de parche | El snapshot se marca desde `catalog.current()`: la página muestra valores actuales y el catálogo es la única fuente de "parche actual". Una captura cacheada reingerida tras subir el parche queda marcada con el nuevo; `--refresh` después de cambiar el catálogo lo evita. |
 | `PatchCatalog` no expone fechas de publicación, solo versiones | La vigencia no puede calcular "la última release en o antes de `fetched_at`"; se usa `catalog.current()` y la ampliación del puerto queda reportada, no parcheada. |
 | Un snapshot nuevo de la misma gema deja dos vigencias abiertas | `IngestSource` hace upsert por `chunk_id` y no cierra la versión anterior; el límite es explícito y se resolverá con un puerto con alcance de documento. |
 | Un snapshot local no conserva ni la URL del hilo ni su fecha de captura | El parser recupera la URL de los enlaces `/forum/post-reply/<id>`; `LocalFileFetcher` exige un sidecar `<snapshot>.meta.json` con `captured_at` ISO 8601 con zona horaria y falla si falta o es inválido, en vez de usar el mtime. |

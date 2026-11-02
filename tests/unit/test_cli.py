@@ -167,7 +167,9 @@ def test_refresh_is_a_usage_error_for_another_source(capsys: pytest.CaptureFixtu
         main(["ingest", "patch-notes", "x.html", "--refresh"], container=container)
 
     assert exc_info.value.code == 2
-    assert "--refresh" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert "--refresh" in stderr
+    assert "usage: poe2-rag ingest" in stderr
     assert container.ingest_source.calls == []
 
 

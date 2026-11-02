@@ -14,6 +14,12 @@ The page has no canonical link and no `h1`, so the source URL is the fetcher's l
 that is not an absolute http(s) URL is rejected instead of inventing one. Text is rendered with
 `<br>` as a space and whitespace collapsed, which keeps the page's exact numbers and wording while
 removing formatting spaces the browser does not show.
+
+`valid_from` is the catalog version current when the document is ingested. The page carries no patch
+version, so a cached capture ingested after a patch bump is labelled with the newer patch even though
+its values were captured under the older one. Making that exact requires a date-indexed
+`PatchCatalog` lookup, which the port does not expose; the limit is recorded in the feature Log, not
+papered over here.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ _PERCENT_KINDS = {
     "less": ModifierKind.LESS,
 }
 _PROPERTY_CLASSES = frozenset({"property", "requirements", "hybridProperty"})
+_MODIFIER_SECTIONS = frozenset({"explicit-modifiers", "implicit-modifiers"})
 _PUNCTUATION_SPACE = re.compile(r"\s+([,.;:])")
 
 
@@ -102,9 +109,11 @@ class Poe2dbGemPageParser:
         entity = EntityRef(kind, _slugify(name), name)
         validity = Validity(self._catalog.current())
         source = SourceRef(_SOURCE_TYPE, url, raw.fetched_at.date())
-        sections = _sections(popup, soup)
-        if not sections:
-            raise EmptyGemPageError(f"gem page {name!r} has no usable content")
+        sections = _sections(popup)
+        if not _has_core_sections(sections):
+            raise EmptyGemPageError(
+                f"gem page {name!r} has no properties and no description or modifiers"
+            )
         return tuple(
             Chunk(entity, validity, section, text, source, tags, modifiers)
             for section, text, tags, modifiers in sections
@@ -146,7 +155,7 @@ def _gem_kind(popup: Tag) -> str:
     return "support_gem" if _SUPPORT_MARKER in text else "active_gem"
 
 
-def _sections(popup: Tag, soup: BeautifulSoup) -> list[tuple[str, str, tuple, tuple]]:
+def _sections(popup: Tag) -> list[tuple[str, str, tuple, tuple]]:
     """Build every section the page offers, in a stable order."""
     content = popup.find(class_="content")
     scope = content if isinstance(content, Tag) else popup
@@ -170,9 +179,7 @@ def _sections(popup: Tag, soup: BeautifulSoup) -> list[tuple[str, str, tuple, tu
                 ("properties", "\n".join(lines), _tags(properties), ())
             )
 
-    implicit = _nested_modifier_lines(properties, "implicitMod") + _nested_modifier_lines(
-        modifiers, "implicitMod"
-    )
+    implicit = _implicit_modifiers(properties, modifiers)
     if implicit:
         sections.append(("implicit-modifiers", "\n".join(implicit), (), _parse_modifiers(implicit)))
 
@@ -182,24 +189,62 @@ def _sections(popup: Tag, soup: BeautifulSoup) -> list[tuple[str, str, tuple, tu
     if explicit:
         sections.append(("explicit-modifiers", "\n".join(explicit), (), _parse_modifiers(explicit)))
 
-    levels = _level_table(soup)
+    levels = _level_table(popup)
     if levels:
         sections.append(("levels", levels, (), ()))
     return sections
 
 
+def _has_core_sections(sections: Sequence[tuple[str, str, tuple, tuple]]) -> bool:
+    """Require the gem's properties plus something citable; a lone level table is not a gem page."""
+    names = {section for section, _, _, _ in sections}
+    has_modifiers = bool(names & _MODIFIER_SECTIONS)
+    return "properties" in names and (has_modifiers or "description" in names)
+
+
+def _implicit_modifiers(properties: Tag | None, modifiers: Tag | None) -> list[str]:
+    """Collect implicit mods once even when the fallback made one block serve both roles."""
+    blocks: list[Tag] = []
+    for block in (properties, modifiers):
+        if isinstance(block, Tag) and not any(block is seen for seen in blocks):
+            blocks.append(block)
+    lines = [
+        line for block in blocks for line in _nested_modifier_lines(block, "implicitMod")
+    ]
+    return list(dict.fromkeys(lines))
+
+
 def _base_modifier_block(scope: Tag) -> Tag | None:
-    """Return the `Stats` block of the first gem tab (`Base`), which holds the base mods."""
+    """Return the `Stats` block of the `Base` gem tab, which holds the base mods.
+
+    The tab label is checked, not assumed: a page that renders a variant tab first must not have its
+    mods attributed to the base gem. The `Stats` block may be separated from its header by other
+    elements, so the scan walks forward until the next tab header instead of requiring an immediate
+    sibling.
+    """
     tabs = [child for child in _direct_tags(scope) if _BASE_TAB_CLASS in _classes(child)]
     if tabs:
-        following = _next_sibling_tag(tabs[0])
-        if isinstance(following, Tag) and "Stats" in _classes(following):
-            return following
+        base = next((tab for tab in tabs if _tab_label(tab) == "Base"), None)
+        if base is None:
+            return None
+        sibling = _next_sibling_tag(base)
+        while isinstance(sibling, Tag) and _BASE_TAB_CLASS not in _classes(sibling):
+            if "Stats" in _classes(sibling):
+                return sibling
+            nested = sibling.find(class_="Stats")
+            if isinstance(nested, Tag):
+                return nested
+            sibling = _next_sibling_tag(sibling)
         return None
     for block in _direct_tags(scope, "Stats"):
         if _modifier_lines(block, "explicitMod"):
             return block
     return None
+
+
+def _tab_label(tab: Tag) -> str:
+    """Return the gem tab header's own label (`Base`, `Cold-Infused`)."""
+    return _clean_text(_inline(tab))
 
 
 def _next_sibling_tag(node: PageElement) -> PageElement | None:
@@ -222,12 +267,24 @@ def _property_lines(block: Tag) -> list[str]:
 
 
 def _tags(block: Tag) -> tuple[str, ...]:
-    """Read the first property row as the gem's tags when it is the unlabeled tag list."""
-    for child in block.find_all(recursive=False):
-        if "property" not in _classes(child):
-            continue
+    """Read the first property row as the gem's tags, from its `GemTags` links when present.
+
+    The links are the authoritative markup and keep a single-tag gem (`Attack`) from losing its
+    tuple; the comma split is only the fallback for a page that rendered the tags as plain text.
+    """
+    for child in _direct_tags(block, "property"):
+        anchors = child.find_all(class_="GemTags")
+        if anchors:
+            tags = tuple(
+                tag
+                for anchor in anchors
+                for tag in [_clean_text(_inline(anchor))]
+                if tag
+            )
+            if tags:
+                return tags
         text = _clean_text(_inline(child))
-        if ":" in text or "," not in text:
+        if ":" in text:
             return ()
         return tuple(tag.strip() for tag in text.split(",") if tag.strip())
     return ()
@@ -284,9 +341,15 @@ def _stat(text: str) -> str:
     return text.strip().rstrip(".")
 
 
-def _level_table(soup: BeautifulSoup) -> str:
-    """Render the first per-level table as one section: header plus one line per row (D1)."""
-    for table in soup.find_all("table"):
+def _level_table(popup: Tag) -> str:
+    """Render the gem's per-level table as one section: header plus one line per row (D1).
+
+    Only tables inside or after the gem block are considered; an unrelated `Level` table earlier in
+    the page must not be cited as this gem's. Empty cells are kept so a value never slides under the
+    wrong column header.
+    """
+    tables = list(popup.find_all("table")) + list(popup.find_all_next("table"))
+    for table in tables:
         rows = table.find_all("tr")
         if not rows:
             continue
@@ -295,13 +358,8 @@ def _level_table(soup: BeautifulSoup) -> str:
             continue
         lines = []
         for row in rows:
-            values = [
-                value
-                for cell in row.find_all(["th", "td"], recursive=False)
-                for value in [_cell(cell)]
-                if value
-            ]
-            if values:
+            values = [_cell(cell) for cell in row.find_all(["th", "td"], recursive=False)]
+            if values and any(values):
                 lines.append(" | ".join(values))
         return "\n".join(lines)
     return ""

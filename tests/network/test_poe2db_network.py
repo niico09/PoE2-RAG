@@ -55,7 +55,7 @@ def test_one_real_fetch_writes_the_page_under_tmp_path(tmp_path: Path) -> None:
 
     cache_directory = tmp_path / "poe2db"
     html_path = cache_directory / CACHE_NAME
-    assert html_path.read_text(encoding="utf-8") == raw.content
+    assert html_path.read_bytes().decode("utf-8") == raw.content
     meta = json.loads(
         (cache_directory / f"{CACHE_NAME}.meta.json").read_text(encoding="utf-8")
     )

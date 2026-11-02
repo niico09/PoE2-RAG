@@ -75,3 +75,7 @@ Dos límites conocidos y no parcheados en este corte:
 - `IngestSource` hace upsert por `chunk_id` y el id no incluye el documento ni cierra versiones
   anteriores. Ingerir un snapshot nuevo después de subir el parche deja dos versiones abiertas de la
   misma entidad. Cerrar la anterior exige un puerto con alcance de documento, fuera de este corte.
+- El mismo límite afecta a la caché: una página capturada bajo el parche X y reingerida desde
+  `data/raw/poe2db/` después de que el catálogo pasó a Y se marca `valid_from=Y`, aunque sus valores
+  sean de X. La corrección de fondo es la búsqueda por fecha en `PatchCatalog`; mientras tanto, la
+  mitigación operativa es correr `--refresh` después de cambiar el catálogo.

@@ -195,7 +195,7 @@ def test_the_effort_set_matches_the_adapter_that_has_to_accept_it() -> None:
     """One closed set, two readers: the adapter owns it, this configuration must not drift from it."""
     from poe2_rag.answering.adapters.outbound.llm.claude_language_model import _EFFORTS
 
-    assert frozenset(_EFFORTS) == LLM_EFFORTS
+    assert LLM_EFFORTS == frozenset(_EFFORTS)
 
 
 def test_the_configuration_is_frozen() -> None:

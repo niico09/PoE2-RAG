@@ -201,11 +201,11 @@ class PoliteHttpFetcher:
             raise UnsupportedLocatorError(
                 f"path must start with {_PATH_PREFIX!r}, got {locator!r}"
             )
+        if path.endswith("/"):
+            raise UnsupportedLocatorError(f"no trailing slash is allowed, got {locator!r}")
         slug = path[len(_PATH_PREFIX) :]
         if not slug or "/" in slug:
             raise UnsupportedLocatorError(f"slug must be non-empty with no slash, got {locator!r}")
-        if path.endswith("/"):
-            raise UnsupportedLocatorError(f"no trailing slash is allowed, got {locator!r}")
 
         return f"{_ALLOWED_SCHEME}://{_ALLOWED_HOST}{path}"
 
@@ -301,7 +301,9 @@ class PoliteHttpFetcher:
             raise self._cache_error(url)
 
         try:
-            content = html_path.read_text(encoding="utf-8")
+            # Bytes, not `read_text`: universal newlines would turn CRLF into LF and the stored
+            # digest would never match again, breaking every cache hit for a CRLF page.
+            content = html_path.read_bytes().decode("utf-8")
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise Poe2dbCacheError(

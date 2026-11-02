@@ -89,8 +89,9 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
   level-aware retrieval; the ~2.9 KB table will be reported as a truncated chunk by the dense index,
   while the lexical index reads it whole (the visible debt ADR-0004 documents). A page without the
   table simply has no `levels` chunk. The page's "gem tabs" (`Base`, `Cold-Infused`) are variants, not
-  per-level tabs; only the first (`Base`) contributes modifiers, so cold variant text is never
-  attributed to the base gem. (S9, confirmed against the capture.)
+  per-level tabs; only the tab whose label is exactly `Base` contributes modifiers, and a page whose
+  first tab is a variant produces no `explicit-modifiers` section rather than attributing cold text to
+  the base gem. (S9, confirmed against the capture; enforced after the review round.)
 - **D2 — Modifier parsing is deliberately conservative.** Only `N% increased|reduced|more|less X`
   and `+N X` become `Modifier`; a range such as `Adds 1 to 12 Lightning Damage` keeps its exact text
   and stays out of the structured tuple, because collapsing two numbers into one `value` would
@@ -241,6 +242,50 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
   precedent recorded in `odd/tasks/ingest-patch-notes.md` (S10); the feature doc, code, tests and
   commit messages are English.
 - **Risk**: item 5 (the `httpx2` runtime dependency change).
+
+### L7 — Review round (QA + review, 2026-11-02)
+
+Fourteen findings were applied in one fix round; thirteen are code/test fixes and one is a documented
+decision because it needs the missing port:
+
+1. **Cache CRLF** — `_read_cache` used `read_text`, whose universal newlines turned CRLF into LF, so
+   the digest never matched and every hit raised `Poe2dbCacheError` (and `--refresh` did not cure it).
+   It now decodes `read_bytes()` and a CRLF cache-hit test pins it. The network test reads bytes too.
+2. **Implicit duplication** — when the page has no `gemTabs`, the fallback makes one `Stats` block
+   serve as properties and modifiers; implicit mods were collected twice. `_implicit_modifiers`
+   deduplicates the blocks and the lines.
+3. **Cached validity** — decided: keep `catalog.current()` and document the consequence. Rejecting
+   cache ingests would break S8, and the alternative ("reject when `fetched_at` predates `current()`")
+   is not computable because the port exposes no release dates. The real fix remains the date-indexed
+   lookup (L3); `--refresh` after a catalog bump is the operational mitigation, now in README/ADR.
+4. **Single tag** — `_tags` reads the `GemTags` anchors of the first property row, so a one-tag gem
+   (`Attack`) keeps its tuple; the comma split is only a fallback.
+5. **Level-table scope** — levels come from tables inside or after the gem block, never from a
+   `Level` table earlier on the page; empty cells are preserved so values stay under their headers.
+6. **Cache location** — bootstrap and integration tests now assert the cache is under
+   `config.raw_dir / "poe2db"`, not merely that a fetcher exists.
+7. **Explicit mods across a separator or wrapper** — the scan walks forward from the `Base` tab to
+   its `Stats` block, descending one wrapper if needed.
+8. **`Base` label** — the tab is selected by its label, not by position.
+9. **Partial gem page** — a page with only a `levels` table now raises `EmptyGemPageError`; the gem's
+   properties plus a description or a modifier section are the minimum.
+10. **Dead trailing-slash branch** — the trailing slash is checked before the slug, with a truthful
+    message.
+11. **Empty level cells** — preserved (see 5).
+12. **Test helper** — `cache_html_path`/`cache_meta_path` no longer accept an ignored `url`.
+13. **CLI usage** — `--refresh` for another source now prints the `ingest` subparser's usage.
+14. **Unrelated no-op** — the `test_config.py` assertion reorder is reverted.
+
+The review round's final numbers are in the Evidence section.
+### R1 — Review round
+
+- `uv run pytest -q` → **1102 passed, 15 deselected**; `uv run pytest -q -m integration` → **12 passed,
+  1104 deselected in 16.42 s**; `uvx pyright==1.1.414` → **0 errors**; ruff isort → clean.
+- 14 findings applied: 13 code/test fixes (CRLF cache, implicit duplication, single-tag tuples,
+  level-table scope, empty cells, cache-location assertions, separator/wrapper scanning, `Base` label,
+  minimum sections, trailing-slash message, test helper, CLI usage, no-op revert) and 1 documented
+  decision (cached validity needs the date-indexed `PatchCatalog`; `--refresh` after a catalog bump is
+  the operational mitigation).
 
 ## Log
 
