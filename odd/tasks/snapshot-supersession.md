@@ -94,7 +94,7 @@ so no entity ever holds two open versions.
 - [x] T2 — Release dates in the catalog: `PatchRelease`, `PatchCatalog.current_at`,
   `InMemoryPatchCatalog`, `TomlPatchCatalog`, domain/contract/adapter tests and every construction
   site. Route: inline. S1, S7.
-- [ ] T3 — poe2db parser: `valid_from` from `current_at(fetched_at)` normalized to UTC, naive
+- [x] T3 — poe2db parser: `valid_from` from `current_at(fetched_at)` normalized to UTC, naive
   `fetched_at` rejected. Route: inline. S2.
 - [ ] T4 — `ChunkRepository.remove` and an atomic `JsonChunkRepository.remove`, with contract tests
   and the port fakes. Route: inline. S4.
@@ -128,6 +128,16 @@ so no entity ever holds two open versions.
     (which also gained `current_at`, caught by pyright), the ingestion fakes and the patch-notes
     pipeline. `config/patches.toml` documents that `released_on` is now part of the model.
   Commit: `feat(shared): date every known patch and look one up by day`.
+
+- **T3** — RED → `ImportError: cannot import name 'NaiveFetchedAtError'`, 1 collection error, 0
+  tests run (6 cases added, 3 of them pinning the UTC normalization across a release boundary).
+  GREEN → 33 passed on the parser suite; full suite **1154 passed, 15 deselected**;
+  `uvx pyright==1.1.414 src tests` → **0 errors**. The adapter now computes `captured_on` from
+  `fetched_at.astimezone(UTC).date()`, rejects a naive instant with `NaiveFetchedAtError` before
+  reading the page, uses `current_at(captured_on)` for `valid_from` and the same UTC day for
+  `SourceRef.captured_at`, and lets `PatchNotReleasedError` propagate for a capture older than the
+  first known release.
+  Commit: `feat(ingestion): date a poe2db page by its capture day`.
 
 ## Log
 
