@@ -46,6 +46,10 @@ class InMemoryChunkRepository:
     def all(self) -> tuple[Chunk, ...]:
         return tuple(self._by_id.values())
 
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        for chunk_id in chunk_ids:
+            self._by_id.pop(chunk_id, None)
+
 
 def make_chunk(
     section: str = "general-changes",
@@ -183,6 +187,58 @@ class TestUpsert:
         repository.save((updated_first,))
 
         assert repository.all() == (updated_first, second)
+
+
+class TestRemove:
+    def test_removes_only_the_named_chunks(self, build_repository: BuildRepository) -> None:
+        removed = make_chunk("general-changes")
+        kept = make_chunk("skill-changes")
+        repository = build_repository()
+        repository.save((removed, kept))
+
+        repository.remove((removed.chunk_id,))
+
+        assert repository.all() == (kept,)
+
+    def test_removes_every_named_chunk(self, build_repository: BuildRepository) -> None:
+        chunks = (make_chunk("general-changes"), make_chunk("skill-changes"))
+        repository = build_repository()
+        repository.save(chunks)
+
+        repository.remove(tuple(chunk.chunk_id for chunk in chunks))
+
+        assert repository.all() == ()
+
+    def test_ignores_an_id_that_is_not_stored(self, build_repository: BuildRepository) -> None:
+        chunk = make_chunk()
+        repository = build_repository()
+        repository.save((chunk,))
+
+        repository.remove(("patch_notes:patch_notes:missing@0.1.0#nope",))
+
+        assert repository.all() == (chunk,)
+
+    def test_removing_the_same_id_twice_is_idempotent(
+        self, build_repository: BuildRepository
+    ) -> None:
+        removed = make_chunk("general-changes")
+        kept = make_chunk("skill-changes")
+        repository = build_repository()
+        repository.save((removed, kept))
+
+        repository.remove((removed.chunk_id,))
+        repository.remove((removed.chunk_id,))
+
+        assert repository.all() == (kept,)
+
+    def test_removing_nothing_changes_nothing(self, build_repository: BuildRepository) -> None:
+        chunk = make_chunk()
+        repository = build_repository()
+        repository.save((chunk,))
+
+        repository.remove(())
+
+        assert repository.all() == (chunk,)
 
 
 class TestAll:

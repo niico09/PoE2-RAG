@@ -96,7 +96,7 @@ so no entity ever holds two open versions.
   site. Route: inline. S1, S7.
 - [x] T3 — poe2db parser: `valid_from` from `current_at(fetched_at)` normalized to UTC, naive
   `fetched_at` rejected. Route: inline. S2.
-- [ ] T4 — `ChunkRepository.remove` and an atomic `JsonChunkRepository.remove`, with contract tests
+- [x] T4 — `ChunkRepository.remove` and an atomic `JsonChunkRepository.remove`, with contract tests
   and the port fakes. Route: inline. S4.
 - [ ] T5 — Supersession in `IngestSource` (close, remove, out-of-order, one version per identity),
   `IngestReport` counts and the CLI line. Route: inline. S3, S5.
@@ -138,6 +138,16 @@ so no entity ever holds two open versions.
   `SourceRef.captured_at`, and lets `PatchNotReleasedError` propagate for a capture older than the
   first known release.
   Commit: `feat(ingestion): date a poe2db page by its capture day`.
+
+- **T4** — RED → 10 failed, 44 passed: the `json` parameter of the contract suite and five adapter
+  tests (`JsonChunkRepository` had no `remove`). GREEN → 83 passed across the contract, the adapter
+  and the port-shape suites; full suite **1170 passed, 15 deselected**; `uvx pyright==1.1.414 src
+  tests` → **0 errors**. `ChunkRepository.remove(chunk_ids)` is a separate explicit method (D5): an
+  empty sequence is a no-op, an unknown id is ignored and a call that would drop nothing does not
+  rewrite the file, and the surviving corpus is replaced in the same temp-file-plus-`os.replace` step
+  `save` uses. A failed replace leaves the previous corpus and no temporary file; a read failure
+  stops the removal.
+  Commit: `feat(ingestion): let the chunk repository drop stored chunks`.
 
 ## Log
 

@@ -116,6 +116,11 @@ class FakeChunkRepository:
         self._recorder.record("all")
         return tuple(self._by_id.values())
 
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        self._recorder.record("remove", tuple(chunk_ids))
+        for chunk_id in chunk_ids:
+            self._by_id.pop(chunk_id, None)
+
 
 class FakeLexicalIndexWriter:
     """Records every rebuild with the exact chunks it received and keeps the last snapshot."""
