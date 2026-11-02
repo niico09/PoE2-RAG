@@ -100,7 +100,7 @@ so no entity ever holds two open versions.
   and the port fakes. Route: inline. S4.
 - [x] T5 — Supersession in `IngestSource` (close, remove, out-of-order, one version per identity),
   `IngestReport` counts and the CLI line. Route: inline. S3, S5.
-- [ ] T6 — Integration: the Spark fixture captured under patch A, then under patch B, then reindex;
+- [x] T6 — Integration: the Spark fixture captured under patch A, then under patch B, then reindex;
   BM25 and Chroma per version. Route: inline + one integration run. S6.
 - [ ] T7 — Docs (§4, §5.2, `patches.toml`), close L3/L4, full suite and verification. Route: inline.
   S7, S9.
@@ -165,6 +165,21 @@ so no entity ever holds two open versions.
   - `IngestReport.closed` and `.removed` default to zero, and the CLI prints
     `N chunks produced, S skipped, C closed, R removed`.
   Commit: `feat(ingestion): close the previous snapshot of an entity at ingest`.
+
+- **T6** — First run failed on one over-strict assertion of mine: `ReindexReport.truncated_chunk_ids`
+  is empty because the committed Spark fixture keeps only three level-table rows (6.8 KB trimmed
+  excerpt), so it fits the model window. The supersession and index assertions before it already
+  passed. After removing that unsupported assertion:
+  `uv run pytest -q -m integration tests/integration/test_snapshot_supersession_integration.py` →
+  **1 passed in 3.84 s** (real `bge-base-en-v1.5`; the scripted fetcher is the only fake).
+  - Patch A = 0.1.0 captured 2024-12-10, patch B = 0.1.1 captured 2025-01-20, both from the same
+    fixture; the catalog carries the two release days and treats 0.1.1 as current.
+  - Ingest A: 4 open chunks, `closed=0`, `removed=0`. Ingest B: `closed=4`, `removed=0`; the corpus
+    holds 8 chunks and every A chunk has `valid_until=0.1.1` and is not valid at 0.1.1.
+  - `ReindexCorpus` rebuilt both indexes from all 8 chunks. At 0.1.0 the dense search returned exactly
+    the A ids and BM25 only A ids (non-empty); at 0.1.1 the dense search returned exactly the B ids
+    and BM25 only B ids.
+  Commit: `test(ingestion): prove a second capture supersedes the first end to end`.
 
 ## Log
 
