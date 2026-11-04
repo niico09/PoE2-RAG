@@ -7,7 +7,7 @@ its locator, exactly as the HTTP fetcher returns it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ import pytest
 from poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser import (
     EmptyGemPageError,
     MissingPageUrlError,
+    NaiveFetchedAtError,
     NotAGemPageError,
     Poe2dbGemPageParser,
     Poe2dbParseError,
@@ -24,6 +25,8 @@ from poe2_rag.ingestion.application import DocumentParser, RawDocument
 from poe2_rag.shared.domain import (
     InMemoryPatchCatalog,
     ModifierKind,
+    PatchNotReleasedError,
+    PatchRelease,
     PatchVersion,
 )
 
@@ -36,9 +39,19 @@ CURRENT = PatchVersion.parse("0.1.1")
 
 def build_parser() -> Poe2dbGemPageParser:
     catalog = InMemoryPatchCatalog(
-        [PatchVersion.parse("0.1.0"), CURRENT], CURRENT
+        [
+            PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
+            PatchRelease(CURRENT, date(2025, 1, 17)),
+        ],
+        CURRENT,
     )
     return Poe2dbGemPageParser(catalog)
+
+
+def catalog_with(*released: tuple[str, date]) -> InMemoryPatchCatalog:
+    """Build a catalog from explicit release days, treating its last release as current."""
+    releases = [PatchRelease(PatchVersion.parse(version), day) for version, day in released]
+    return InMemoryPatchCatalog(releases, releases[-1].version)
 
 
 def raw_document(
@@ -47,13 +60,14 @@ def raw_document(
     locator: str = URL,
     source_type: str = "poe2db",
     content: str | None = None,
+    fetched_at: datetime | None = None,
 ) -> RawDocument:
     if content is None:
         content = (FIXTURES / name).read_text(encoding="utf-8")
     return RawDocument(
         locator=locator,
         content=content,
-        fetched_at=FETCHED_AT,
+        fetched_at=FETCHED_AT if fetched_at is None else fetched_at,
         source_type=source_type,
     )
 
@@ -446,3 +460,50 @@ class TestLayoutRobustness:
 
         with pytest.raises(EmptyGemPageError):
             build_parser().parse(raw_document(content=content))
+
+class TestValidityFromTheCaptureDate:
+    """`valid_from` is the patch current at the capture instant, never the configured current one."""
+
+    def test_uses_the_patch_current_at_the_capture_instant(self) -> None:
+        catalog = catalog_with(("0.1.0", date(2024, 12, 6)), ("0.1.1", date(2025, 1, 17)))
+        parser = Poe2dbGemPageParser(catalog)
+
+        chunks = parser.parse(raw_document(fetched_at=datetime(2024, 12, 10, 12, tzinfo=UTC)))
+
+        assert {chunk.validity.valid_from for chunk in chunks} == {PatchVersion.parse("0.1.0")}
+
+    def test_a_later_local_date_normalizes_to_the_previous_utc_day(self) -> None:
+        catalog = catalog_with(("0.1.0", date(2024, 12, 6)), ("0.1.1", date(2025, 1, 17)))
+        parser = Poe2dbGemPageParser(catalog)
+        # 2025-01-17 00:30 at UTC+5 is still 2025-01-16 in UTC, the day before the release.
+        captured = datetime(2025, 1, 17, 0, 30, tzinfo=timezone(timedelta(hours=5)))
+
+        chunks = parser.parse(raw_document(fetched_at=captured))
+
+        assert {chunk.validity.valid_from for chunk in chunks} == {PatchVersion.parse("0.1.0")}
+        assert {chunk.source.captured_at for chunk in chunks} == {date(2025, 1, 16)}
+
+    def test_an_earlier_local_date_normalizes_to_the_next_utc_day(self) -> None:
+        catalog = catalog_with(("0.1.0", date(2024, 12, 6)), ("0.1.1", date(2025, 1, 17)))
+        parser = Poe2dbGemPageParser(catalog)
+        # 2025-01-16 23:30 at UTC-5 is 2025-01-17 04:30 in UTC, the release day itself.
+        captured = datetime(2025, 1, 16, 23, 30, tzinfo=timezone(timedelta(hours=-5)))
+
+        chunks = parser.parse(raw_document(fetched_at=captured))
+
+        assert {chunk.validity.valid_from for chunk in chunks} == {PatchVersion.parse("0.1.1")}
+        assert {chunk.source.captured_at for chunk in chunks} == {date(2025, 1, 17)}
+
+    def test_a_capture_before_the_first_release_is_rejected(self) -> None:
+        with pytest.raises(PatchNotReleasedError):
+            build_parser().parse(raw_document(fetched_at=datetime(2024, 1, 1, tzinfo=UTC)))
+
+    def test_rejects_a_naive_fetch_time(self) -> None:
+        with pytest.raises(NaiveFetchedAtError, match="timezone"):
+            build_parser().parse(raw_document(fetched_at=datetime(2026, 11, 1, 12, 30)))
+
+    def test_a_naive_fetch_time_is_rejected_before_the_page_is_read(self) -> None:
+        with pytest.raises(NaiveFetchedAtError):
+            build_parser().parse(
+                raw_document(content="not a gem page", fetched_at=datetime(2026, 11, 1, 12, 30))
+            )

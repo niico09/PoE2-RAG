@@ -7,6 +7,8 @@ from poe2_rag.ingestion.application.errors import (
     EmptyCorpusError,
     IngestionError,
     InvalidRawDocumentError,
+    MixedSnapshotVersionError,
+    OutOfOrderSnapshotError,
     UnknownPatchError,
 )
 from poe2_rag.ingestion.application.ingest_source import IngestReport, IngestSource
@@ -34,6 +36,8 @@ __all__ = [
     "IngestionError",
     "InvalidRawDocumentError",
     "LexicalIndexWriter",
+    "MixedSnapshotVersionError",
+    "OutOfOrderSnapshotError",
     "RawDocument",
     "ReindexCorpus",
     "ReindexReport",

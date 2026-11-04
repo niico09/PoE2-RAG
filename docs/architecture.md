@@ -95,7 +95,8 @@ El esquema actual del README tiene dos problemas de diseño:
 |---|---|---|
 | `PatchVersion` | Value object | Versión semántica comparable (`0.1.2 > 0.1.0`). Inmutable. Rechaza formatos inválidos. |
 | `Validity` | Value object | Rango `[valid_from, valid_until)`. `valid_until` vacío = vigente. Responde `is_valid_at(version)`. Invariante: `valid_from < valid_until`. |
-| `PatchCatalog` | Puerto de dominio | Lista de parches conocidos y cuál es el actual. Única fuente de verdad de "actual". |
+| `PatchRelease` | Value object | Un parche conocido y el día en que se publicó. El catálogo se construye con estas values, así que un parche conocido sin fecha no es representable y las fechas deben crecer estrictamente con las versiones. |
+| `PatchCatalog` | Puerto de dominio | Parches conocidos, cuál es el actual (`current()`, el puntero configurado) y cuál regía en una fecha (`current_at(day)`, la última publicación en o antes de ese día). Única fuente de verdad de "actual". |
 | `EntityRef` | Value object | Identidad estable de lo que describe el chunk: `kind` (gema, soporte, mecánica, ítem, notas de parche) + `slug`. |
 | `Modifier` | Value object | Modificador estructurado: `stat`, `value`, `kind` ∈ {`increased`, `reduced`, `more`, `less`, `added`, `flat`}. Resuelve D2 por estructura, no solo por búsqueda. |
 | `Chunk` | Entidad | Unidad indexable: `chunk_id`, `EntityRef`, `Validity`, `section`, `text`, `tags`, `modifiers`, `SourceRef`. |
@@ -165,7 +166,7 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 3. **Vigencia conocida:** un chunk cuyo `valid_from` no está en el `PatchCatalog` aborta la corrida con `UnknownPatchError`; no se descarta, porque un chunk fuera de la línea de tiempo haría que el corpus afirmara un parche que el sistema no reconoce (D1).
 4. **Identidad única:** si un documento produce dos chunks con el mismo `chunk_id`, `DuplicateChunkIdError` aborta antes de escribir; guardar el último dejaría el corpus en silencio con una sola sección.
 5. **Identidad por documento:** un `chunk_id` ya almacenado desde otra URL de origen aborta con `ChunkIdentityConflictError`; pisarlo movería la cita del primer hilo al segundo. Una recaptura de la misma URL sí es un update.
-6. **Upsert:** se leen los chunks ya persistidos y solo se escriben los nuevos o cambiados. Un documento ya ingestado no reescribe el corpus y reporta sus chunks como `skipped`. Las secciones que desaparecen de la fuente no se podan: el chunk viejo sigue en el corpus con su vigencia (deuda explícita hasta que el puerto exprese el alcance de un documento).
+6. **Supersesión del snapshot:** se leen los chunks ya persistidos y se comparan con el documento por identidad de snapshot, `(source.type, entity.key)` — exactamente la parte de `chunk_id` que antecede a `@`. Los rangos abiertos de esa identidad que empiezan antes de la versión `V` del documento se cierran en ella con `dataclasses.replace` (`valid_until = V`, mismo `chunk_id`, porque `valid_until` no es parte del id); los chunks de esa identidad en la misma versión que el documento ya no trae se eliminan con `ChunkRepository.remove`; un chunk almacenado que llega más allá de `V`, por `valid_from` o por `valid_until`, prueba que ya hay un snapshot más nuevo y aborta con `OutOfOrderSnapshotError`; los chunks de otras identidades no se tocan. Un documento que describe una identidad en dos versiones aborta con `MixedSnapshotVersionError`. Toda la validación corre antes de la primera escritura, así que un documento rechazado deja el corpus intacto; después se escribe el upsert (nuevos, cambiados y rangos cerrados) y al final la eliminación. Un documento ya ingestado no reescribe nada, reporta sus chunks como `skipped`, y el reporte cuenta los rangos cerrados (`closed`) y los chunks eliminados (`removed`).
 
 Las notas de parche son la primera fuente implementada; el modelo de vigencia que usan se registra en §10.1.
 
@@ -180,14 +181,12 @@ mapean a `Modifier`; un rango como `(1—11)` conserva su texto porque tiene dos
 es una sola sección `levels` (41 líneas en la página observada): el índice denso la reportará truncada y el
 léxico la leerá completa, la deuda visible de ADR-0004.
 
-Dos límites quedan como deuda explícita. `PatchCatalog` no expone fechas de publicación (`TomlPatchCatalog`
-valida `released_on` y la descarta), así que la vigencia de un snapshot usa `catalog.current()` en vez de
-"la última release en o antes de `fetched_at`". Y como `chunk_id` no incluye el documento y `IngestSource`
-solo hace upsert, ingerir un snapshot nuevo después de subir el parche deja dos versiones abiertas de la
-misma entidad (`valid_until=None`) en vez de cerrar la anterior; cerrarla exige un puerto con alcance de
-documento, fuera de este corte. Por la misma razón, una captura cacheada reingerida después de subir el
-parche se marca con el parche nuevo aunque sus valores sean del anterior: `--refresh` después de cambiar
-el catálogo es la mitigación operativa hasta que el puerto exponga las fechas.
+La vigencia de un snapshot sale de su fecha de captura: `PatchCatalog.current_at(fetched_at)` con
+`fetched_at` normalizado a fecha UTC, y un `fetched_at` sin zona se rechaza en vez de adivinar el huso
+horario. La página es el snapshot completo de su entidad, así que la supersesión del paso 6 aplica sin
+cambios: ingerir una página nueva cierra el rango anterior en el parche nuevo y elimina las secciones que la
+página ya no tiene en esa versión. Una captura cacheada conserva su `fetched_at`, así que reingerirla
+después de subir el parche la sigue fechando en el parche bajo el que se capturó.
 
 ### 5.3 Flujo de `ReindexCorpus`
 
@@ -444,6 +443,9 @@ Una nota de parche **es su propia entidad**, no una transición aplicada a chunk
 - `EntityRef(kind="patch_notes", slug="<major>-<minor>-<patch>", name="Patch <version>")`;
 - un `Chunk` por sección de primer nivel del hilo (`section` = slug del encabezado);
 - `Validity(valid_from=<parche detectado>, valid_until=None)`: un cambio es un hecho desde ese parche en adelante.
+
+El slug de la entidad lleva la versión, así que dos notas de parches consecutivos son identidades distintas
+y la supersesión de §5.2 nunca cierra una nota con la siguiente.
 
 Aplicar las notas como transiciones que cierran el `valid_until` de chunks de gemas exige primero los datos
 completos de cada gema en poe2db; la fuente poe2db ya está implementada (§5.2), pero el modelado de

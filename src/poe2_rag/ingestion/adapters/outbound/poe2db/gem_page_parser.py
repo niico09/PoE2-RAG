@@ -15,17 +15,18 @@ that is not an absolute http(s) URL is rejected instead of inventing one. Text i
 `<br>` as a space and whitespace collapsed, which keeps the page's exact numbers and wording while
 removing formatting spaces the browser does not show.
 
-`valid_from` is the catalog version current when the document is ingested. The page carries no patch
-version, so a cached capture ingested after a patch bump is labelled with the newer patch even though
-its values were captured under the older one. Making that exact requires a date-indexed
-`PatchCatalog` lookup, which the port does not expose; the limit is recorded in the feature Log, not
-papered over here.
+`valid_from` is the patch the catalog says was current at the capture instant:
+`current_at(captured_on)`, where `captured_on` is `fetched_at` normalized to a UTC date. The page
+carries no patch version, so the capture time is the only evidence available; a naive `fetched_at` is
+rejected instead of guessing a timezone, and a capture older than the first known release raises
+`PatchNotReleasedError` rather than inventing an earlier patch.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -77,6 +78,10 @@ class MissingPageUrlError(Poe2dbParseError):
     """Raised when the locator is not the absolute page URL `SourceRef` needs."""
 
 
+class NaiveFetchedAtError(Poe2dbParseError):
+    """Raised when the capture time has no timezone, so its UTC day cannot be known."""
+
+
 class EmptyGemPageError(Poe2dbParseError):
     """Raised when a gem page has a name but no content this parser can turn into a chunk."""
 
@@ -90,13 +95,14 @@ class Poe2dbGemPageParser:
         self._catalog = catalog
 
     def parse(self, raw: RawDocument) -> tuple[Chunk, ...]:
-        """Parse one gem page, valid from the catalog's current patch onwards (S4)."""
+        """Parse one gem page, valid from the patch current at the capture instant onwards (S4)."""
         if raw.source_type != _SOURCE_TYPE:
             raise Poe2dbSourceTypeError(
                 f"the parser handles {_SOURCE_TYPE!r}, got {raw.source_type!r}"
             )
         if is_blank(raw.content):
             raise Poe2dbParseError("document is blank")
+        captured_on = _capture_date(raw.fetched_at)
         url = _page_url(raw.locator)
 
         soup = BeautifulSoup(raw.content, "html.parser")
@@ -107,8 +113,8 @@ class Poe2dbGemPageParser:
         kind = _gem_kind(popup)
 
         entity = EntityRef(kind, _slugify(name), name)
-        validity = Validity(self._catalog.current())
-        source = SourceRef(_SOURCE_TYPE, url, raw.fetched_at.date())
+        validity = Validity(self._catalog.current_at(captured_on))
+        source = SourceRef(_SOURCE_TYPE, url, captured_on)
         sections = _sections(popup)
         if not _has_core_sections(sections):
             raise EmptyGemPageError(
@@ -118,6 +124,21 @@ class Poe2dbGemPageParser:
             Chunk(entity, validity, section, text, source, tags, modifiers)
             for section, text, tags, modifiers in sections
         )
+
+
+def _capture_date(fetched_at: datetime) -> date:
+    """Return the UTC day `fetched_at` fell on, rejecting a naive instant instead of guessing a zone.
+
+    A `datetime` without a timezone cannot be converted: assuming UTC or the machine's local zone
+    would move the capture across a release boundary and label the page with the wrong patch. The
+    exception includes the offset, which the fetcher asserts is present before it reaches here.
+    """
+    if fetched_at.tzinfo is None or fetched_at.utcoffset() is None:
+        raise NaiveFetchedAtError(
+            f"fetched_at must be timezone-aware, got {fetched_at!r}: "
+            "the capture day decides which patch the page is valid from"
+        )
+    return fetched_at.astimezone(UTC).date()
 
 
 def _page_url(locator: str) -> str:

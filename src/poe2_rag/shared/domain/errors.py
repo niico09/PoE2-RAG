@@ -31,5 +31,11 @@ class InvalidChunkError(DomainError):
 
 
 class InvalidPatchCatalogError(DomainError):
-    """Raised when a patch catalog is empty, repeats a version, declares an unknown current patch
-    or holds a value that is not a `PatchVersion`."""
+    """Raised when a patch catalog is empty, repeats a version, declares an unknown current patch,
+    holds a value that is not a `PatchRelease` or stores release dates that do not strictly increase
+    with the versions."""
+
+
+class PatchNotReleasedError(DomainError):
+    """Raised when a date precedes every release in the catalog, so no patch was current then."""
+

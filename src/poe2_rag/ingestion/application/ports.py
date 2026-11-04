@@ -77,6 +77,17 @@ class ChunkRepository(Protocol):
         """
         ...
 
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        """Drop the chunks named by `chunk_ids`, keeping every other stored chunk untouched.
+
+        An id that is not stored is ignored, so retrying after a partial failure is safe, and an
+        empty sequence is a no-op. This method exists instead of a delete capability on `save`
+        because `save` promises to upsert and never to delete (interface segregation): a caller
+        that has to drop a chunk says so explicitly, and an implementation replaces the corpus in
+        one atomic step, like `save` does.
+        """
+        ...
+
     def all(self) -> Sequence[Chunk]:
         """Return every stored chunk once, in insertion order."""
         ...

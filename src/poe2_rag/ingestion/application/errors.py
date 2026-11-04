@@ -41,6 +41,24 @@ class ChunkIdentityConflictError(IngestionError):
     """
 
 
+class OutOfOrderSnapshotError(IngestionError):
+    """Raised when a document is older than a version already stored for one of its entities (D1).
+
+    Supersession closes the stored open range at the incoming version, so ingesting an older
+    snapshot would open a range that overlaps the newer one. The run stops before the first write:
+    the corpus keeps the newer snapshot and nothing is closed or removed.
+    """
+
+
+class MixedSnapshotVersionError(IngestionError):
+    """Raised when one document describes one entity at two patch versions.
+
+    Supersession derives the snapshot version per identity, so a document that carried two would
+    leave both open-ended and silently break "one version of an entity per patch". The run stops
+    before anything is written instead of guessing which version the document means.
+    """
+
+
 class EmptyCorpusError(IngestionError):
     """Raised when a reindex runs over a corpus with no chunks (driver D1).
 

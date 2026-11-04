@@ -1,7 +1,14 @@
+from datetime import date
+
 import pytest
 
 from poe2_rag.answering.domain import InvalidQueryError, Query
-from poe2_rag.shared.domain import DomainError, InMemoryPatchCatalog, PatchVersion
+from poe2_rag.shared.domain import (
+    DomainError,
+    InMemoryPatchCatalog,
+    PatchRelease,
+    PatchVersion,
+)
 
 
 def v(raw: str) -> PatchVersion:
@@ -9,7 +16,12 @@ def v(raw: str) -> PatchVersion:
 
 
 def catalog(*raw_versions: str, current: str = "0.1.1") -> InMemoryPatchCatalog:
-    return InMemoryPatchCatalog([v(raw) for raw in raw_versions], v(current))
+    ordered = sorted(v(raw) for raw in raw_versions)
+    releases = [
+        PatchRelease(version, date(2025, 1, 17 + index))
+        for index, version in enumerate(ordered)
+    ]
+    return InMemoryPatchCatalog(releases, v(current))
 
 
 class SpyCatalog:
@@ -22,6 +34,10 @@ class SpyCatalog:
     def current(self) -> PatchVersion:
         self.calls += 1
         return self._wrapped.current()
+
+    def current_at(self, day: date) -> PatchVersion:
+        self.calls += 1
+        return self._wrapped.current_at(day)
 
     def known(self) -> tuple[PatchVersion, ...]:
         self.calls += 1

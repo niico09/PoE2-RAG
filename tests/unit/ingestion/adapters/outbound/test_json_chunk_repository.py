@@ -171,6 +171,70 @@ class TestAtomicWrite:
             JsonChunkRepository(tmp_path).save((make_chunk(),))
 
 
+class TestRemoval:
+    def test_removes_a_stored_chunk_and_keeps_the_rest(self, tmp_path: Path) -> None:
+        removed = make_chunk("general-changes")
+        kept = make_chunk("skill-changes")
+        repository = JsonChunkRepository(tmp_path)
+        repository.save((removed, kept))
+
+        repository.remove((removed.chunk_id,))
+
+        assert JsonChunkRepository(tmp_path).all() == (kept,)
+
+    def test_a_failed_replace_keeps_the_previous_corpus(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repository = JsonChunkRepository(tmp_path)
+        removed = make_chunk("general-changes")
+        kept = make_chunk("skill-changes")
+        repository.save((removed, kept))
+        before = repository.path.read_bytes()
+
+        def fail_replace(source: object, target: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr("os.replace", fail_replace)
+
+        with pytest.raises(ChunkRepositoryWriteError):
+            repository.remove((removed.chunk_id,))
+
+        assert repository.path.read_bytes() == before
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["chunks.json"]
+
+    def test_removing_nothing_does_not_create_the_file(self, tmp_path: Path) -> None:
+        repository = JsonChunkRepository(tmp_path / "absent")
+
+        repository.remove(())
+
+        assert not (tmp_path / "absent" / "chunks.json").exists()
+
+    def test_an_unknown_id_does_not_rewrite_the_corpus(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repository = JsonChunkRepository(tmp_path)
+        repository.save((make_chunk(),))
+        writes: list[object] = []
+
+        def record_write(self: JsonChunkRepository, payload: dict[str, Any]) -> None:
+            writes.append(payload)
+
+        monkeypatch.setattr(JsonChunkRepository, "_write", record_write)
+
+        repository.remove(("patch_notes:patch_notes:missing@0.1.0#nope",))
+
+        assert writes == []
+
+    def test_a_read_failure_stops_a_removal(self, tmp_path: Path) -> None:
+        path = tmp_path / "chunks.json"
+        path.write_text("{not json", encoding="utf-8")
+
+        with pytest.raises(ChunkRepositoryLoadError):
+            JsonChunkRepository(tmp_path).remove((make_chunk().chunk_id,))
+
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+
 class TestErrors:
     def test_load_and_write_errors_are_environment_failures(self) -> None:
         assert issubclass(ChunkRepositoryLoadError, RuntimeError)

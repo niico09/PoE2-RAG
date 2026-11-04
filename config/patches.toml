@@ -4,7 +4,10 @@
 # derived "is current" flag, they store a validity range. It must be one of the
 # patches listed below, and no version may be repeated.
 #
-# Release dates are recorded for humans; the PatchCatalog port only exposes versions.
+# `released_on` is part of the model, not a comment for humans: `PatchCatalog.current_at(day)`
+# answers which patch was current on a given day, which is how a snapshot that carries no patch
+# version (a poe2db page) is dated. Every patch needs one, and the dates must strictly increase with
+# the versions.
 
 current = "0.1.1"
 

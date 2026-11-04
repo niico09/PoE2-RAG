@@ -85,6 +85,27 @@ class JsonChunkRepository:
         }
         self._write(payload)
 
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        """Drop `chunk_ids` from the corpus in one atomic replacement.
+
+        An empty sequence is a no-op, like `save`. Ids that are not stored are ignored, and a call
+        that would drop nothing does not rewrite the file, so a retry cannot churn the corpus. A read
+        failure stops the removal, because rewriting a corpus that could not be decoded would drop
+        every other stored chunk.
+        """
+        if not chunk_ids:
+            return
+        doomed = set(chunk_ids)
+        stored = self.all()
+        surviving = tuple(chunk for chunk in stored if chunk.chunk_id not in doomed)
+        if len(surviving) == len(stored):
+            return
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "chunks": [_dump_chunk(chunk) for chunk in surviving],
+        }
+        self._write(payload)
+
     def all(self) -> tuple[Chunk, ...]:
         """Return every chunk stored in the file, or nothing when the file does not exist yet."""
         if not self._path.exists():

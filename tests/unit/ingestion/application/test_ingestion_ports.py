@@ -54,6 +54,9 @@ class InlineRepository:
     def save(self, chunks: Sequence[Chunk]) -> None:
         return None
 
+    def remove(self, chunk_ids: Sequence[str]) -> None:
+        return None
+
     def all(self) -> Sequence[Chunk]:
         return ()
 
@@ -178,6 +181,18 @@ class TestProtocols:
                 return None
 
         assert not isinstance(OnlySave(), ChunkRepository)
+
+    def test_a_repository_that_cannot_remove_is_not_the_port(self) -> None:
+        """Removal is its own capability: upsert and read alone do not make a `ChunkRepository`."""
+
+        class NoRemove:
+            def save(self, chunks: Sequence[Chunk]) -> None:
+                return None
+
+            def all(self) -> Sequence[Chunk]:
+                return ()
+
+        assert not isinstance(NoRemove(), ChunkRepository)
 
 
 class TestErrors:

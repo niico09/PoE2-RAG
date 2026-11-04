@@ -96,7 +96,8 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
   and `+N X` become `Modifier`; a range such as `Adds 1 to 12 Lightning Damage` keeps its exact text
   and stays out of the structured tuple, because collapsing two numbers into one `value` would
   falsify it.
-- **D3 — Validity uses `catalog.current()`.** `PatchCatalog` exposes `current()`, `known()` and
+- **D3 — Validity uses `catalog.current()`.** (Superseded by `odd/tasks/snapshot-supersession.md`
+  S1-S2/T2-T3: the port now exposes release dates and `current_at(day)`.) `PatchCatalog` exposes `current()`, `known()` and
   `contains()` only; `TomlPatchCatalog` validates `released_on` and then discards it. There is no
   date-indexed history to ask, so the nearest faithful answer for a fresh fetch is the current
   version, and that is what the parser injects. The deviation and the overlap gap are recorded in
@@ -437,6 +438,10 @@ no date-indexed lookup. `shared/adapters/outbound/toml_patch_catalog.py` validat
 `catalog.current()` (D3). The correct fix is a port change (a release-date-aware lookup), which S15
 forbids here; it is reported instead of patched.
 
+**Closed** by `odd/tasks/snapshot-supersession.md` (S1, T2): release dates are part of the catalog model
+(`PatchRelease`), `PatchCatalog` exposes `current_at(day)`, `TomlPatchCatalog` requires `released_on`, and
+the poe2db parser dates a snapshot with `current_at(fetched_at)` normalized to a UTC date (S2, T3).
+
 ### L4 — The validity-overlap gap exists
 
 `IngestSource` (`ingestion/application/ingest_source.py`) validates and then upserts by `chunk_id`;
@@ -448,6 +453,12 @@ own patch onwards. No code closes the older range, and the parser cannot see sto
 the gap S4 predicts; it is reported, not patched (S15). Consequence: until a document-scoped port
 exists, refresh after a patch bump adds a second open-ended version instead of superseding the
 first.
+
+**Closed** by `odd/tasks/snapshot-supersession.md` (S3-S5, T4-T6): `IngestSource` compares both sides by
+snapshot identity `(source.type, entity.key)`, closes the stored open range at the incoming version,
+removes the sections the document no longer has at that version through the new `ChunkRepository.remove`,
+rejects an out-of-order snapshot before writing, and reports `closed`/`removed`. No entity holds two
+overlapping versions, and neither the corpus format nor `chunk_id` changed.
 
 ### L5 — httpx2 in the dev group only
 

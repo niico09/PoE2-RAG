@@ -21,19 +21,61 @@ from poe2_rag.ingestion.application import (
     DuplicateChunkIdError,
     IngestReport,
     IngestSource,
+    MixedSnapshotVersionError,
+    OutOfOrderSnapshotError,
     UnknownPatchError,
 )
-from poe2_rag.shared.domain import Chunk, InMemoryPatchCatalog, PatchVersion, SourceRef
+from poe2_rag.shared.domain import (
+    Chunk,
+    EntityRef,
+    InMemoryPatchCatalog,
+    PatchCatalog,
+    PatchRelease,
+    PatchVersion,
+    SourceRef,
+    Validity,
+)
 
 CATALOG = InMemoryPatchCatalog(
-    [PatchVersion.parse("0.1.0"), PatchVersion.parse("0.1.1")],
+    [
+        PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
+        PatchRelease(PatchVersion.parse("0.1.1"), date(2025, 1, 17)),
+    ],
     PatchVersion.parse("0.1.1"),
 )
 LOCATOR = "data/raw/patch-notes-0.1.0.html"
+GEM_URL = "https://poe2db.tw/us/Spark"
+
+
+def gem_chunk(
+    section: str = "description",
+    version: str = "0.1.0",
+    *,
+    slug: str = "spark",
+    name: str = "Spark",
+    text: str | None = None,
+) -> Chunk:
+    """One poe2db section of a stable entity, so two versions of it share one identity."""
+    parsed = PatchVersion.parse(version)
+    return Chunk(
+        entity=EntityRef("active_gem", slug, name),
+        validity=Validity(parsed),
+        section=section,
+        text=f"{name} {section} at {parsed}." if text is None else text,
+        source=SourceRef("poe2db", GEM_URL, date(2026, 11, 1)),
+    )
+
+
+def closed_at(chunk: Chunk, version: str) -> Chunk:
+    """Return `chunk` with its open range closed at `version`, the copy supersession must store."""
+    return replace(chunk, validity=Validity(chunk.validity.valid_from, PatchVersion.parse(version)))
 
 
 def build_source(
-    chunks: Sequence[Chunk] = (), stored: Sequence[Chunk] = ()
+    chunks: Sequence[Chunk] = (),
+    stored: Sequence[Chunk] = (),
+    *,
+    catalog: PatchCatalog = CATALOG,
 ) -> tuple[IngestSource, CallRecorder, FakeChunkRepository]:
     """Wire the use case over fakes, sharing one journal so the whole order is observable."""
     recorder = CallRecorder()
@@ -42,7 +84,7 @@ def build_source(
         fetcher=FakeSourceFetcher(recorder),
         parser=FakeDocumentParser(recorder, chunks),
         repository=repository,
-        catalog=CATALOG,
+        catalog=catalog,
     )
     return ingest, recorder, repository
 
@@ -237,3 +279,178 @@ class TestErrors:
         from poe2_rag.ingestion.application import IngestionError
 
         assert issubclass(ChunkIdentityConflictError, IngestionError)
+
+class TestSupersession:
+    def test_a_first_snapshot_closes_and_removes_nothing(self) -> None:
+        chunk = gem_chunk()
+        ingest, recorder, repository = build_source([chunk])
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed) == (0, 0)
+        assert repository.all() == (chunk,)
+        assert "remove" not in recorder.kinds()
+
+    def test_a_newer_snapshot_closes_the_previous_open_range(self) -> None:
+        previous = gem_chunk("description", "0.1.0")
+        fresh = gem_chunk("description", "0.1.1")
+        ingest, recorder, repository = build_source([fresh], stored=[previous])
+
+        report = ingest.execute(LOCATOR)
+
+        closed = closed_at(previous, "0.1.1")
+        assert (report.closed, report.removed) == (1, 0)
+        assert closed.chunk_id == previous.chunk_id
+        assert recorder.arguments("save") == [((fresh, closed),)]
+        assert repository.all() == (closed, fresh)
+
+    def test_the_same_snapshot_again_is_a_noop(self) -> None:
+        previous = gem_chunk("description", "0.1.0")
+        current = gem_chunk("description", "0.1.1")
+        ingest, recorder, repository = build_source([current], stored=[previous])
+        ingest.execute(LOCATOR)
+        recorder.calls.clear()
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed, report.skipped) == (0, 0, 1)
+        assert "save" not in recorder.kinds()
+        assert "remove" not in recorder.kinds()
+        assert repository.all() == (closed_at(previous, "0.1.1"), current)
+
+    def test_a_section_removed_at_the_same_version_is_removed(self) -> None:
+        description = gem_chunk("description", "0.1.1")
+        levels = gem_chunk("levels", "0.1.1")
+        ingest, recorder, repository = build_source([description], stored=[description, levels])
+
+        report = ingest.execute(LOCATOR)
+
+        assert report.removed == 1
+        assert recorder.arguments("remove") == [((levels.chunk_id,),)]
+        assert "save" not in recorder.kinds()
+        assert repository.all() == (description,)
+
+    def test_an_older_snapshot_is_rejected_and_writes_nothing(self) -> None:
+        stored = gem_chunk("description", "0.1.1")
+        older = gem_chunk("description", "0.1.0")
+        ingest, recorder, repository = build_source([older], stored=[stored])
+
+        with pytest.raises(OutOfOrderSnapshotError) as exc_info:
+            ingest.execute(LOCATOR)
+
+        message = str(exc_info.value)
+        assert "0.1.0" in message
+        assert "0.1.1" in message
+        assert recorder.kinds() == ["fetch", "parse", "all"]
+        assert repository.all() == (stored,)
+
+    def test_an_older_snapshot_cannot_overlap_a_range_that_reaches_past_it(self) -> None:
+        """A closed `[0.1.0, 0.2.0)` proves the entity was captured at 0.2.0 already."""
+        catalog = InMemoryPatchCatalog(
+            [
+                PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
+                PatchRelease(PatchVersion.parse("0.1.1"), date(2025, 1, 17)),
+                PatchRelease(PatchVersion.parse("0.2.0"), date(2025, 3, 1)),
+            ],
+            PatchVersion.parse("0.2.0"),
+        )
+        stored = closed_at(gem_chunk("description", "0.1.0"), "0.2.0")
+        older = gem_chunk("description", "0.1.1")
+        ingest, recorder, repository = build_source([older], stored=[stored], catalog=catalog)
+
+        with pytest.raises(OutOfOrderSnapshotError):
+            ingest.execute(LOCATOR)
+
+        assert "save" not in recorder.kinds()
+        assert repository.all() == (stored,)
+
+    def test_two_entities_from_one_document_are_both_superseded(self) -> None:
+        old_spark = gem_chunk("description", "0.1.0")
+        old_cascade = gem_chunk("description", "0.1.0", slug="glacial-cascade", name="Glacial Cascade")
+        new_spark = gem_chunk("description", "0.1.1")
+        new_cascade = gem_chunk(
+            "description", "0.1.1", slug="glacial-cascade", name="Glacial Cascade"
+        )
+        ingest, _, repository = build_source(
+            [new_spark, new_cascade], stored=[old_spark, old_cascade]
+        )
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed) == (2, 0)
+        stored = repository.all()
+        assert closed_at(old_spark, "0.1.1") in stored
+        assert closed_at(old_cascade, "0.1.1") in stored
+        assert len(stored) == 4
+
+    def test_an_entity_the_document_does_not_mention_is_untouched(self) -> None:
+        other = gem_chunk("description", "0.1.0", slug="ice-nova", name="Ice Nova")
+        previous = gem_chunk("description", "0.1.0")
+        ingest, _, repository = build_source(
+            [gem_chunk("description", "0.1.1")], stored=[previous, other]
+        )
+
+        ingest.execute(LOCATOR)
+
+        assert other in repository.all()
+        assert other.validity.valid_until is None
+
+    def test_patch_notes_of_consecutive_versions_do_not_close_each_other(self) -> None:
+        older = make_chunk("general-changes", "0.1.0")
+        newer = make_chunk("general-changes", "0.1.1")
+        ingest, recorder, repository = build_source([newer], stored=[older])
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed) == (0, 0)
+        assert "remove" not in recorder.kinds()
+        assert repository.all() == (older, newer)
+        assert repository.all()[0].validity.valid_until is None
+
+    def test_one_document_cannot_hold_two_versions_of_one_entity(self) -> None:
+        first = gem_chunk("description", "0.1.0")
+        second = gem_chunk("levels", "0.1.1")
+        ingest, recorder, repository = build_source([first, second])
+
+        with pytest.raises(MixedSnapshotVersionError) as exc_info:
+            ingest.execute(LOCATOR)
+
+        assert "active_gem:spark" in str(exc_info.value)
+        assert "save" not in recorder.kinds()
+        assert repository.all() == ()
+
+    def test_the_snapshot_version_is_the_parsed_one_not_the_catalog_current(self) -> None:
+        previous = gem_chunk("description", "0.1.0")
+        ingest, _, repository = build_source([gem_chunk("description", "0.1.0")], stored=[previous])
+
+        report = ingest.execute(LOCATOR)
+
+        assert report.skipped == 1
+        assert report.closed == 0
+        assert repository.all() == (previous,)
+        assert repository.all()[0].validity.valid_until is None
+
+
+class TestValidityInvariant:
+    def test_exactly_one_version_of_the_entity_is_valid_at_every_known_patch(self) -> None:
+        sections = ("description", "levels")
+        first = tuple(gem_chunk(section, "0.1.0") for section in sections)
+        second = tuple(gem_chunk(section, "0.1.1") for section in sections)
+        ingest, _, repository = build_source(second, stored=first)
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed) == (2, 0)
+        corpus = tuple(
+            chunk for chunk in repository.all() if chunk.entity.key == "active_gem:spark"
+        )
+        assert len(corpus) == 4
+        for version in CATALOG.known():
+            for section in sections:
+                valid = [
+                    chunk
+                    for chunk in corpus
+                    if chunk.section == section and chunk.is_valid_at(version)
+                ]
+                assert len(valid) == 1
+                assert valid[0].validity.valid_from == version
