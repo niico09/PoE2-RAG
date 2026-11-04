@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cli_fakes import FailingContainer, FakeContainer
+from cli_fakes import FailingContainer, FakeContainer, FakeEvaluationRunner
 
+from poe2_rag.answering.adapters.inbound.cli import AnswerQuestionRunner
 from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
     VectorIndexWriteError,
 )
@@ -26,8 +27,43 @@ from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
 from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.cli import main
 from poe2_rag.config import ConfigurationError, MissingApiKeyError
+from poe2_rag.evaluation.application import (
+    DatasetDriftError,
+    EvaluationRequest,
+    InvalidEvaluationRequestError,
+)
+from poe2_rag.ingestion.adapters.inbound.cli import (
+    IngestSourceRunner,
+    ReindexCorpusRunner,
+)
 from poe2_rag.ingestion.application import EmptyCorpusError
 from poe2_rag.shared.domain import PatchVersion
+
+
+class EvalOnlyContainer:
+    """A container whose only working runner is the evaluation one.
+
+    `eval` must not reach the other three capabilities, so each of them explodes: a command that asks
+    for one fails instead of passing by inertia. Providing them (instead of omitting them) is what
+    keeps the fake assignable to `CliContainer` without a cast.
+    """
+
+    expected_errors = FakeContainer.expected_errors
+
+    def __init__(self, evaluation: FakeEvaluationRunner | None = None) -> None:
+        self.evaluation = evaluation or FakeEvaluationRunner()
+
+    @property
+    def ingest_source(self) -> IngestSourceRunner:  # pragma: no cover - must not be reached
+        raise AssertionError("`eval` must not ask for the ingest runner")
+
+    @property
+    def reindex_corpus(self) -> ReindexCorpusRunner:  # pragma: no cover - must not be reached
+        raise AssertionError("`eval` must not ask for the reindex runner")
+
+    @property
+    def answer_question(self) -> AnswerQuestionRunner:  # pragma: no cover - must not be reached
+        raise AssertionError("`eval` must not ask for the generation runner")
 
 
 def test_ingest_runs_source_and_reindex_with_locator() -> None:
@@ -415,3 +451,106 @@ class _StubClient:
 def _stub_client() -> Any:
     """Build the stub through a factory, the way the composition root asks for a client."""
     return _StubClient()
+
+
+def test_eval_dispatches_the_parsed_options() -> None:
+    """`--dataset`, `--k` and `--output-dir` reach the use case as one request, in K order."""
+    container = EvalOnlyContainer()
+
+    result = main(
+        ["eval", "--dataset", "eval/other.jsonl", "--k", "5,1", "--output-dir", "runs"],
+        container=container,
+    )
+
+    assert result == 0
+    assert container.evaluation.requests == [
+        EvaluationRequest(
+            dataset=Path("eval/other.jsonl"), ks=(1, 5), output_dir=Path("runs")
+        )
+    ]
+
+
+def test_eval_without_options_leaves_the_defaults_to_the_wiring() -> None:
+    """The command passes `None` through: the configured dataset and runs directory win."""
+    container = EvalOnlyContainer()
+
+    assert main(["eval"], container=container) == 0
+    request = container.evaluation.requests[0]
+    assert request.dataset is None
+    assert request.output_dir is None
+    assert request.ks == (1, 3, 5)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["0", "-1", "1,one", "1,1", "", "1_0", "+5", "1.0"],
+    ids=["zero", "negative", "word", "repeated", "blank", "underscore", "sign", "float"],
+)
+def test_a_malformed_k_is_a_usage_error(raw: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """A K that cannot produce a metric column is the user mistyping the command: exit 2."""
+    container = EvalOnlyContainer()
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["eval", "--k", raw], container=container)
+
+    assert exc_info.value.code == 2
+    assert "K" in capsys.readouterr().err
+    assert container.evaluation.requests == []
+
+
+def test_eval_help_lists_its_options(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["eval", "--help"])
+
+    assert exc_info.value.code == 0
+    printed = capsys.readouterr().out
+    assert "usage: poe2-rag eval" in printed
+    assert "--dataset" in printed
+    assert "--k" in printed
+    assert "--output-dir" in printed
+
+
+def test_an_evaluation_failure_prints_one_line_and_exits_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A drifted dataset is an expected failure of the command: one line, exit 1, no traceback."""
+    container = EvalOnlyContainer(
+        FakeEvaluationRunner(
+            DatasetDriftError(
+                "eval/dataset.jsonl names 1 chunk id(s) the corpus does not have: poe2db:x"
+            )
+        )
+    )
+
+    assert main(["eval"], container=container) == 1
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("error: ")
+    assert "poe2db:x" in lines[0]
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+def test_eval_never_asks_the_generation_half(capsys: pytest.CaptureFixture[str]) -> None:
+    """S7: the command runs against retrieval only, so no credential and no client are needed."""
+    container = EvalOnlyContainer()
+
+    assert main(["eval"], container=container) == 0
+    assert "Retrieval evaluation: 1 cases (1 answerable, 0 unanswerable)" in capsys.readouterr().out
+
+
+def test_a_k_beyond_the_delivered_top_k_prints_one_line_and_exits_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only the use case knows `final_top_k`, so an oversized K is an expected failure, not usage."""
+    container = EvalOnlyContainer(
+        FakeEvaluationRunner(InvalidEvaluationRequestError("K 10 is beyond the 5 chunks"))
+    )
+
+    assert main(["eval", "--k", "10"], container=container) == 1
+    captured = capsys.readouterr()
+    assert len(captured.err.splitlines()) == 1
+    assert captured.err.startswith("error: ")
+    assert "beyond the 5 chunks" in captured.err
+    assert captured.out == ""

@@ -23,6 +23,10 @@ from poe2_rag.answering.application.ports import (
     Reranker,
     VectorIndex,
 )
+from poe2_rag.answering.application.retrieve_context import (
+    RetrievalResult,
+    RetrieveContext,
+)
 from poe2_rag.answering.application.settings import RetrievalSettings
 
 __all__ = [
@@ -40,7 +44,9 @@ __all__ = [
     "MissingScoreError",
     "NO_INFORMATION_TEXT",
     "Reranker",
+    "RetrievalResult",
     "RetrievalSettings",
+    "RetrieveContext",
     "StaleChunkError",
     "UnretrievedChunkError",
     "VectorIndex",

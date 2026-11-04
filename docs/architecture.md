@@ -10,9 +10,10 @@
 > Okapi, el embedder local `bge-base-en-v1.5` y el índice vectorial sobre Chroma embebido, el reranker
 > cross-encoder y el adaptador de Claude con citas nativas, todos probados con fakes, con un embedder
 > determinista y, de punta a punta, sobre el repositorio JSON del corpus. La configuración (`config.py`), el
-> composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI de [ADR-0006](adr/0006-cli-como-interfaz.md)
-> cierran el recorrido de §5. Todavía no: el adaptador de poe2wiki.net, el comando `eval` y la evaluación
-> de §8.
+> composition root (`bootstrap.py`) y los comandos `ingest`, `ask` y `eval` de la CLI de
+> [ADR-0006](adr/0006-cli-como-interfaz.md) cierran el recorrido de §5: `eval` implementa la mitad de
+> recuperación de la evaluación de §8 (Hit@K, MRR y tasa de recuperación obsoleta, §5.6) a costo cero de
+> API. Todavía no: el adaptador de poe2wiki.net y la evaluación de generación.
 > Las decisiones se registran como ADR en [`docs/adr/`](adr/). Pendiente antes de implementar el adaptador de poe2wiki.net: una vía de acceso autorizada ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)).
 
 ---
@@ -137,12 +138,14 @@ El esquema actual del README tiene dos problemas de diseño:
 |---|---|---|
 | `IngestSource` | Ingesta | Identificador de fuente → chunks persistidos en `data/processed/` |
 | `ReindexCorpus` | Ingesta | Corpus procesado → índices reconstruidos (el léxico y el denso) |
-| `AnswerQuestion` | Consulta | `(texto, versión)` → `AnswerResult`: `Answer` con citas + chunks entregados |
-| `RunEvaluation` | Evaluación | Dataset de evaluación → reporte de métricas |
+| `RetrieveContext` | Consulta | `(texto, versión)` → `RetrievalResult`: parche objetivo + chunks entregados, en el orden exacto que usa la generación |
+| `AnswerQuestion` | Consulta | `(texto, versión)` → `AnswerResult`: `Answer` con citas + chunks entregados; delega la recuperación en `RetrieveContext` |
+| `RunEvaluation` | Evaluación | Dataset de evaluación → reporte de métricas de recuperación |
 
-La CLI de [ADR-0006](adr/0006-cli-como-interfaz.md) es el **adaptador de entrada** de los tres primeros:
-`ingest <fuente> <ruta>` encadena `IngestSource` y `ReindexCorpus`, y `ask "<pregunta>" [--patch <versión>]`
-llama a `AnswerQuestion`. No contiene lógica de negocio: traduce argumentos, presenta el resultado y traduce
+La CLI de [ADR-0006](adr/0006-cli-como-interfaz.md) es el **adaptador de entrada** de esos casos de uso:
+`ingest <fuente> <ruta>` encadena `IngestSource` y `ReindexCorpus`, `ask "<pregunta>" [--patch <versión>]`
+llama a `AnswerQuestion` y `eval [--dataset <ruta>] [--k 1,3,5] [--output-dir <ruta>]` llama a
+`RunEvaluation`. No contiene lógica de negocio: traduce argumentos, presenta el resultado y traduce
 los errores esperados a una línea y un código de salida. `config.py` resuelve la configuración desde el
 entorno y `bootstrap.py` es el composition root: el único módulo que arma los adaptadores (§7).
 
@@ -289,6 +292,57 @@ El adaptador `ChromaVectorIndex` escribe y lee una colección de Chroma embebido
 
 ---
 
+### 5.6 Flujo de `RetrieveContext` y `RunEvaluation`
+
+La recuperación es su propio caso de uso (`RetrieveContext`): resuelve la versión objetivo, embebe la
+consulta, busca en los dos índices, fusiona, rerordena y valida cada etapa. `AnswerQuestion` delega en
+él y después genera, así que el comportamiento del camino de lectura no cambia y la mitad determinista
+se puede medir sola (ADR-0005). `RunEvaluation` depende **solo** de `RetrieveContext`, nunca de
+`LanguageModel`: por eso `eval` no construye el cliente de Anthropic ni necesita `ANTHROPIC_API_KEY`.
+
+1. **Dataset fijo.** JSONL con una línea por caso y un `schema_version` por línea; el formato y su
+   semántica están documentados en [`eval/README.md`](../eval/README.md). Campos: `id` (slug único),
+   `question`, `patch` opcional (sin él rige la política de parche por defecto), `expected_chunk_ids`
+   (una lista vacía significa "el corpus no responde a esto"), `expected_answer` (texto libre que
+   todavía no se usa y queda para la etapa de generación) y `tags`. Una línea inválida aborta la
+   corrida con su número de línea: un error silencioso sería un caso que miente sobre lo que mide.
+   El dataset no se escribe en esta capacidad; el ejemplo contra las fixtures commiteadas
+   (`eval/dataset.example.jsonl`) es el que usan los tests de integración.
+2. **Contra el corpus actual.** Antes de recuperar nada, cada `expected_chunk_id` se busca en el
+   corpus (`ChunkRepository.all`). Un id desconocido aborta con `DatasetDriftError` y la lista
+   completa: un dataset que ya no describe el corpus no produce números comparables con una corrida
+   anterior, así que no se evalúa nada. Esto también ata el dataset al parche del corpus, porque
+   `chunk_id` incluye la versión desde la que el chunk es vigente.
+3. **Una recuperación por caso, sin modelo.** Cada caso se evalúa con `RetrieveContext.execute`,
+   exactamente igual que una pregunta real; la corrida es determinista y no cuesta tokens.
+4. **Métricas sobre los casos respondibles** (`expected_chunk_ids` no vacío):
+   - **Hit@K**, para cada K pedido (por defecto 1, 3 y 5): proporción de casos cuyo primer chunk
+     esperado aparece en la posición K o mejor;
+   - **MRR**: promedio de `1/rank` del primer chunk esperado encontrado, con 0 para un caso sin
+     acierto;
+   - **tasa de recuperación obsoleta**: proporción de casos donde algún chunk entregado no es vigente
+     en el parche objetivo del caso. Debe ser 0 porque el filtro corre antes de la fusión; la métrica
+     existe como guarda de D1 y, si deja de ser 0, el contrato de un índice está roto. Su denominador
+     son **todos** los casos evaluados (`evaluated_cases`), no solo los respondibles: entregar un
+     chunk obsoleto es una falla de D1 aunque el caso no esperara respuesta, y un guardia que mira
+     solo la mitad de las entregas no guarda nada.
+   Hit@K y MRR se calculan sobre los casos respondibles (`answerable_cases`); el reporte publica los
+   dos denominadores junto al total del dataset, así un cero siempre se lee contra lo que lo produjo y
+   ninguna clave llamada `cases` significa dos universos distintos.
+   Un K mayor que `final_top_k` se rechaza antes de recuperar: la entrega no puede pasar de ese tope,
+   así que Hit@K de un K mayor repetiría la última columna aparentando medir una ventana más ancha.
+   Un caso sin `expected_chunk_ids` se cuenta y se lista aparte, nunca como acierto ni como fallo,
+   porque no tiene respuesta correcta que encontrar. El reporte trae además el desglose por tag: un
+   caso con dos tags cuenta en las dos tablas y el agregado sigue siendo el total.
+5. **Reporte.** Un JSON por corrida en `data/eval/runs/` (ignorado por git, igual que el
+   `eval/dataset.jsonl` real) con la marca de tiempo,
+   el commit de git cuando existe (lo inyecta el composition root, nunca lo calcula el dominio), la
+   ruta y el digest del dataset, la foto de configuración (ids de los modelos y presupuestos de
+   recuperación), las métricas agregadas, las de cada tag y un registro por caso con el rango del
+   primer acierto y los ids entregados. El reporte guarda **ids, nunca texto de chunks**: se puede
+   compartir sin redistribuir el corpus. La escritura es atómica (temporal + `os.replace`), así que
+   una corrida interrumpida no deja un reporte truncado, y el comando imprime una tabla compacta.
+
 ## 6. Puertos
 
 | Puerto | Responsabilidad | Adaptadores candidatos |
@@ -334,18 +388,25 @@ src/poe2_rag/
 │       └── outbound/        # lexical/ (tokenizador + BM25), dense/ (embedder bge + Chroma),
 │                            # rerank/ (cross-encoder), llm/ (Claude con citas nativas)
 ├── evaluation/
-│   ├── application/         # RunEvaluation, métricas
+│   ├── domain/              # EvalCase y las métricas como funciones puras
+│   ├── application/         # RunEvaluation y sus puertos (dataset, corpus, reporte, reloj)
 │   └── adapters/
 │       ├── inbound/cli/     # comando `eval`
-│       └── outbound/        # lector del dataset, reporte
+│       └── outbound/        # lector JSONL, reporte JSON atómico, reloj y commit de git
 └── bootstrap.py             # composition root: arma adaptadores según configuración
 tests/
 ├── unit/                    # dominio y casos de uso con fakes
 ├── contract/                # cada adaptador cumple el contrato de su puerto
-└── eval/                    # dataset de preguntas con respuestas esperadas
+└── integration/             # modelos reales y pipeline completo; opt-in con `-m integration`
+eval/                        # dataset de evaluación y su formato (dataset.jsonl no se commitea)
 ```
 
 **Regla de dependencias:** `domain` no importa nada externo; `application` solo importa `domain`; `adapters` implementan puertos; solo `bootstrap.py` conoce todas las piezas. `config.py` es un value object de arranque: no conoce adaptadores ni lee credenciales. La CLI es un adaptador de entrada más y recibe el contenedor ya armado, así que un test de los comandos usa *fakes* y no un sistema completo. Las bibliotecas externas de la recuperación y la generación —`chromadb` y `sentence-transformers` en `dense/` y `rerank/`, `anthropic` en `llm/`— solo pueden importarse desde `answering/adapters/outbound/`: ni el dominio ni los casos de uso las ven, y el suite por defecto las evita salvo por el adaptador de Chroma y el transporte falso del SDK de Claude. Las tres carpetas de adaptador están separadas porque el reranker y el LLM no comparten nada con el índice denso: cargar el cross-encoder no debe arrastrar el cliente vectorial ni al revés. Un puerto que consumen las dos capacidades tiene su adaptador en `shared/adapters/outbound/` (hoy, `PatchCatalog`, que lee `config/patches.toml`); el de un puerto de una sola capacidad vive en el `adapters/` de esa capacidad. `LexicalIndexWriter` y `VectorIndexWriter` son la excepción deliberada: los consume solo la ingesta, pero su único adaptador vive en `answering/adapters/outbound/` porque implementa también el puerto de lectura y ambos comparten el almacenamiento; partirlo en dos adaptadores rompería la garantía de que la escritura y la lectura describen el mismo índice. Bajo `data/` conviven el corpus crudo (`data/raw/`), el procesado (`data/processed/`) y los índices derivados (`data/index/`, con `bm25.json` y el directorio `chroma/`); los tres están fuera de control de versiones porque derivan del contenido scrapeado ([ADR-0002](adr/0002-fuentes-de-datos-mvp.md)). El adaptador BM25 no importa el repositorio JSON de chunks aunque comparta su formato de chunk: la capacidad de consulta no depende de un adaptador de ingesta; el adaptador de Chroma copia el mismo codificador de chunk por la misma razón.
+
+`evaluation` es la única capacidad que mira a otra: `RunEvaluation` recibe `RetrieveContext` como puerto
+de aplicación y **nunca importa un adaptador de `answering`**, así que la evaluación no puede arrastrar
+`torch`, `chromadb` ni el SDK por accidente. Su dominio es aritmética pura y sus adaptadores solo leen un
+archivo, escriben un reporte y leen el reloj.
 
 RRF vive en el dominio de `answering` porque es una función pura sobre rankings, no depende de ninguna librería.
 
@@ -357,9 +418,12 @@ RRF vive en el dominio de `answering` porque es una función pura sobre rankings
 |---|---|---|
 | Unitario | `PatchVersion`, `Validity`, RRF, validación de citas, casos de uso | Fakes en memoria para cada puerto; registran sus llamadas para verificar orden y argumentos |
 | Contrato | Cada adaptador cumple su puerto (ej.: el vector store respeta el filtro de vigencia) | Misma suite ejecutada contra cada implementación |
-| Evaluación | Calidad de punta a punta | Dataset fijo; métricas Hit@K, MRR, fidelidad y **tasa de respuestas con datos obsoletos** |
+| Evaluación | Recuperación determinista; la generación se evalúa aparte (ADR-0005) | Dataset fijo; métricas **Hit@K, MRR y tasa de recuperación obsoleta**, reporte JSON por corrida en `data/eval/runs/` |
 
-La métrica de datos obsoletos es la que protege D1: una pregunta sobre `0.2.0` que recupera un chunk válido solo en `0.1.1` cuenta como fallo.
+La métrica de recuperación obsoleta es la que protege D1 en la mitad determinista: un caso cuyo parche
+objetivo es `0.2.0` que recibe un chunk válido solo en `0.1.1` cuenta como fallo. El mismo guardia del
+lado de la generación — una respuesta que afirma un valor de un parche anterior — necesita el dataset de
+respuestas y el promedio sobre varias corridas, y queda para la etapa de generación (ADR-0005).
 
 Hoy hay suites de contrato para `PatchCatalog`, `ChunkRepository`, `LexicalIndex` y `VectorIndex`. La de
 `LexicalIndex` declara los bordes de vigencia como datos reutilizables (`VALIDITY_CASES`: `v == valid_from`

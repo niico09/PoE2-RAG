@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el fetcher HTTP respetuoso y el adaptador de poe2db (caché local, `robots.txt`, límite de pedidos y parser de páginas de gemas), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest` y `ask` de la CLI. Todavía no: el adaptador de poe2wiki.net, el comando `eval` y la evaluación de §8.
+> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el fetcher HTTP respetuoso y el adaptador de poe2db (caché local, `robots.txt`, límite de pedidos y parser de páginas de gemas), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest`, `ask` y `eval` de la CLI. `eval` implementa la evaluación de recuperación (Hit@K, MRR y tasa de recuperación obsoleta) sin costo de API: la recuperación es determinista y la corrida no toca la generación. Todavía no: el adaptador de poe2wiki.net y la evaluación de generación (fidelidad, promedio sobre varias corridas).
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -93,6 +93,28 @@ Códigos de salida: `0` éxito, `1` error esperado (una línea en stderr, sin tr
 
 > **Salvedad conocida:** un modelo local que no se puede cargar —sin red en la primera corrida, o con un id de modelo mal escrito— todavía sale como traza de `sentence-transformers`, porque el adaptador no envuelve ese error. Entra al contrato en cuanto `BgeEmbedder` lo traduzca a un error propio; envolverlo es un cambio del adaptador, no del borde, y capturar `OSError` en el borde taparía también fallas de permisos y de disco.
 
+### Evaluación
+
+`eval` mide la recuperación, no la generación: la recuperación es determinista, así que la corrida no
+necesita ni `ANTHROPIC_API_KEY` ni el cliente de Anthropic. El dataset es JSONL versionado y su formato
+está en [`eval/README.md`](eval/README.md); el comando imprime una tabla y escribe un reporte JSON por
+corrida en `data/eval/runs/`, que está fuera de control de versiones.
+
+```bash
+# Mide el dataset configurado (eval/dataset.jsonl) con Hit@1, Hit@3 y Hit@5
+uv run poe2-rag eval
+
+# Dataset, cortes y directorio de reportes explícitos
+uv run poe2-rag eval --dataset eval/dataset.example.jsonl --k 1,5 --output-dir /tmp/eval-runs
+```
+
+`eval/dataset.example.jsonl` son cuatro casos escritos contra las fixtures de los tests: un caso
+respondible con dos chunks aceptables, otro con tres, uno de notas de parche y uno que el corpus no
+responde (se cuenta aparte, nunca como fallo). Copiarlo a `eval/dataset.jsonl` es el punto de partida
+para escribir el dataset real; las ids de chunk se pueden leer del corpus y cualquier id que el corpus
+no tenga aborta la corrida con la lista completa, porque un dataset desactualizado no produce números
+comparables.
+
 ### Presupuesto de recuperación
 
 El MVP recupera 50 candidatos léxicos y 50 densos, fusiona y rerordena 20 y entrega 5 al modelo. Son
@@ -120,6 +142,8 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 | `POE2_RAG_HTTP_CONTACT` | — | contacto obligatorio de `ingest poe2db`; viaja en el `User-Agent` |
 | `POE2_RAG_HTTP_REQUEST_INTERVAL` | `1.0` | segundos mínimos entre pedidos al mismo host |
 | `POE2_RAG_HTTP_TIMEOUT` | `30.0` | segundos que puede durar un pedido HTTP |
+| `POE2_RAG_EVAL_DATASET` | `eval/dataset.jsonl` | dataset que mide `eval` por defecto |
+| `POE2_RAG_EVAL_RUNS_DIR` | `data/eval/runs` | directorio de los reportes JSON de `eval` (ignorado por git) |
 
 ---
 
@@ -132,7 +156,11 @@ poe2-rag/
 ├── data/
 │   ├── raw/                 # Snapshots y caché de poe2db (HTML + sidecar) sin procesar
 │   ├── processed/           # Chunks normalizados en JSON con metadatos
-│   └── index/               # Índices derivados (BM25 JSON y Chroma), reconstruibles desde data/processed/
+│   ├── index/               # Índices derivados (BM25 JSON y Chroma), reconstruibles desde data/processed/
+│   └── eval/                # Reportes de evaluación de cada corrida (ignorado por git)
+├── eval/
+│   ├── dataset.example.jsonl  # Cuatro casos contra las fixtures; el real (dataset.jsonl) no se commitea
+│   └── README.md              # Formato del dataset y definición de las métricas
 ├── docs/
 │   ├── architecture.md      # Diseño del sistema
 │   └── adr/                 # Registro de decisiones de arquitectura
@@ -142,7 +170,7 @@ poe2-rag/
 │   │   └── adapters/outbound/  # adaptadores compartidos (catálogo de parches)
 │   ├── ingestion/           # Fuentes, parsers, chunking e indexación
 │   ├── answering/           # Recuperación híbrida, RRF, reranking y generación
-│   ├── evaluation/          # Dataset y métricas (Hit@K, MRR, fidelidad, obsolescencia)
+│   ├── evaluation/          # Dataset fijo y métricas de recuperación (Hit@K, MRR, obsolescencia)
 │   ├── cli.py               # CLI (`ingest`, `ask`): argparse, despacho y contrato de errores
 │   ├── config.py            # AppConfig: rutas, modelos y presupuesto del LLM desde el entorno
 │   └── bootstrap.py         # Composition root
@@ -202,7 +230,9 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [x] Reranking con Cross-Encoder (`bge-reranker-base`).
 - [x] Generación con citas nativas, composition root (`bootstrap.py`), configuración (`AppConfig`) y
   CLI (`ingest`, `ask`).
-- [ ] Comando `eval` y dataset de evaluación con métricas.
+- [x] Comando `eval`: mitad de recuperación de la evaluación (Hit@K, MRR y tasa de recuperación
+  obsoleta), dataset JSONL versionado y reporte por corrida. Escribir el dataset real queda a cargo del
+  usuario; la evaluación de generación (fidelidad, promedio de corridas) es el paso siguiente.
 - [ ] Comparar Nemotron 3.5 Lightning como generador local.
 - [ ] Modelado del árbol de habilidades pasivas mediante grafos de conocimiento (GraphRAG).
 - [ ] Soporte para balance de armas y cálculo de tiers de modificadores.

@@ -96,6 +96,8 @@ def test_every_documented_variable_overrides_its_value() -> None:
         POE2_RAG_HTTP_CONTACT="ops@example.com",
         POE2_RAG_HTTP_REQUEST_INTERVAL="2.5",
         POE2_RAG_HTTP_TIMEOUT="15",
+        POE2_RAG_EVAL_DATASET="eval/other.jsonl",
+        POE2_RAG_EVAL_RUNS_DIR="evaluation-runs",
     )
 
     assert config.raw_dir == PROJECT_ROOT / "snapshots"
@@ -110,6 +112,35 @@ def test_every_documented_variable_overrides_its_value() -> None:
     assert config.http_contact == "ops@example.com"
     assert config.http_request_interval == 2.5
     assert config.http_timeout == 15.0
+    assert config.eval_dataset_path == PROJECT_ROOT / "eval/other.jsonl"
+    assert config.eval_runs_dir == PROJECT_ROOT / "evaluation-runs"
+
+
+def test_the_evaluation_artifacts_hang_from_the_project_root() -> None:
+    """S7: the dataset path and the runs directory are configuration, with committed defaults."""
+    config = resolve()
+
+    assert config.eval_dataset_path == PROJECT_ROOT / "eval/dataset.jsonl"
+    assert config.eval_runs_dir == PROJECT_ROOT / "data/eval/runs"
+
+
+def test_a_blank_evaluation_path_means_use_the_default() -> None:
+    config = resolve(POE2_RAG_EVAL_DATASET="", POE2_RAG_EVAL_RUNS_DIR="   ")
+
+    assert config.eval_dataset_path == PROJECT_ROOT / "eval/dataset.jsonl"
+    assert config.eval_runs_dir == PROJECT_ROOT / "data/eval/runs"
+
+
+def test_direct_construction_resolves_the_evaluation_paths_against_the_project_root() -> None:
+    config = AppConfig(
+        **values(  # type: ignore[arg-type]
+            eval_dataset_path=Path("eval/other.jsonl"),
+            eval_runs_dir=Path("runs"),
+        )
+    )
+
+    assert config.eval_dataset_path == PROJECT_ROOT / "eval/other.jsonl"
+    assert config.eval_runs_dir == PROJECT_ROOT / "runs"
 
 
 def test_an_absolute_override_stays_absolute() -> None:
@@ -195,7 +226,7 @@ def test_the_effort_set_matches_the_adapter_that_has_to_accept_it() -> None:
     """One closed set, two readers: the adapter owns it, this configuration must not drift from it."""
     from poe2_rag.answering.adapters.outbound.llm.claude_language_model import _EFFORTS
 
-    assert LLM_EFFORTS == frozenset(_EFFORTS)
+    assert frozenset(_EFFORTS) == LLM_EFFORTS
 
 
 def test_the_configuration_is_frozen() -> None:
@@ -258,10 +289,14 @@ def test_the_http_seconds_can_be_overridden() -> None:
     config = resolve(
         POE2_RAG_HTTP_REQUEST_INTERVAL="2.5",
         POE2_RAG_HTTP_TIMEOUT="15",
+        POE2_RAG_EVAL_DATASET="eval/other.jsonl",
+        POE2_RAG_EVAL_RUNS_DIR="evaluation-runs",
     )
 
     assert config.http_request_interval == 2.5
     assert config.http_timeout == 15.0
+    assert config.eval_dataset_path == PROJECT_ROOT / "eval/other.jsonl"
+    assert config.eval_runs_dir == PROJECT_ROOT / "evaluation-runs"
 
 
 @pytest.mark.parametrize("variable", ["POE2_RAG_HTTP_REQUEST_INTERVAL", "POE2_RAG_HTTP_TIMEOUT"])

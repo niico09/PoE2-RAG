@@ -12,12 +12,16 @@ scripted language model.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
-import httpx2
 import pytest
-from cli_e2e import QUESTION, FirstChunkCitingLanguageModel, build_config
+from cli_e2e import (
+    POE2DB_FIXTURES,
+    QUESTION,
+    FirstChunkCitingLanguageModel,
+    integration_config,
+    offline_client,
+)
 
 from poe2_rag.bootstrap import Container
 from poe2_rag.cli import main
@@ -28,35 +32,15 @@ from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
 pytestmark = pytest.mark.integration
 
 URL = "https://poe2db.tw/us/Spark"
-ROBOTS_URL = "https://poe2db.tw/robots.txt"
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "poe2db"
-
-
-def _offline_client() -> httpx2.Client:
-    """Serve robots.txt and the trimmed Spark page without any network access."""
-    page = (FIXTURES / "active_gem_spark.html").read_text(encoding="utf-8")
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        url = str(request.url)
-        if url == ROBOTS_URL:
-            return httpx2.Response(200, text="User-agent: *\nAllow: /")
-        if url == URL:
-            return httpx2.Response(200, text=page)
-        raise AssertionError(f"unexpected request to {url}")
-
-    return httpx2.Client(transport=httpx2.MockTransport(handler))
+PAGES = {URL: "active_gem_spark.html"}
 
 
 def test_ingest_poe2db_then_ask_reads_the_same_indexes_from_disk(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config = replace(
-        build_config(tmp_path),
-        http_contact="integration@example.invalid",
-        http_request_interval=0.001,
-    )
+    config = integration_config(tmp_path)
 
-    writer = Container(config, environ={}, http_client=_offline_client())
+    writer = Container(config, environ={}, http_client=offline_client(PAGES))
     assert main(["ingest", "poe2db", URL], container=writer) == 0
     ingested = capsys.readouterr()
 
@@ -67,7 +51,7 @@ def test_ingest_poe2db_then_ask_reads_the_same_indexes_from_disk(
     cached_html = config.raw_dir / "poe2db" / "poe2db.tw-us-Spark.html"
     assert cached_html.is_file()
     assert cached_html.read_bytes().decode("utf-8") == (
-        FIXTURES / "active_gem_spark.html"
+        POE2DB_FIXTURES / "active_gem_spark.html"
     ).read_text(encoding="utf-8")
 
     corpus = JsonChunkRepository(config.processed_dir).all()
