@@ -7,6 +7,13 @@ __pycache__/
 data/raw/
 data/processed/
 
+# Evaluation runs: reports of a local run, derived from the corpus (same licence, ADR-0002)
+data/eval/
+
+# The real evaluation dataset is written by the user against the local corpus: its chunk ids would
+# name content the repository does not redistribute. `eval/dataset.example.jsonl` stays versioned.
+eval/dataset.jsonl
+
 # Indexes rebuilt from that corpus: derived from it, so they carry the same licence (ADR-0002)
 data/index/
 

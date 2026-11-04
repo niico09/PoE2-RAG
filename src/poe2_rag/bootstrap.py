@@ -49,6 +49,7 @@ from poe2_rag.answering.application import (
     AnswerQuestionError,
     LanguageModel,
     RetrievalSettings,
+    RetrieveContext,
 )
 from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.config import (
@@ -57,6 +58,17 @@ from poe2_rag.config import (
     ConfigurationError,
     MissingApiKeyError,
     load_config,
+)
+from poe2_rag.evaluation.adapters.outbound.git_commit import current_commit
+from poe2_rag.evaluation.adapters.outbound.json_report_writer import JsonReportWriter
+from poe2_rag.evaluation.adapters.outbound.jsonl_dataset_reader import (
+    JsonlDatasetReader,
+)
+from poe2_rag.evaluation.adapters.outbound.system_clock import SystemClock
+from poe2_rag.evaluation.application import (
+    ConfigSnapshot,
+    EvaluationError,
+    RunEvaluation,
 )
 from poe2_rag.ingestion.adapters.outbound.http import HttpFetchError, PoliteHttpFetcher
 from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
@@ -87,7 +99,7 @@ from poe2_rag.shared.adapters.outbound.toml_patch_catalog import (
     PatchCatalogLoadError,
     TomlPatchCatalog,
 )
-from poe2_rag.shared.domain import PatchCatalog, PatchNotReleasedError, is_blank
+from poe2_rag.shared.domain import PatchNotReleasedError, is_blank
 
 if TYPE_CHECKING:
     import httpx2
@@ -145,6 +157,9 @@ EXPECTED_ERRORS: tuple[type[Exception], ...] = (
     # generation: the adapter's own failures, refusal and truncation included
     LanguageModelError,
     LanguageModelRuntimeError,
+    # evaluation: an unreadable or drifted dataset, an unusable request, an unwritable report.
+    # `ReportWriteError` is a subclass, so the family covers it without a second entry.
+    EvaluationError,
 )
 """Every failure the wired adapters declare as operational, in one place the CLI can ask for.
 
@@ -180,6 +195,7 @@ class Container:
         "_client_factory",
         "_config",
         "_embedder",
+        "_evaluation",
         "_has_api_key",
         "_http_client_instance",
         "_ingest_source",
@@ -191,6 +207,7 @@ class Container:
         "_poe2db_refresh_ingest",
         "_reindex_corpus",
         "_reranker",
+        "_retrieve_context",
         "_vector_index",
     )
 
@@ -224,6 +241,8 @@ class Container:
         self._injected_http_client = http_client
         self._http_client_instance: httpx2.Client | None = None
         self._reindex_corpus: ReindexCorpus | None = None
+        self._retrieve_context: RetrieveContext | None = None
+        self._evaluation: RunEvaluation | None = None
         self._answer_question: AnswerQuestion | None = None
 
     @property
@@ -358,17 +377,57 @@ class Container:
         return self._reindex_corpus
 
     @property
-    def answer_question(self) -> AnswerQuestion:
-        """Retrieve, fuse, rerank, generate and validate: the whole read path in one use case."""
-        if self._answer_question is None:
-            self._answer_question = AnswerQuestion(
+    def retrieve_context(self) -> RetrieveContext:
+        """The deterministic half of the read path, sharing every port with `answer_question`.
+
+        `RunEvaluation` depends on this use case and never on the language model (ADR-0005): the
+        retrieval is what a fixed dataset can measure without spending a token.
+        """
+        if self._retrieve_context is None:
+            self._retrieve_context = RetrieveContext(
                 embedder=self.embedder,
                 lexical_index=self.lexical_index,
                 vector_index=self.vector_index,
                 reranker=self.reranker,
-                language_model=self.language_model,
                 catalog=self.patch_catalog,
                 settings=DEFAULT_RETRIEVAL_SETTINGS,
+            )
+        return self._retrieve_context
+
+    @property
+    def evaluation(self) -> RunEvaluation:
+        """Measure retrieval against the fixed dataset: one report, no model, no credential (D4).
+
+        It reads the corpus, so `eval` needs the indexes built by `ingest`, and it shares the retrieval
+        use case with `answer_question` instead of rebuilding the pipeline. The commit id is read here,
+        in the composition root, and passed in: the use case never runs git. Missing git is not an
+        error, so a report outside a repository simply carries no commit.
+        """
+        if self._evaluation is None:
+            self._evaluation = RunEvaluation(
+                retriever=self.retrieve_context,
+                corpus=self.chunk_repository,
+                reader=JsonlDatasetReader(),
+                writer=JsonReportWriter(),
+                clock=SystemClock(),
+                config_snapshot=ConfigSnapshot(
+                    embedder_model=self._config.embedder_model_id,
+                    reranker_model=self._config.reranker_model_id,
+                    retrieval=DEFAULT_RETRIEVAL_SETTINGS,
+                ),
+                default_dataset_path=self._config.eval_dataset_path,
+                default_output_dir=self._config.eval_runs_dir,
+                git_commit=current_commit(self._config.project_root),
+            )
+        return self._evaluation
+
+    @property
+    def answer_question(self) -> AnswerQuestion:
+        """Retrieve, fuse, rerank, generate and validate: the whole read path in one use case."""
+        if self._answer_question is None:
+            self._answer_question = AnswerQuestion(
+                retrieve=self.retrieve_context,
+                language_model=self.language_model,
             )
         return self._answer_question
 

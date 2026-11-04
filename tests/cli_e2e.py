@@ -10,15 +10,20 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+
+import httpx2
 
 from poe2_rag.answering.application import GeneratedAnswer
 from poe2_rag.answering.domain import Citation, RetrievedChunk
 from poe2_rag.config import AppConfig
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cli"
+POE2DB_FIXTURES = Path(__file__).parent / "fixtures" / "poe2db"
+ROBOTS_URL = "https://poe2db.tw/robots.txt"
 SNAPSHOT_NAME = "patch-notes-0.1.1.html"
 PATCH = "0.1.1"
 QUESTION = "How much mana does Spark cost?"
@@ -39,6 +44,37 @@ def build_config(tmp_path: Path) -> AppConfig:
         llm_max_tokens=1024,
         llm_effort="medium",
     )
+
+
+def integration_config(tmp_path: Path) -> AppConfig:
+    """Config for a run that parses poe2db pages: a contact and a negligible request interval."""
+    return replace(
+        build_config(tmp_path),
+        http_contact="integration@example.invalid",
+        http_request_interval=0.001,
+    )
+
+
+def offline_client(pages: Mapping[str, str]) -> httpx2.Client:
+    """Serve `robots.txt` and a URL → fixture-name map, so no suite touches the network.
+
+    Two integration suites ingest poe2db pages; they share this transport instead of each keeping a
+    copy of the handler that would drift with the next fixture.
+    """
+    bodies = {
+        url: (POE2DB_FIXTURES / name).read_text(encoding="utf-8") for url, name in pages.items()
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if url == ROBOTS_URL:
+            return httpx2.Response(200, text="User-agent: *\nAllow: /")
+        body = bodies.get(url)
+        if body is None:
+            raise AssertionError(f"unexpected request to {url}")
+        return httpx2.Response(200, text=body)
+
+    return httpx2.Client(transport=httpx2.MockTransport(handler))
 
 
 def write_catalog(root: Path) -> Path:

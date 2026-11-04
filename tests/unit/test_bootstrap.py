@@ -25,6 +25,7 @@ from poe2_rag.answering.application import AnswerQuestion, LanguageModel
 from poe2_rag.answering.domain.errors import InvalidQueryError
 from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, EXPECTED_ERRORS, Container
 from poe2_rag.config import AppConfig, MissingApiKeyError
+from poe2_rag.evaluation.application import EvaluationError
 from poe2_rag.ingestion.adapters.outbound.http import (
     HttpFetchError,
     MissingHttpContactError,
@@ -170,9 +171,13 @@ def test_the_two_halves_share_one_adapter_per_port(config: AppConfig, no_model_l
     assert reindex._document_embedder is container.embedder
     assert reindex._lexical_writer is container.lexical_index
     assert reindex._vector_writer is container.vector_index
-    assert answer._embedder is container.embedder
-    assert answer._lexical_index is container.lexical_index
-    assert answer._vector_index is container.vector_index
+    # `AnswerQuestion` delegates retrieval, so one `RetrieveContext` serves `ask` and `eval`.
+    assert answer._retrieve is container.retrieve_context
+    assert container.retrieve_context._embedder is container.embedder
+    assert container.retrieve_context._lexical_index is container.lexical_index
+    assert container.retrieve_context._vector_index is container.vector_index
+    assert container.retrieve_context._reranker is container.reranker
+    assert container.retrieve_context._catalog is container.patch_catalog
     assert answer._language_model is container.language_model
     assert reindex is container.reindex_corpus and answer is container.answer_question
 
@@ -283,6 +288,7 @@ def test_the_expected_errors_are_the_operational_families_only() -> None:
         HttpFetchError,
         Poe2dbParseError,
         PatchNotReleasedError,
+        EvaluationError,
     ):
         assert issubclass(family, EXPECTED_ERRORS)
 
@@ -409,3 +415,38 @@ def test_building_the_poe2db_runner_makes_no_request(
 
     assert isinstance(runner, IngestSource)
     assert requests == []
+
+
+def test_the_evaluation_runner_shares_the_retrieval_half_and_the_corpus(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """`RunEvaluation` measures the same retrieval `ask` uses, over the same corpus (S1, D4)."""
+    container = build(config)
+
+    evaluation = container.evaluation
+
+    assert evaluation._retriever is container.retrieve_context
+    assert evaluation._corpus is container.chunk_repository
+    assert evaluation._default_dataset_path == config.eval_dataset_path
+    assert evaluation._default_output_dir == config.eval_runs_dir
+    assert evaluation is container.evaluation
+
+
+def test_evaluation_needs_no_api_key_and_builds_no_client(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """S7: `eval` measures retrieval only, so it never asks for the generation half."""
+    factory = CountingFactory()
+    container = build(config, environ={}, client_factory=factory)
+
+    assert container.evaluation is not None
+    assert factory.calls == 0
+
+
+def test_evaluation_reports_no_commit_when_the_project_root_is_not_a_repository(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """The commit is read in the composition root and is optional: a report without one is valid."""
+    container = build(config)
+
+    assert container.evaluation._git_commit is None

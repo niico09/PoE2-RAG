@@ -32,6 +32,8 @@ LLM_EFFORT_VARIABLE = "POE2_RAG_LLM_EFFORT"
 HTTP_CONTACT_VARIABLE = "POE2_RAG_HTTP_CONTACT"
 HTTP_REQUEST_INTERVAL_VARIABLE = "POE2_RAG_HTTP_REQUEST_INTERVAL"
 HTTP_TIMEOUT_VARIABLE = "POE2_RAG_HTTP_TIMEOUT"
+EVAL_DATASET_VARIABLE = "POE2_RAG_EVAL_DATASET"
+EVAL_RUNS_DIR_VARIABLE = "POE2_RAG_EVAL_RUNS_DIR"
 
 API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
 """The one credential, read by the SDK. Configuration only checks that the variable is present."""
@@ -47,6 +49,8 @@ DEFAULT_LLM_MAX_TOKENS = 1024
 DEFAULT_LLM_EFFORT = "medium"
 DEFAULT_HTTP_REQUEST_INTERVAL = 1.0
 DEFAULT_HTTP_TIMEOUT = 30.0
+DEFAULT_EVAL_DATASET = Path("eval/dataset.jsonl")
+DEFAULT_EVAL_RUNS_DIR = Path("data/eval/runs")
 
 LLM_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 """The reasoning depths the generation adapter accepts. Validated here so a typo fails at startup.
@@ -55,7 +59,14 @@ LLM_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 on what the API takes, and a drift between the two must break a test instead of a first `ask`.
 """
 
-_PATHS = ("raw_dir", "processed_dir", "index_dir", "patch_catalog_path")
+_PATHS = (
+    "raw_dir",
+    "processed_dir",
+    "index_dir",
+    "patch_catalog_path",
+    "eval_dataset_path",
+    "eval_runs_dir",
+)
 _TEXT_FIELDS = ("embedder_model_id", "reranker_model_id", "llm_model", "llm_effort")
 _SECONDS_FIELDS = ("http_request_interval", "http_timeout")
 _CONTACT_FORBIDDEN = frozenset("()")
@@ -97,6 +108,10 @@ class AppConfig:
     """Minimum seconds between two requests to the same host (respectful access, ADR-0002)."""
     http_timeout: float = DEFAULT_HTTP_TIMEOUT
     """Seconds a single HTTP request may take before it fails."""
+    eval_dataset_path: Path = DEFAULT_EVAL_DATASET
+    """The dataset `poe2-rag eval` measures by default: JSONL, committed, one case per line."""
+    eval_runs_dir: Path = DEFAULT_EVAL_RUNS_DIR
+    """Where eval reports land. Gitignored: a report is a local artifact, never a committed one."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "project_root", _require_path("project_root", self.project_root))
@@ -165,6 +180,8 @@ def load_config(environ: Mapping[str, str] | None = None) -> AppConfig:
             source, HTTP_REQUEST_INTERVAL_VARIABLE, DEFAULT_HTTP_REQUEST_INTERVAL
         ),
         http_timeout=_positive_seconds(source, HTTP_TIMEOUT_VARIABLE, DEFAULT_HTTP_TIMEOUT),
+        eval_dataset_path=Path(_text(source, EVAL_DATASET_VARIABLE, str(DEFAULT_EVAL_DATASET))),
+        eval_runs_dir=Path(_text(source, EVAL_RUNS_DIR_VARIABLE, str(DEFAULT_EVAL_RUNS_DIR))),
     )
 
 

@@ -7,13 +7,25 @@ public constructors, so the CLI still exercises the real answer/ingest shapes.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from poe2_rag.answering.adapters.inbound.cli import AnswerQuestionRunner
-from poe2_rag.answering.application import NO_INFORMATION_TEXT
+from poe2_rag.answering.application import NO_INFORMATION_TEXT, RetrievalSettings
 from poe2_rag.answering.application.answer_question import AnswerResult
 from poe2_rag.answering.domain import Answer, Citation, RetrievedChunk, StageScores
 from poe2_rag.bootstrap import EXPECTED_ERRORS as CONTAINER_ERRORS
+from poe2_rag.evaluation.application import (
+    CaseRecord,
+    ConfigSnapshot,
+    DatasetInfo,
+    EvaluationReport,
+    EvaluationRequest,
+    EvaluationRun,
+    RunMetadata,
+)
+from poe2_rag.evaluation.domain import CaseOutcome, score, score_by_tag
 from poe2_rag.ingestion.adapters.inbound.cli import (
     IngestSourceRunner,
     ReindexCorpusRunner,
@@ -171,3 +183,69 @@ def make_unsupported_answer(version: PatchVersion | None = None) -> AnswerResult
     target_version = version or PatchVersion(0, 1, 1)
     answer = Answer(NO_INFORMATION_TEXT, (), False)
     return AnswerResult(answer, target_version, ())
+
+
+EVAL_RUN_AT = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)
+EVAL_REPORT_PATH = Path("data/eval/runs/20261101T093000Z-6fb9b03-aaaaaaaa.json")
+"""A fixed report path, so a command test can assert the line the adapter prints."""
+
+
+class FakeEvaluationRunner:
+    """Records every evaluation request and returns one scripted run, or raises what it was given."""
+
+    def __init__(self, failure: Exception | None = None, run: EvaluationRun | None = None) -> None:
+        self.requests: list[EvaluationRequest] = []
+        self._failure = failure
+        self._run = run
+
+    def execute(self, request: EvaluationRequest) -> EvaluationRun:
+        self.requests.append(request)
+        if self._failure is not None:
+            raise self._failure
+        if self._run is not None:
+            return self._run
+        return make_evaluation_run()
+
+
+def eval_outcome(case_id: str, rank: int | None, tags: tuple[str, ...] = ()) -> CaseOutcome:
+    """One scored case with two delivered chunks, so a rank of 2 is representable."""
+    return CaseOutcome(
+        case_id=case_id,
+        answerable=True,
+        tags=tags,
+        delivered_chunk_ids=("a", "b"),
+        first_hit_rank=rank,
+    )
+
+
+def make_evaluation_run(
+    outcomes: Sequence[CaseOutcome] = (),
+    *,
+    ks: tuple[int, ...] = (1, 3, 5),
+    dataset_cases: int | None = None,
+) -> EvaluationRun:
+    """Build one run from real value objects, so a command test formats values and not a mock.
+
+    Both CLI suites use it: the adapter suite asks for a two-case table with two K columns, the
+    dispatch suite asks for the default shape. One builder keeps the two payloads from drifting.
+    """
+    scored = tuple(outcomes) or (eval_outcome("spark", 1, ("gems",)),)
+    answerable = sum(1 for item in scored if item.answerable)
+    report = EvaluationReport(
+        run=RunMetadata(EVAL_RUN_AT, "6fb9b03"),
+        dataset=DatasetInfo(
+            path=Path("eval/dataset.jsonl"),
+            sha256="a" * 64,
+            cases=dataset_cases if dataset_cases is not None else len(scored),
+            answerable=answerable,
+        ),
+        config=ConfigSnapshot(
+            "BAAI/bge-base-en-v1.5",
+            "BAAI/bge-reranker-base",
+            RetrievalSettings(50, 50, 20, 5),
+        ),
+        metrics=score(scored, ks),
+        by_tag=score_by_tag(scored, ks),
+        cases=tuple(CaseRecord(item, PatchVersion(0, 1, 1)) for item in scored),
+    )
+    return EvaluationRun(report, EVAL_REPORT_PATH)

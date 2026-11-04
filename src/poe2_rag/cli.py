@@ -16,10 +16,13 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol, cast
 
 from poe2_rag.answering.adapters.inbound import cli as ask_cli
 from poe2_rag.config import ConfigurationError
+from poe2_rag.evaluation.adapters.inbound import cli as eval_cli
+from poe2_rag.evaluation.domain import InvalidMetricsError, require_ks
 from poe2_rag.ingestion.adapters.inbound import cli as ingest_cli
 from poe2_rag.shared.domain.errors import InvalidPatchVersionError
 from poe2_rag.shared.domain.patch_version import PatchVersion
@@ -64,6 +67,19 @@ class Poe2dbIngestContainer(Protocol):
         ...
 
 
+class EvaluationContainer(Protocol):
+    """The extra capability `eval` needs, kept out of `CliContainer` as `Poe2dbIngestContainer` is.
+
+    A container that never runs an evaluation does not have to provide one, so the existing command
+    fakes stay valid and the boundary keeps depending on the commands that are actually used.
+    """
+
+    @property
+    def evaluation(self) -> eval_cli.EvaluationRunner:
+        """Runner that evaluates retrieval against a dataset and writes its report."""
+        ...
+
+
 def _default_container() -> CliContainer:
     """Build the production container on demand.
 
@@ -93,7 +109,10 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     """Return the root parser and the `ingest` subparser (for its own usage errors)."""
     parser = argparse.ArgumentParser(
         prog="poe2-rag",
-        description="Ask patch-aware questions about Path of Exile 2 and ingest its sources.",
+        description=(
+            "Ask patch-aware questions about Path of Exile 2, ingest its sources and measure "
+            "retrieval against a fixed dataset."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -129,7 +148,55 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="patch version to answer for (default: current patch)",
     )
 
+    evaluate = subparsers.add_parser(
+        "eval", help="measure retrieval against the fixed evaluation dataset"
+    )
+    evaluate.add_argument(
+        "--dataset",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="dataset to evaluate (default: eval/dataset.jsonl, or POE2_RAG_EVAL_DATASET)",
+    )
+    evaluate.add_argument(
+        "--k",
+        type=_k_values,
+        default=eval_cli.DEFAULT_KS,
+        metavar="K",
+        help=(
+            "comma-separated K values for Hit@K (default: 1,3,5); no K may exceed the number of "
+            "chunks retrieval delivers, so a larger K would only repeat the last column"
+        ),
+    )
+    evaluate.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="directory for the JSON report (default: data/eval/runs, or POE2_RAG_EVAL_RUNS_DIR)",
+    )
+
     return parser, ingest
+
+
+def _k_values(raw: str) -> tuple[int, ...]:
+    """Parse `--k 1,3,5` into a K set, or fail as a usage error.
+
+    This boundary only splits the list and parses each token as digits: whether a K is positive and
+    unique is `require_ks`, the rule the use case applies too, and its error is translated here the
+    way `_patch_version` translates `PatchVersion.parse`. Parsing with `int()` alone would accept
+    Python literal forms such as `1_0` or `+5` that the help text does not promise.
+    """
+    values: list[int] = []
+    for chunk in raw.split(","):
+        text = chunk.strip()
+        if not text.isdigit():
+            raise argparse.ArgumentTypeError(f"K must be an integer, got {text!r}")
+        values.append(int(text))
+    try:
+        return require_ks(values)
+    except InvalidMetricsError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
@@ -155,6 +222,15 @@ def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
             question=args.question,
             patch=args.patch,
             ask=container.answer_question,
+        )
+    elif args.command == "eval":
+        # Same reason as poe2db above: only `eval` needs the evaluation runner, so the base protocol
+        # stays small and every existing fake still satisfies it.
+        eval_cli.run(
+            dataset=args.dataset,
+            ks=args.k,
+            output_dir=args.output_dir,
+            evaluation=cast(EvaluationContainer, container).evaluation,
         )
 
 
