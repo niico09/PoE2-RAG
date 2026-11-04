@@ -82,7 +82,11 @@ parser, exposed as `poe2-rag ingest poe2db <url> [--refresh]`, test-first and of
 
 ## Decisions
 
-- **D1 — Per-level tables are one `levels` section.** The captured page's per-level table has 41 rows
+- **D1 — Per-level tables are one `levels` section.** (Superseded by `odd/tasks/poe2db-level-blocks.md`
+  S1-S4/T1-T4: the table is now split into consecutive self-describing blocks of 10 rows,
+  `levels-01-10` … `levels-31-40`, because the single section measured 1,282 tokens for Spark and 1,315
+  for Ice Nova and overflowed the 512-token window the dense index and the reranker read.) The captured
+  page's per-level table has 41 rows
   (header plus levels 1–40) and 9 columns, including both the base and the Cold-Infused variant. It is
   kept as one chunk whose lines are the header and each row joined exactly as rendered. One chunk per
   level would multiply identities and citations without adding precision for an MVP without

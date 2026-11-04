@@ -55,15 +55,12 @@ def integration_config(tmp_path: Path) -> AppConfig:
     )
 
 
-def offline_client(pages: Mapping[str, str]) -> httpx2.Client:
-    """Serve `robots.txt` and a URL → fixture-name map, so no suite touches the network.
+def client_serving(bodies: Mapping[str, str]) -> httpx2.Client:
+    """Serve `robots.txt` and each URL's in-memory body, so no suite touches the network.
 
-    Two integration suites ingest poe2db pages; they share this transport instead of each keeping a
-    copy of the handler that would drift with the next fixture.
+    One transport serves every suite that ingests a poe2db page: the HTTP handler is the only fake in
+    all of them, so it lives here instead of one copy per suite that would drift.
     """
-    bodies = {
-        url: (POE2DB_FIXTURES / name).read_text(encoding="utf-8") for url, name in pages.items()
-    }
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
@@ -75,6 +72,14 @@ def offline_client(pages: Mapping[str, str]) -> httpx2.Client:
         return httpx2.Response(200, text=body)
 
     return httpx2.Client(transport=httpx2.MockTransport(handler))
+
+
+def offline_client(pages: Mapping[str, str]) -> httpx2.Client:
+    """Serve the committed fixtures, given as a URL → fixture-name map."""
+    bodies = {
+        url: (POE2DB_FIXTURES / name).read_text(encoding="utf-8") for url, name in pages.items()
+    }
+    return client_serving(bodies)
 
 
 def write_catalog(root: Path) -> Path:

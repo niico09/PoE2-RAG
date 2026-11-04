@@ -182,11 +182,16 @@ antes de tocar la red (solo `https://poe2db.tw/us/<slug>`), consulta `robots.txt
 un intervalo mínimo por host, aplica un timeout, no reintenta y cachea la página en `data/raw/poe2db/` con
 un sidecar (`url`, `fetched_at`, `status` y `sha256`); una segunda corrida lee la caché y no hace ningún
 pedido, y `--refresh` fuerza la descarga. El parser elige `active_gem` o `support_gem` desde el type line
-de la página y produce `description`, `properties`, `implicit-modifiers`, `explicit-modifiers` y `levels`,
-con el texto exacto de la página. Solo las formas limpias (`N% increased|reduced|more|less X`, `+N X`) se
-mapean a `Modifier`; un rango como `(1—11)` conserva su texto porque tiene dos números. La tabla por nivel
-es una sola sección `levels` (41 líneas en la página observada): el índice denso la reportará truncada y el
-léxico la leerá completa, la deuda visible de ADR-0004.
+de la página y produce `description`, `properties`, `implicit-modifiers`, `explicit-modifiers` y un bloque
+por cada tramo de 10 filas de la tabla de niveles (`levels-01-10`, `levels-11-20`, …), con el texto exacto
+de la página. Solo las formas limpias (`N% increased|reduced|more|less X`, `+N X`) se
+mapean a `Modifier`; un rango como `(1—11)` conserva su texto porque tiene dos números. Cada bloque repite
+el nombre de la gema, el rango de niveles y la cabecera de la tabla antes de sus filas, porque el embedder
+y el reranker leen el texto de un chunk solo: una tabla de 40 filas mide 1 282 tokens para Spark y no entra
+en la ventana de 512 que ambos modelos comparten, así que el índice denso solo veía su primer tercio. Con
+bloques de 10 filas el peor caso observado mide 380 tokens y entra completo, sin truncamiento que reportar
+(ADR-0004); si la primera columna de la tabla no es una serie de niveles estrictamente creciente, los
+bloques se identifican por posición (`rows-01-10`) para no inventar números que la página no muestra.
 
 La vigencia de un snapshot sale de su fecha de captura: `PatchCatalog.current_at(fetched_at)` con
 `fetched_at` normalizado a fecha UTC, y un `fetched_at` sin zona se rechaza en vez de adivinar el huso

@@ -60,7 +60,7 @@ def test_ingest_poe2db_then_ask_reads_the_same_indexes_from_disk(
         "description",
         "properties",
         "explicit-modifiers",
-        "levels",
+        "levels-01-20",
     }
     for chunk in spark_chunks:
         assert chunk.source.url == URL

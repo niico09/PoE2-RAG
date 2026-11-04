@@ -330,6 +330,22 @@ class TestSupersession:
         assert "save" not in recorder.kinds()
         assert repository.all() == (description,)
 
+    def test_a_reingest_replaces_the_single_levels_chunk_with_the_row_blocks(self) -> None:
+        """The block ids are new snapshot content, so the old single section cannot survive it (S5)."""
+        description = gem_chunk("description", "0.1.1")
+        old_levels = gem_chunk("levels", "0.1.1")
+        blocks = (gem_chunk("levels-01-10", "0.1.1"), gem_chunk("levels-11-20", "0.1.1"))
+        ingest, recorder, repository = build_source(
+            [description, *blocks], stored=[description, old_levels]
+        )
+
+        report = ingest.execute(LOCATOR)
+
+        assert (report.closed, report.removed, report.skipped) == (0, 1, 1)
+        assert recorder.arguments("save") == [(tuple(blocks),)]
+        assert recorder.arguments("remove") == [((old_levels.chunk_id,),)]
+        assert repository.all() == (description, *blocks)
+
     def test_an_older_snapshot_is_rejected_and_writes_nothing(self) -> None:
         stored = gem_chunk("description", "0.1.1")
         older = gem_chunk("description", "0.1.0")
