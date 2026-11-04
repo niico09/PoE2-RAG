@@ -19,8 +19,8 @@ tab and the main tab is the first. It is rendered as consecutive blocks of at mo
 `DEFAULT_LEVEL_BLOCK_SIZE` rows, each one a section of its own that repeats the gem name, the level
 range and the table header before its rows: the embedder and the reranker read one chunk's text
 alone, and a single 40-row table overflows the 512-token window they share, so rows past the first
-third would never reach dense retrieval or reranking (D1, superseded by
-`odd/tasks/poe2db-level-blocks.md`).
+third would never reach dense retrieval or reranking (D1 of `odd/tasks/poe2db-source.md`,
+marked superseded there).
 
 `valid_from` is the patch the catalog says was current at the capture instant:
 `current_at(captured_on)`, where `captured_on` is `fetched_at` normalized to a UTC date. The page
@@ -68,7 +68,8 @@ _PERCENT_KINDS = {
 _PROPERTY_CLASSES = frozenset({"property", "requirements", "hybridProperty"})
 _MODIFIER_SECTIONS = frozenset({"explicit-modifiers", "implicit-modifiers"})
 _PUNCTUATION_SPACE = re.compile(r"\s+([,.;:])")
-_LEVEL_LABEL = re.compile(r"[0-9]+")
+_LEVEL_LABEL = re.compile(r"[0-9]{1,4}")
+"""A level cell: at most four digits, which no gem level column exceeds and `int` always parses."""
 
 DEFAULT_LEVEL_BLOCK_SIZE = 10
 """Rows per per-level block, the size the dense and rerank token windows allow (S4)."""

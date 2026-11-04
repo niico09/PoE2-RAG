@@ -49,7 +49,7 @@ default.
 
 - [x] T1 — Parser: consecutive self-describing row blocks, block size as a validated constructor
   parameter, unit tests against the fixtures and 40-row tables. Route: inline. S1, S2, S3, S7, S8.
-- [ ] T2 — Application evidence with fakes: the stored single `levels` chunk at the same `valid_from`
+- [x] T2 — Application evidence with fakes: the stored single `levels` chunk at the same `valid_from`
   is removed and the blocks are added. Route: inline. S5, S7.
 - [ ] T3 — Integration budget guard: the real tokenizer over the 40-row worst case, measured counts.
   Route: inline. S4, S7.
@@ -66,6 +66,13 @@ default.
   first round of gate findings added the positional-id branch and the repeated-label case; 1391 passed,
   18 deselected in the offline suite; 15 passed, 1394 deselected with `-m integration` (25.97 s).
   Commit hash: recorded in T5's docs commit.
+- **T2** — No RED: the rule already exists in `IngestSource` (`_removed_at_the_same_version`, shipped
+  with `feat/snapshot-supersession`), so this is a characterization test and it passed on the first
+  run. GREEN: 32 passed in `test_ingest_source.py`, 1393 passed / 18 deselected offline. Same diff
+  closes the T1 review minors: the level-label pattern is bounded to four digits so a corrupt cell
+  cannot reach `int()`, `build_parser` takes the real default instead of a `None` sentinel, the test
+  helpers are typed, and the module docstring points at the durable D1 record. Commit hash: recorded
+  in T5's docs commit.
 
 ## Log
 

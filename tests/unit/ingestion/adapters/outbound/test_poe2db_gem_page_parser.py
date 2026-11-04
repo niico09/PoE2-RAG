@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser import (
+    DEFAULT_LEVEL_BLOCK_SIZE,
     EmptyGemPageError,
     InvalidLevelBlockSizeError,
     MissingPageUrlError,
@@ -25,6 +26,7 @@ from poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser import (
 )
 from poe2_rag.ingestion.application import DocumentParser, RawDocument
 from poe2_rag.shared.domain import (
+    Chunk,
     InMemoryPatchCatalog,
     ModifierKind,
     PatchNotReleasedError,
@@ -39,7 +41,7 @@ FETCHED_AT = datetime(2026, 11, 1, 12, 30, tzinfo=UTC)
 CURRENT = PatchVersion.parse("0.1.1")
 
 
-def build_parser(*, level_block_size: int | None = None) -> Poe2dbGemPageParser:
+def build_parser(level_block_size: int = DEFAULT_LEVEL_BLOCK_SIZE) -> Poe2dbGemPageParser:
     catalog = InMemoryPatchCatalog(
         [
             PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
@@ -47,8 +49,6 @@ def build_parser(*, level_block_size: int | None = None) -> Poe2dbGemPageParser:
         ],
         CURRENT,
     )
-    if level_block_size is None:
-        return Poe2dbGemPageParser(catalog)
     return Poe2dbGemPageParser(catalog, level_block_size=level_block_size)
 
 
@@ -129,12 +129,13 @@ def level_page(count: int) -> str:
     return gem_page(STATS_STUB) + level_table(level_cells(count))
 
 
-def level_chunks(chunks: tuple) -> list:
+def level_chunks(chunks: tuple[Chunk, ...]) -> list[Chunk]:
     """Return the level blocks of a parsed page, in document order."""
     return [chunk for chunk in chunks if chunk.section.startswith(("levels-", "rows-"))]
 
 
 def rendered_rows(cells: Sequence[Sequence[str]]) -> list[str]:
+    """Return the row lines the parser must reproduce, exactly as the table renders them."""
     return [" | ".join(row) for row in cells]
 
 
@@ -323,6 +324,15 @@ class TestLevelBlocks:
 
         assert [block.section for block in blocks] == ["rows-01-10", "rows-11-20"]
         assert len({block.chunk_id for block in blocks}) == 2
+
+    def test_a_level_cell_too_long_to_be_a_level_keeps_the_parser_error_contract(self) -> None:
+        """A corrupt capture must not reach `int` and raise outside `Poe2dbParseError`."""
+        cells = [("9" * 5000, "5", "1 to 9"), *level_cells(19)]
+        content = gem_page(STATS_STUB) + level_table(cells)
+
+        blocks = level_chunks(build_parser().parse(raw_document(content=content)))
+
+        assert [block.section for block in blocks] == ["rows-01-10", "rows-11-20"]
 
     def test_a_table_without_data_rows_produces_no_levels_chunk(self) -> None:
         content = gem_page(STATS_STUB) + level_table(())
