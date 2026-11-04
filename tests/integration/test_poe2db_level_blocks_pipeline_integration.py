@@ -12,8 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from cli_e2e import integration_config
-from poe2db_levels import BLOCKS, ROW_COUNT, client_for, rendered_rows, spark_level_page
+from cli_e2e import client_serving, integration_config
+from poe2db_levels import (
+    BLOCKS,
+    ROW_COUNT,
+    level_blocks,
+    rendered_rows,
+    spark_level_page,
+)
 
 from poe2_rag.bootstrap import Container
 from poe2_rag.cli import main
@@ -30,22 +36,17 @@ def test_a_full_level_table_is_stored_as_blocks_and_nothing_is_truncated(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = integration_config(tmp_path)
-    container = Container(config, environ={}, http_client=client_for(spark_level_page()))
+    container = Container(config, environ={}, http_client=client_serving({URL: spark_level_page()}))
 
     assert main(["ingest", "poe2db", URL], container=container) == 0
     ingested = capsys.readouterr()
 
     assert "error: " not in ingested.err
     corpus = list(JsonChunkRepository(config.processed_dir).all())
-    spark = [chunk for chunk in corpus if chunk.entity.slug == "spark"]
-    assert [chunk.section for chunk in spark if chunk.section.startswith("levels")] == BLOCKS
+    blocks = level_blocks(tuple(chunk for chunk in corpus if chunk.entity.slug == "spark"))
+    assert [block.section for block in blocks] == BLOCKS
 
-    rows = [
-        line
-        for chunk in spark
-        if chunk.section.startswith("levels")
-        for line in chunk.text.splitlines()[2:]
-    ]
+    rows = [line for block in blocks for line in block.text.splitlines()[2:]]
     assert rows == rendered_rows(ROW_COUNT)
 
     assert "Truncated chunk ids" not in ingested.out
@@ -56,7 +57,7 @@ def test_reingesting_the_same_page_keeps_one_set_of_blocks(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = integration_config(tmp_path)
-    container = Container(config, environ={}, http_client=client_for(spark_level_page()))
+    container = Container(config, environ={}, http_client=client_serving({URL: spark_level_page()}))
 
     assert main(["ingest", "poe2db", URL], container=container) == 0
     capsys.readouterr()
@@ -65,9 +66,11 @@ def test_reingesting_the_same_page_keeps_one_set_of_blocks(
 
     assert "0 removed" in again.out
     assert "Truncated chunk ids" not in again.out
-    spark = [
-        chunk
-        for chunk in JsonChunkRepository(config.processed_dir).all()
-        if chunk.entity.slug == "spark"
-    ]
-    assert [chunk.section for chunk in spark if chunk.section.startswith("levels")] == BLOCKS
+    blocks = level_blocks(
+        tuple(
+            chunk
+            for chunk in JsonChunkRepository(config.processed_dir).all()
+            if chunk.entity.slug == "spark"
+        )
+    )
+    assert [block.section for block in blocks] == BLOCKS

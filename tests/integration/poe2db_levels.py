@@ -12,9 +12,6 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-import httpx2
-from cli_e2e import ROBOTS_URL
-
 from poe2_rag.ingestion.adapters.outbound.poe2db import (
     DEFAULT_LEVEL_BLOCK_SIZE,
     Poe2dbGemPageParser,
@@ -109,17 +106,3 @@ def spark_level_page(count: int = ROW_COUNT) -> str:
         "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in level_rows(count)
     )
     return PAGE.format(table=f"<table><tr>{header}</tr>{rows}</table>")
-
-
-def client_for(page: str) -> httpx2.Client:
-    """Serve robots.txt and `page` for `URL`, so an ingest run reaches the real fetcher offline."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        url = str(request.url)
-        if url == ROBOTS_URL:
-            return httpx2.Response(200, text="User-agent: *\nAllow: /")
-        if url != URL:
-            raise AssertionError(f"unexpected request to {url}")
-        return httpx2.Response(200, text=page)
-
-    return httpx2.Client(transport=httpx2.MockTransport(handler))

@@ -55,7 +55,7 @@ default.
   Route: inline. S4, S7.
 - [x] T4 — Integration re-ingest through the real pipeline: `ReindexReport.truncated_chunk_ids` is
   empty. Route: inline. S4, S7.
-- [ ] T5 — Docs: `poe2db-source.md` D1 superseded, architecture note, measured evidence, full suite and
+- [x] T5 — Docs: `poe2db-source.md` D1 superseded, architecture note, measured evidence, full suite and
   integration run. Route: inline. S6, S8, S4.
 
 ## Evidence
@@ -65,14 +65,13 @@ default.
   gem_page_parser'` during collection, 0 cases run. GREEN: 46 passed in the parser suite after the
   first round of gate findings added the positional-id branch and the repeated-label case; 1391 passed,
   18 deselected in the offline suite; 15 passed, 1394 deselected with `-m integration` (25.97 s).
-  Commit hash: recorded in T5's docs commit.
+  Commit `e8a7916`.
 - **T2** — No RED: the rule already exists in `IngestSource` (`_removed_at_the_same_version`, shipped
   with `feat/snapshot-supersession`), so this is a characterization test and it passed on the first
   run. GREEN: 32 passed in `test_ingest_source.py`, 1393 passed / 18 deselected offline. Same diff
   closes the T1 review minors: the level-label pattern is bounded to four digits so a corrupt cell
   cannot reach `int()`, `build_parser` takes the real default instead of a `None` sentinel, the test
-  helpers are typed, and the module docstring points at the durable D1 record. Commit hash: recorded
-  in T5's docs commit.
+  helpers are typed, and the module docstring points at the durable D1 record. Commit `40e66f0`.
 - **T3** — RED against `150887e` (base, via `git archive` into `/tmp`): the same 40-row page parses to one
   `levels` section and the budget test fails (`ValueError: not enough values to unpack`). Measured with
   the real `bge-base-en-v1.5` tokenizer, one block of 40 rows = **1,283 tokens**, over the 512 window.
@@ -84,13 +83,18 @@ default.
   `DEFAULT_MAX_SEQUENCE_LENGTH` and counts through `bge_embedder.token_lengths`, the batch function
   `overflowing_indices` uses (covered offline in `test_bge_embedder.py`), so the guard cannot drift from
   the window the index enforces; the `transformers` import lives inside the tokenizer fixture, so
-  collecting the offline suite no longer pays for it (3.82 s → 2.34 s). Commit hash: recorded in T5's
-  docs commit.
+  collecting the offline suite no longer pays for it (3.82 s → 2.34 s). Commit `5a66e53`.
 - **T4** — RED against `150887e`: the same 40-row page ingests to 3 chunks and the real reindex reports
   `Truncated chunk ids: poe2db:active_gem:spark@0.1.1#levels.` GREEN with the blocks: 6 chunks, the four
   `levels-*` sections in order, the 40 rows once and in order across them, no `Truncated chunk ids` line
   and `ReindexReport.truncated_chunk_ids == ()`; re-ingesting the same page reports `0 removed` and keeps
-  one set of blocks. Commit hash: recorded in T5's docs commit.
+  one set of blocks. Commit `272d482`.
+- **T5** — D1 of `odd/tasks/poe2db-source.md` carries the supersession note (same format as D3), the
+  stale `levels` sentence in `docs/architecture.md` describes the blocks, and the shared transport moved
+  to `cli_e2e.client_serving` so the two generated-page suites no longer keep a copy of the handler. This
+  docs commit records the hash of every task above. Final runs: `uv run pytest -q` 1394 passed, 24
+  deselected; `uv run pytest -q -m integration` 21 passed, 1397 deselected. One commit per task on
+  `feat/poe2db-level-blocks`.
 
 ## Log
 
