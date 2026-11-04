@@ -7,6 +7,7 @@ its locator, exactly as the HTTP fetcher returns it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser import (
     EmptyGemPageError,
+    InvalidLevelBlockSizeError,
     MissingPageUrlError,
     NaiveFetchedAtError,
     NotAGemPageError,
@@ -37,7 +39,7 @@ FETCHED_AT = datetime(2026, 11, 1, 12, 30, tzinfo=UTC)
 CURRENT = PatchVersion.parse("0.1.1")
 
 
-def build_parser() -> Poe2dbGemPageParser:
+def build_parser(*, level_block_size: int | None = None) -> Poe2dbGemPageParser:
     catalog = InMemoryPatchCatalog(
         [
             PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
@@ -45,7 +47,9 @@ def build_parser() -> Poe2dbGemPageParser:
         ],
         CURRENT,
     )
-    return Poe2dbGemPageParser(catalog)
+    if level_block_size is None:
+        return Poe2dbGemPageParser(catalog)
+    return Poe2dbGemPageParser(catalog, level_block_size=level_block_size)
 
 
 def catalog_with(*released: tuple[str, date]) -> InMemoryPatchCatalog:
@@ -93,6 +97,47 @@ def line_set(text: str) -> list[str]:
     return text.splitlines()
 
 
+LEVEL_HEADER = ("Level", "Mana", "Damage")
+STATS_STUB = """
+<div class="Stats">
+  <div class="property">Spell</div>
+  <div class="secDescrText">A probe.</div>
+</div>
+"""
+"""The smallest property block a page needs to be a gem page at all."""
+
+
+def level_cells(count: int) -> list[tuple[str, str, str]]:
+    """Return `count` level rows, level 1 first, with the values a real table renders."""
+    return [
+        (str(level), str(4 + level), f"{level * 10} to {level * 10 + 9}")
+        for level in range(1, count + 1)
+    ]
+
+
+def level_table(cells: Sequence[Sequence[str]]) -> str:
+    """Render a level table the way the page does: one header row and one row per level."""
+    header = "".join(f"<th>{cell}</th>" for cell in LEVEL_HEADER)
+    rows = "".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in cells
+    )
+    return f"<table><tr>{header}</tr>{rows}</table>"
+
+
+def level_page(count: int) -> str:
+    """Return a gem page whose level table has `count` data rows, levels 1..`count`."""
+    return gem_page(STATS_STUB) + level_table(level_cells(count))
+
+
+def level_chunks(chunks: tuple) -> list:
+    """Return the level blocks of a parsed page, in document order."""
+    return [chunk for chunk in chunks if chunk.section.startswith(("levels-", "rows-"))]
+
+
+def rendered_rows(cells: Sequence[Sequence[str]]) -> list[str]:
+    return [" | ".join(row) for row in cells]
+
+
 class TestActiveGem:
     def test_is_a_document_parser(self) -> None:
         assert isinstance(build_parser(), DocumentParser)
@@ -104,7 +149,7 @@ class TestActiveGem:
             "description",
             "properties",
             "explicit-modifiers",
-            "levels",
+            "levels-01-20",
         ]
         for chunk in chunks:
             assert chunk.entity.kind == "active_gem"
@@ -170,10 +215,12 @@ class TestActiveGem:
 
         assert modifiers.modifiers == ()
 
-    def test_level_table_is_one_levels_section_with_exact_rows(self) -> None:
-        levels = by_section(build_parser().parse(raw_document()), "levels")
+    def test_the_level_table_is_a_self_describing_block_of_its_rows(self) -> None:
+        """The title and the header repeat the context the embedder and the reranker lack (S2)."""
+        levels = by_section(build_parser().parse(raw_document()), "levels-01-20")
 
         assert line_set(levels.text) == [
+            "Spark — levels 1–20",
             "Level | Requires Level | Int | Mana | Base Damage | Deals 1 to 10 Lightning Damage "
             "| Fires 4 Projectiles | Deals 7 to 11 Cold Damage | Fires 12 Projectiles",
             "1 | 0 | 4 | 5 | 100%, 100%, 100%, 100% | 1, 10 | 4 | 7, 11 | 12",
@@ -187,8 +234,108 @@ class TestActiveGem:
             "poe2db:active_gem:spark@0.1.1#description",
             "poe2db:active_gem:spark@0.1.1#properties",
             "poe2db:active_gem:spark@0.1.1#explicit-modifiers",
-            "poe2db:active_gem:spark@0.1.1#levels",
+            "poe2db:active_gem:spark@0.1.1#levels-01-20",
         ]
+
+
+class TestLevelBlocks:
+    """The per-level table is split into self-describing blocks no model window has to cut (S1-S3)."""
+
+    def test_a_forty_row_table_becomes_four_blocks_of_ten_rows(self) -> None:
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+
+        assert [block.section for block in blocks] == [
+            "levels-01-10",
+            "levels-11-20",
+            "levels-21-30",
+            "levels-31-40",
+        ]
+
+    def test_each_block_repeats_the_title_the_header_and_its_own_rows(self) -> None:
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+
+        assert len(blocks) == 4
+        for index, block in enumerate(blocks):
+            lines = line_set(block.text)
+            first = index * 10 + 1
+            assert lines[0] == f"Probe — levels {first}–{first + 9}"
+            assert lines[1] == "Level | Mana | Damage"
+            assert lines[2:] == rendered_rows(level_cells(40))[first - 1 : first + 9]
+            assert len(lines) == 12
+
+    def test_the_block_rows_are_the_original_rows_once_and_in_order(self) -> None:
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+
+        rows = [line for block in blocks for line in line_set(block.text)[2:]]
+
+        assert rows == rendered_rows(level_cells(40))
+
+    def test_a_table_that_is_not_a_multiple_has_a_shorter_last_block(self) -> None:
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(25))))
+
+        assert [block.section for block in blocks] == [
+            "levels-01-10",
+            "levels-11-20",
+            "levels-21-25",
+        ]
+        assert line_set(blocks[-1].text)[0] == "Probe — levels 21–25"
+        assert line_set(blocks[-1].text)[2:] == rendered_rows(level_cells(25))[20:]
+
+    def test_the_block_size_is_a_constructor_parameter(self) -> None:
+        chunks = build_parser(level_block_size=7).parse(raw_document(content=level_page(40)))
+        blocks = level_chunks(chunks)
+
+        assert [block.section for block in blocks] == [
+            "levels-01-07",
+            "levels-08-14",
+            "levels-15-21",
+            "levels-22-28",
+            "levels-29-35",
+            "levels-36-40",
+        ]
+        assert len(line_set(blocks[-1].text)) == 2 + 5
+
+    def test_the_block_ids_sort_in_table_order(self) -> None:
+        """`Chunk.__post_init__` already rejects a non-slug section during `parse`."""
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+        sections = [block.section for block in blocks]
+
+        assert sorted(sections) == sections
+
+    def test_a_first_column_that_is_not_a_level_series_is_labelled_by_position(self) -> None:
+        """A value the page never rendered must not become a level in the id or the title (S2)."""
+        cells = [(f"{level}-{level + 20}", "5", "1 to 9") for level in range(1, 21)]
+        content = gem_page(STATS_STUB) + level_table(cells)
+
+        blocks = level_chunks(build_parser().parse(raw_document(content=content)))
+
+        assert [block.section for block in blocks] == ["rows-01-10", "rows-11-20"]
+        assert line_set(blocks[0].text)[0] == "Probe — rows 1–10"
+        assert line_set(blocks[0].text)[2] == "1-21 | 5 | 1 to 9"
+        assert all("levels" not in line_set(block.text)[0] for block in blocks)
+
+    def test_repeated_level_values_do_not_give_two_blocks_one_id(self) -> None:
+        """Repeated labels would collide as `levels-01-10` twice and break the corpus load."""
+        cells = [(str(level % 10 + 1), "5", "1 to 9") for level in range(20)]
+        content = gem_page(STATS_STUB) + level_table(cells)
+
+        blocks = level_chunks(build_parser().parse(raw_document(content=content)))
+
+        assert [block.section for block in blocks] == ["rows-01-10", "rows-11-20"]
+        assert len({block.chunk_id for block in blocks}) == 2
+
+    def test_a_table_without_data_rows_produces_no_levels_chunk(self) -> None:
+        content = gem_page(STATS_STUB) + level_table(())
+
+        chunks = build_parser().parse(raw_document(content=content))
+
+        assert level_chunks(chunks) == []
+        assert [chunk.section for chunk in chunks] == ["description", "properties"]
+
+    @pytest.mark.parametrize("level_block_size", [0, -1, "10", True])
+    def test_an_invalid_block_size_is_rejected(self, level_block_size: object) -> None:
+        with pytest.raises(InvalidLevelBlockSizeError):
+            build_parser(level_block_size=level_block_size)  # type: ignore[arg-type]
 
 
 class TestSupportGem:
@@ -202,7 +349,7 @@ class TestSupportGem:
             "properties",
             "implicit-modifiers",
             "explicit-modifiers",
-            "levels",
+            "levels-01-20",
         ]
         entity = chunks[0].entity
         assert entity.kind == "support_gem"
@@ -409,7 +556,7 @@ class TestLayoutRobustness:
         </table>
         """
 
-        levels = by_section(build_parser().parse(raw_document(content=content)), "levels")
+        levels = by_section(build_parser().parse(raw_document(content=content)), "levels-20-20")
 
         assert "56" in levels.text
         assert "99" not in levels.text
@@ -429,7 +576,7 @@ class TestLayoutRobustness:
         </table>
         """
 
-        levels = by_section(build_parser().parse(raw_document(content=content)), "levels")
+        levels = by_section(build_parser().parse(raw_document(content=content)), "levels-1-1")
 
         assert levels.text.splitlines()[-1] == "1 |  | 5"
 

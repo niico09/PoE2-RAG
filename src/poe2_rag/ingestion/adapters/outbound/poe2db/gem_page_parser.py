@@ -7,13 +7,20 @@ The captured page (2026-11-01) duplicates its gem block for responsive layouts: 
 the tags, the properties and `.secDescrText` (the description); the modifier block is the one after
 the first `gemTabs` header (`Base`), and later variant tabs (`Cold-Infused`) are intentionally not
 mixed into the base entity. `.implicitMod` is read from inside the popup only, so the page's cosmetic
-effect list is never mistaken for gem implicits. The per-level data is the first table whose first
-header is `Level`; the page has one table per gem tab and the main tab is the first.
+effect list is never mistaken for gem implicits.
 
 The page has no canonical link and no `h1`, so the source URL is the fetcher's locator and a locator
 that is not an absolute http(s) URL is rejected instead of inventing one. Text is rendered with
 `<br>` as a space and whitespace collapsed, which keeps the page's exact numbers and wording while
 removing formatting spaces the browser does not show.
+
+The per-level table is the first table whose first header is `Level`; the page has one table per gem
+tab and the main tab is the first. It is rendered as consecutive blocks of at most
+`DEFAULT_LEVEL_BLOCK_SIZE` rows, each one a section of its own that repeats the gem name, the level
+range and the table header before its rows: the embedder and the reranker read one chunk's text
+alone, and a single 40-row table overflows the 512-token window they share, so rows past the first
+third would never reach dense retrieval or reranking (D1, superseded by
+`odd/tasks/poe2db-level-blocks.md`).
 
 `valid_from` is the patch the catalog says was current at the capture instant:
 `current_at(captured_on)`, where `captured_on` is `fetched_at` normalized to a UTC date. The page
@@ -27,6 +34,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from itertools import pairwise
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -60,6 +68,10 @@ _PERCENT_KINDS = {
 _PROPERTY_CLASSES = frozenset({"property", "requirements", "hybridProperty"})
 _MODIFIER_SECTIONS = frozenset({"explicit-modifiers", "implicit-modifiers"})
 _PUNCTUATION_SPACE = re.compile(r"\s+([,.;:])")
+_LEVEL_LABEL = re.compile(r"[0-9]+")
+
+DEFAULT_LEVEL_BLOCK_SIZE = 10
+"""Rows per per-level block, the size the dense and rerank token windows allow (S4)."""
 
 
 class Poe2dbParseError(RuntimeError):
@@ -86,13 +98,25 @@ class EmptyGemPageError(Poe2dbParseError):
     """Raised when a gem page has a name but no content this parser can turn into a chunk."""
 
 
+class InvalidLevelBlockSizeError(Poe2dbParseError):
+    """Raised when the per-level block size is not a positive integer."""
+
+
 class Poe2dbGemPageParser:
-    """Turn one poe2db gem page into chunks: description, properties, modifiers and levels."""
+    """Turn one poe2db gem page into chunks: description, properties, modifiers and level blocks."""
 
-    __slots__ = ("_catalog",)
+    __slots__ = ("_catalog", "_level_block_size")
 
-    def __init__(self, catalog: PatchCatalog) -> None:
+    def __init__(
+        self, catalog: PatchCatalog, *, level_block_size: int = DEFAULT_LEVEL_BLOCK_SIZE
+    ) -> None:
+        """Build the parser, rejecting a block size that would produce no rows or a fraction of one."""
+        if type(level_block_size) is not int or level_block_size < 1:
+            raise InvalidLevelBlockSizeError(
+                f"level_block_size must be a positive int, got {level_block_size!r}"
+            )
         self._catalog = catalog
+        self._level_block_size = level_block_size
 
     def parse(self, raw: RawDocument) -> tuple[Chunk, ...]:
         """Parse one gem page, valid from the patch current at the capture instant onwards (S4)."""
@@ -115,7 +139,7 @@ class Poe2dbGemPageParser:
         entity = EntityRef(kind, _slugify(name), name)
         validity = Validity(self._catalog.current_at(captured_on))
         source = SourceRef(_SOURCE_TYPE, url, captured_on)
-        sections = _sections(popup)
+        sections = _sections(popup, name, self._level_block_size)
         if not _has_core_sections(sections):
             raise EmptyGemPageError(
                 f"gem page {name!r} has no properties and no description or modifiers"
@@ -176,7 +200,7 @@ def _gem_kind(popup: Tag) -> str:
     return "support_gem" if _SUPPORT_MARKER in text else "active_gem"
 
 
-def _sections(popup: Tag) -> list[tuple[str, str, tuple, tuple]]:
+def _sections(popup: Tag, name: str, level_block_size: int) -> list[tuple[str, str, tuple, tuple]]:
     """Build every section the page offers, in a stable order."""
     content = popup.find(class_="content")
     scope = content if isinstance(content, Tag) else popup
@@ -210,9 +234,8 @@ def _sections(popup: Tag) -> list[tuple[str, str, tuple, tuple]]:
     if explicit:
         sections.append(("explicit-modifiers", "\n".join(explicit), (), _parse_modifiers(explicit)))
 
-    levels = _level_table(popup)
-    if levels:
-        sections.append(("levels", levels, (), ()))
+    levels = _level_blocks(popup, name, level_block_size)
+    sections.extend((section, text, (), ()) for section, text in levels)
     return sections
 
 
@@ -362,12 +385,62 @@ def _stat(text: str) -> str:
     return text.strip().rstrip(".")
 
 
-def _level_table(popup: Tag) -> str:
-    """Render the gem's per-level table as one section: header plus one line per row (D1).
+def _level_blocks(popup: Tag, name: str, block_size: int) -> list[tuple[str, str]]:
+    """Split the gem's per-level table into self-describing row blocks (D1 of this feature).
+
+    A block is `levels-<first>-<last>` (or `rows-<first>-<last>` when the first column is not a level
+    series), zero-padded so the ids sort in table order, and its text is the gem name with that range,
+    the table header and the rows, exactly as the page renders them: a chunk is read alone by the
+    embedder and the reranker, so a block that dropped the header would turn a column of numbers into
+    unexplained values. Empty cells are kept so a value never slides under the wrong column header,
+    and a table with a header but no data rows is no table of levels at all.
+    """
+    table = _level_table(popup)
+    if table is None:
+        return []
+    header, rows = table
+    prefix, labels, width = _level_labels(rows)
+    header_line = " | ".join(header)
+    blocks: list[tuple[str, str]] = []
+    for start in range(0, len(rows), block_size):
+        block = rows[start : start + block_size]
+        first, last = labels[start], labels[start + len(block) - 1]
+        section = f"{prefix}-{first.zfill(width)}-{last.zfill(width)}"
+        title = f"{name} — {prefix} {first}–{last}"
+        rendered = [" | ".join(cells) for cells in block]
+        blocks.append((section, "\n".join([title, header_line, *rendered])))
+    return blocks
+
+
+def _level_labels(rows: Sequence[Sequence[str]]) -> tuple[str, list[str], int]:
+    """Return the id prefix, the label of every row and the width that keeps the ids sortable.
+
+    The observed table labels each row with its level, 1 to 40 in order, so a block is
+    `levels-<first>-<last>` and its title names levels the page really renders, with the width of the
+    widest level (`40` → two digits → `levels-01-10`). Any other first column is labelled by its
+    1-based position instead, as `rows-<first>-<last>`: a value the page does not render must not
+    become a level in the id or in the title a citation quotes, and a series that repeats a value
+    would otherwise give two blocks the same `chunk_id` and make the corpus unloadable.
+    """
+    labels = [cells[0] for cells in rows]
+    if _is_level_series(labels):
+        return "levels", labels, max(len(label) for label in labels)
+    return "rows", [str(index) for index in range(1, len(rows) + 1)], len(str(len(rows)))
+
+
+def _is_level_series(labels: Sequence[str]) -> bool:
+    """Return True when every label is a run of digits and the series strictly increases."""
+    if not all(_LEVEL_LABEL.fullmatch(label) for label in labels):
+        return False
+    values = [int(label) for label in labels]
+    return all(current < following for current, following in pairwise(values))
+
+
+def _level_table(popup: Tag) -> tuple[list[str], list[list[str]]] | None:
+    """Return the gem's per-level header and data rows, or None when the page has no such table.
 
     Only tables inside or after the gem block are considered; an unrelated `Level` table earlier in
-    the page must not be cited as this gem's. Empty cells are kept so a value never slides under the
-    wrong column header.
+    the page must not be cited as this gem's.
     """
     tables = list(popup.find_all("table")) + list(popup.find_all_next("table"))
     for table in tables:
@@ -377,13 +450,13 @@ def _level_table(popup: Tag) -> str:
         header = [_cell(cell) for cell in rows[0].find_all(["th", "td"], recursive=False)]
         if not header or header[0] != "Level":
             continue
-        lines = []
-        for row in rows:
+        data: list[list[str]] = []
+        for row in rows[1:]:
             values = [_cell(cell) for cell in row.find_all(["th", "td"], recursive=False)]
             if values and any(values):
-                lines.append(" | ".join(values))
-        return "\n".join(lines)
-    return ""
+                data.append(values)
+        return (header, data) if data else None
+    return None
 
 
 def _cell(cell: Tag) -> str:
