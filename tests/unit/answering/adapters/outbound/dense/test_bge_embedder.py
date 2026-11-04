@@ -23,6 +23,7 @@ from poe2_rag.answering.adapters.outbound.dense.bge_embedder import (
     BlankTextError,
     EmbedderConfigurationError,
     EmbedderError,
+    token_lengths,
 )
 from poe2_rag.answering.application import Embedder
 from poe2_rag.ingestion.application import DocumentEmbedder
@@ -234,6 +235,20 @@ class TestOverflow:
         BgeEmbedder(max_sequence_length=2).overflowing_indices(("one two three",))
 
         assert counted == [False]
+
+    def test_the_public_counter_uses_the_same_rule_as_the_overflow_report(self) -> None:
+        """A budget guard reads this count, so it must keep the flags and the special tokens."""
+        calls: list[dict[str, Any]] = []
+
+        class RecordingTokenizer(StubTokenizer):
+            def __call__(self, texts: Any, **kwargs: Any) -> Any:
+                calls.append(kwargs)
+                return super().__call__(texts, **kwargs)
+
+        lengths = token_lengths(RecordingTokenizer(), ("one two three", "one"))
+
+        assert lengths == (3, 1)
+        assert calls == [{"truncation": False, "add_special_tokens": True, "padding": False}]
 
 
 class TestConfiguration:

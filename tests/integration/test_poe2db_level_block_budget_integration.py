@@ -25,7 +25,7 @@ from poe2db_levels import (
 from poe2_rag.answering.adapters.outbound.dense.bge_embedder import (
     DEFAULT_MAX_SEQUENCE_LENGTH,
     DEFAULT_MODEL_ID,
-    count_tokens,
+    token_lengths,
 )
 
 pytestmark = pytest.mark.integration
@@ -54,15 +54,17 @@ def test_the_generated_rows_are_at_least_as_wide_as_the_widest_observed_row() ->
 def test_the_whole_table_would_not_fit_one_window(tokenizer) -> None:
     """The shape this replaces: one block holding all 40 rows overflows the window."""
     (whole,) = level_blocks(parse_page(spark_level_page(), ROW_COUNT))
+    (count,) = token_lengths(tokenizer, [whole.text])
+    print(f"one block of {ROW_COUNT} rows: {count} tokens, budget {MAX_TOKENS}")
 
-    assert count_tokens(tokenizer, whole.text) > MAX_TOKENS
+    assert count > MAX_TOKENS
 
 
 def test_every_default_block_fits_the_window_with_margin(tokenizer) -> None:
     blocks = level_blocks(parse_page(spark_level_page()))
 
     assert [block.section for block in blocks] == BLOCKS
-    counts = [count_tokens(tokenizer, block.text) for block in blocks]
+    counts = token_lengths(tokenizer, [block.text for block in blocks])
     print(
         f"{len(counts)} blocks of {ROW_COUNT // len(counts)} rows: generated proxy max "
         f"{max(counts)} tokens (margin {MAX_TOKENS - max(counts)}); observed worst {OBSERVED_WORST} "
@@ -75,5 +77,6 @@ def test_every_default_block_fits_the_window_with_margin(tokenizer) -> None:
 
 def test_the_committed_fixture_block_fits_the_window(tokenizer) -> None:
     (block,) = level_blocks(parse_page(FIXTURE.read_text(encoding="utf-8")))
+    (count,) = token_lengths(tokenizer, [block.text])
 
-    assert count_tokens(tokenizer, block.text) + MARGIN_TOKENS <= MAX_TOKENS
+    assert count + MARGIN_TOKENS <= MAX_TOKENS

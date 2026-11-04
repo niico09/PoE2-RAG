@@ -53,7 +53,7 @@ default.
   is removed and the blocks are added. Route: inline. S5, S7.
 - [x] T3 — Integration budget guard: the real tokenizer over the 40-row worst case, measured counts.
   Route: inline. S4, S7.
-- [ ] T4 — Integration re-ingest through the real pipeline: `ReindexReport.truncated_chunk_ids` is
+- [x] T4 — Integration re-ingest through the real pipeline: `ReindexReport.truncated_chunk_ids` is
   empty. Route: inline. S4, S7.
 - [ ] T5 — Docs: `poe2db-source.md` D1 superseded, architecture note, measured evidence, full suite and
   integration run. Route: inline. S6, S8, S4.
@@ -74,18 +74,23 @@ default.
   helpers are typed, and the module docstring points at the durable D1 record. Commit hash: recorded
   in T5's docs commit.
 - **T3** — RED against `150887e` (base, via `git archive` into `/tmp`): the same 40-row page parses to one
-  `levels` section and the budget test fails (`ValueError: not enough values to unpack`, plus the shape
-  measurement below). Measured with the real `bge-base-en-v1.5` tokenizer, one block of 40 rows =
-  **1,277 tokens**, over the 512 window. GREEN over the six captures with 10-row blocks: Spark 357,
-  Fireball 291, Lightning Arrow 266, Ice Nova 380, Arc 251, Raging Spirits 182; the generated 40-row page
-  (rows at least as wide as the widest observed, 73 vs 72 chars) measures **353 tokens max, margin 159**.
-  `uv run pytest -q -m integration -s` prints `4 blocks of 10 rows: max 353 tokens, budget 512, margin
-  `uv run pytest -q -m integration -s` prints `4 blocks of 10 rows: generated proxy max 353 tokens
-  (margin 159); observed worst 380 tokens (margin 132)`. The budget reads
-  `DEFAULT_MAX_SEQUENCE_LENGTH` and counts through `bge_embedder.count_tokens`, the function
-  `overflowing_indices` now uses, so the guard cannot drift from the window the index enforces; the
-  `transformers` import lives inside the tokenizer fixture, so collecting the offline suite no longer
-  pays for it (3.82 s → 2.34 s). Commit hash: recorded in T5's docs commit.
+  `levels` section and the budget test fails (`ValueError: not enough values to unpack`). Measured with
+  the real `bge-base-en-v1.5` tokenizer, one block of 40 rows = **1,283 tokens**, over the 512 window.
+  GREEN over the six captures with 10-row blocks: Spark 357, Fireball 291, Lightning Arrow 266, Ice Nova
+  380, Arc 251, Raging Spirits 182; the generated 40-row page (rows at least as wide as the widest
+  observed, 73 vs 72 chars) measures **353 tokens max, margin 159**. `uv run pytest -q -m integration
+  -s` prints `one block of 40 rows: 1283 tokens, budget 512` and `4 blocks of 10 rows: generated proxy
+  max 353 tokens (margin 159); observed worst 380 tokens (margin 132)`. The budget reads
+  `DEFAULT_MAX_SEQUENCE_LENGTH` and counts through `bge_embedder.token_lengths`, the batch function
+  `overflowing_indices` uses (covered offline in `test_bge_embedder.py`), so the guard cannot drift from
+  the window the index enforces; the `transformers` import lives inside the tokenizer fixture, so
+  collecting the offline suite no longer pays for it (3.82 s → 2.34 s). Commit hash: recorded in T5's
+  docs commit.
+- **T4** — RED against `150887e`: the same 40-row page ingests to 3 chunks and the real reindex reports
+  `Truncated chunk ids: poe2db:active_gem:spark@0.1.1#levels.` GREEN with the blocks: 6 chunks, the four
+  `levels-*` sections in order, the 40 rows once and in order across them, no `Truncated chunk ids` line
+  and `ReindexReport.truncated_chunk_ids == ()`; re-ingesting the same page reports `0 removed` and keeps
+  one set of blocks. Commit hash: recorded in T5's docs commit.
 
 ## Log
 
