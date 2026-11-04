@@ -51,7 +51,7 @@ default.
   parameter, unit tests against the fixtures and 40-row tables. Route: inline. S1, S2, S3, S7, S8.
 - [x] T2 — Application evidence with fakes: the stored single `levels` chunk at the same `valid_from`
   is removed and the blocks are added. Route: inline. S5, S7.
-- [ ] T3 — Integration budget guard: the real tokenizer over the 40-row worst case, measured counts.
+- [x] T3 — Integration budget guard: the real tokenizer over the 40-row worst case, measured counts.
   Route: inline. S4, S7.
 - [ ] T4 — Integration re-ingest through the real pipeline: `ReindexReport.truncated_chunk_ids` is
   empty. Route: inline. S4, S7.
@@ -73,6 +73,19 @@ default.
   cannot reach `int()`, `build_parser` takes the real default instead of a `None` sentinel, the test
   helpers are typed, and the module docstring points at the durable D1 record. Commit hash: recorded
   in T5's docs commit.
+- **T3** — RED against `150887e` (base, via `git archive` into `/tmp`): the same 40-row page parses to one
+  `levels` section and the budget test fails (`ValueError: not enough values to unpack`, plus the shape
+  measurement below). Measured with the real `bge-base-en-v1.5` tokenizer, one block of 40 rows =
+  **1,277 tokens**, over the 512 window. GREEN over the six captures with 10-row blocks: Spark 357,
+  Fireball 291, Lightning Arrow 266, Ice Nova 380, Arc 251, Raging Spirits 182; the generated 40-row page
+  (rows at least as wide as the widest observed, 73 vs 72 chars) measures **353 tokens max, margin 159**.
+  `uv run pytest -q -m integration -s` prints `4 blocks of 10 rows: max 353 tokens, budget 512, margin
+  `uv run pytest -q -m integration -s` prints `4 blocks of 10 rows: generated proxy max 353 tokens
+  (margin 159); observed worst 380 tokens (margin 132)`. The budget reads
+  `DEFAULT_MAX_SEQUENCE_LENGTH` and counts through `bge_embedder.count_tokens`, the function
+  `overflowing_indices` now uses, so the guard cannot drift from the window the index enforces; the
+  `transformers` import lives inside the tokenizer fixture, so collecting the offline suite no longer
+  pays for it (3.82 s → 2.34 s). Commit hash: recorded in T5's docs commit.
 
 ## Log
 
@@ -195,6 +208,17 @@ S3 says "A table with no data rows produces no levels chunk, as today". Today a 
 and no data rows returns the header line, and `_sections` turns it into a `levels` chunk containing
 only `Level | Mana`. The requirement is implemented (no rows, no chunk); the parenthetical is wrong
 about the current behavior and is recorded here instead of silently preserved.
+
+### L7 — One file outside the allowed surfaces
+
+The T3 review asked for the budget guard to count tokens through the same rule
+`BgeEmbedder.overflowing_indices` uses instead of a copy, and to read the window from the adapter
+rather than restating 512. That is a small extraction in
+`src/poe2_rag/answering/adapters/outbound/dense/bge_embedder.py` (private `_token_lengths`, public
+`count_tokens`, `overflowing_indices` reusing them), outside the listed edit surfaces but inside the
+layer the prompt protects only for domain and application. The dense adapter's own 147 unit tests and
+the 19 integration tests stay green, and no public behaviour changed: same flags, same batch call,
+same `overflowing_indices` contract.
 
 ### L6 — `docs/architecture.md` stays Spanish
 

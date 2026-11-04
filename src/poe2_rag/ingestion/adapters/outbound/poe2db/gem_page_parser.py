@@ -20,7 +20,7 @@ tab and the main tab is the first. It is rendered as consecutive blocks of at mo
 range and the table header before its rows: the embedder and the reranker read one chunk's text
 alone, and a single 40-row table overflows the 512-token window they share, so rows past the first
 third would never reach dense retrieval or reranking (D1 of `odd/tasks/poe2db-source.md`,
-marked superseded there).
+superseded by this feature).
 
 `valid_from` is the patch the catalog says was current at the capture instant:
 `current_at(captured_on)`, where `captured_on` is `fetched_at` normalized to a UTC date. The page

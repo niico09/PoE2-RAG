@@ -341,7 +341,7 @@ class TestSupersession:
 
         report = ingest.execute(LOCATOR)
 
-        assert (report.removed, report.closed, report.skipped) == (1, 0, 1)
+        assert (report.closed, report.removed, report.skipped) == (0, 1, 1)
         assert recorder.arguments("save") == [(tuple(blocks),)]
         assert recorder.arguments("remove") == [((old_levels.chunk_id,),)]
         assert repository.all() == (description, *blocks)

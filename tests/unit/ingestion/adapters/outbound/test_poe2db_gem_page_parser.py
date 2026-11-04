@@ -41,15 +41,24 @@ FETCHED_AT = datetime(2026, 11, 1, 12, 30, tzinfo=UTC)
 CURRENT = PatchVersion.parse("0.1.1")
 
 
-def build_parser(level_block_size: int = DEFAULT_LEVEL_BLOCK_SIZE) -> Poe2dbGemPageParser:
-    catalog = InMemoryPatchCatalog(
+def build_catalog() -> InMemoryPatchCatalog:
+    return InMemoryPatchCatalog(
         [
             PatchRelease(PatchVersion.parse("0.1.0"), date(2024, 12, 6)),
             PatchRelease(CURRENT, date(2025, 1, 17)),
         ],
         CURRENT,
     )
-    return Poe2dbGemPageParser(catalog, level_block_size=level_block_size)
+
+
+def build_parser(level_block_size: int = DEFAULT_LEVEL_BLOCK_SIZE) -> Poe2dbGemPageParser:
+    """Build the parser with the size the test asks for, defaulting to the module's own."""
+    return Poe2dbGemPageParser(build_catalog(), level_block_size=level_block_size)
+
+
+def build_production_parser() -> Poe2dbGemPageParser:
+    """Build the parser the way `bootstrap.py` does, so the constructor default is the one tested."""
+    return Poe2dbGemPageParser(build_catalog())
 
 
 def catalog_with(*released: tuple[str, date]) -> InMemoryPatchCatalog:
@@ -243,7 +252,8 @@ class TestLevelBlocks:
     """The per-level table is split into self-describing blocks no model window has to cut (S1-S3)."""
 
     def test_a_forty_row_table_becomes_four_blocks_of_ten_rows(self) -> None:
-        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+        """The parser is built without a size, so this pins the constructor default (S1)."""
+        blocks = level_chunks(build_production_parser().parse(raw_document(content=level_page(40))))
 
         assert [block.section for block in blocks] == [
             "levels-01-10",

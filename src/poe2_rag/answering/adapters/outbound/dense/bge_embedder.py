@@ -86,6 +86,26 @@ def _load_model(model_id: str, device: str) -> _Model:
     return cast(_Model, SentenceTransformer(model_id, device=device))
 
 
+def _token_lengths(tokenizer: Any, texts: Sequence[str]) -> list[int]:
+    """Count the tokens of each text with truncation off and the model's own special tokens."""
+    encoded = tokenizer(
+        list(texts),
+        truncation=False,
+        add_special_tokens=True,
+        padding=False,
+    )["input_ids"]
+    return [len(token_ids) for token_ids in encoded]
+
+
+def count_tokens(tokenizer: Any, text: str) -> int:
+    """Return the token count of `text`, measured the way `overflowing_indices` measures a corpus.
+
+    Exposed as one function so a caller that has to reason about the window (a budget guard, an
+    operator) counts tokens with the rule the index really uses instead of a copy that can drift.
+    """
+    return _token_lengths(tokenizer, [text])[0]
+
+
 class BgeEmbedder:
     """Embed queries and documents with a local BGE model, applying the instruction to queries only."""
 
@@ -159,14 +179,9 @@ class BgeEmbedder:
         materialized = _require_texts(texts)
         if not materialized:
             return ()
-        encoded = self._model().tokenizer(
-            list(materialized),
-            truncation=False,
-            add_special_tokens=True,
-            padding=False,
-        )["input_ids"]
+        lengths = _token_lengths(self._model().tokenizer, materialized)
         return tuple(
-            index for index, token_ids in enumerate(encoded) if len(token_ids) > self._max_sequence_length
+            index for index, length in enumerate(lengths) if length > self._max_sequence_length
         )
 
     def _encode(self, sentences: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
