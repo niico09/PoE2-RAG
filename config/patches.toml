@@ -8,13 +8,264 @@
 # answers which patch was current on a given day, which is how a snapshot that carries no patch
 # version (a poe2db page) is dated. Every patch needs one, and the dates must strictly increase with
 # the versions.
+#
+# Source: the official Early Access patch-notes forum
+# (https://www.pathofexile.com/forum/view-forum/2212), read on 2026-11-04. Each date is the UTC day
+# of the version's "Patch Notes" thread. Base releases (x.y.0) have no such thread, only a
+# "Content Update" announcement posted days before launch, so their date is the UTC day of their
+# first hotfix thread; 0.1.0 uses the Early Access launch day (2024-12-06). "Hotfix N" threads do
+# not change the version and are not listed.
 
-current = "0.1.1"
+current = "0.5.5e"
 
 [[patches]]
 version = "0.1.0"
 released_on = 2024-12-06
 
 [[patches]]
+version = "0.1.0b"
+released_on = 2024-12-09
+
+[[patches]]
+version = "0.1.0c"
+released_on = 2024-12-10
+
+[[patches]]
+version = "0.1.0d"
+released_on = 2024-12-12
+
+[[patches]]
+version = "0.1.0e"
+released_on = 2024-12-17
+
+[[patches]]
+version = "0.1.0f"
+released_on = 2025-01-09
+
+[[patches]]
 version = "0.1.1"
-released_on = 2025-01-17
+released_on = 2025-01-16
+
+[[patches]]
+version = "0.1.1b"
+released_on = 2025-01-23
+
+[[patches]]
+version = "0.1.1c"
+released_on = 2025-02-04
+
+[[patches]]
+version = "0.1.1d"
+released_on = 2025-02-16
+
+[[patches]]
+version = "0.1.1e"
+released_on = 2025-02-26
+
+[[patches]]
+version = "0.1.1f"
+released_on = 2025-03-05
+
+[[patches]]
+version = "0.1.1g"
+released_on = 2025-03-27
+
+[[patches]]
+version = "0.2.0"
+released_on = 2025-04-04
+
+[[patches]]
+version = "0.2.0b"
+released_on = 2025-04-05
+
+[[patches]]
+version = "0.2.0c"
+released_on = 2025-04-07
+
+[[patches]]
+version = "0.2.0d"
+released_on = 2025-04-08
+
+[[patches]]
+version = "0.2.0e"
+released_on = 2025-04-10
+
+[[patches]]
+version = "0.2.0f"
+released_on = 2025-04-16
+
+[[patches]]
+version = "0.2.0g"
+released_on = 2025-05-01
+
+[[patches]]
+version = "0.2.0h"
+released_on = 2025-05-15
+
+[[patches]]
+version = "0.2.1"
+released_on = 2025-06-05
+
+[[patches]]
+version = "0.2.1b"
+released_on = 2025-07-11
+
+[[patches]]
+version = "0.2.1c"
+released_on = 2025-08-04
+
+[[patches]]
+version = "0.2.1d"
+released_on = 2025-08-20
+
+[[patches]]
+version = "0.2.1e"
+released_on = 2025-08-26
+
+[[patches]]
+version = "0.3.0"
+released_on = 2025-08-29
+
+[[patches]]
+version = "0.3.0b"
+released_on = 2025-09-03
+
+[[patches]]
+version = "0.3.0c"
+released_on = 2025-09-11
+
+[[patches]]
+version = "0.3.1"
+released_on = 2025-09-30
+
+[[patches]]
+version = "0.3.1b"
+released_on = 2025-10-08
+
+[[patches]]
+version = "0.3.1c"
+released_on = 2025-10-23
+
+[[patches]]
+version = "0.3.1d"
+released_on = 2025-10-31
+
+[[patches]]
+version = "0.3.1e"
+released_on = 2025-12-04
+
+[[patches]]
+version = "0.3.1f"
+released_on = 2025-12-08
+
+[[patches]]
+version = "0.4.0"
+released_on = 2025-12-12
+
+[[patches]]
+version = "0.4.0b"
+released_on = 2025-12-15
+
+[[patches]]
+version = "0.4.0c"
+released_on = 2025-12-18
+
+[[patches]]
+version = "0.4.0d"
+released_on = 2026-01-14
+
+[[patches]]
+version = "0.4.0e"
+released_on = 2026-02-09
+
+[[patches]]
+version = "0.4.0f"
+released_on = 2026-02-26
+
+[[patches]]
+version = "0.4.0g"
+released_on = 2026-03-06
+
+[[patches]]
+version = "0.4.0h"
+released_on = 2026-03-17
+
+[[patches]]
+version = "0.4.0i"
+released_on = 2026-03-25
+
+[[patches]]
+version = "0.4.0j"
+released_on = 2026-04-20
+
+[[patches]]
+version = "0.4.0k"
+released_on = 2026-05-07
+
+[[patches]]
+version = "0.4.0l"
+released_on = 2026-05-25
+
+[[patches]]
+version = "0.5.0"
+released_on = 2026-05-29
+
+[[patches]]
+version = "0.5.0b"
+released_on = 2026-05-30
+
+[[patches]]
+version = "0.5.1"
+released_on = 2026-06-04
+
+[[patches]]
+version = "0.5.2"
+released_on = 2026-06-11
+
+[[patches]]
+version = "0.5.3"
+released_on = 2026-06-18
+
+[[patches]]
+version = "0.5.4"
+released_on = 2026-06-25
+
+[[patches]]
+version = "0.5.4b"
+released_on = 2026-07-02
+
+[[patches]]
+version = "0.5.4c"
+released_on = 2026-07-16
+
+[[patches]]
+version = "0.5.4d"
+released_on = 2026-07-24
+
+[[patches]]
+version = "0.5.4e"
+released_on = 2026-07-30
+
+[[patches]]
+version = "0.5.4f"
+released_on = 2026-08-12
+
+[[patches]]
+version = "0.5.5"
+released_on = 2026-09-02
+
+[[patches]]
+version = "0.5.5b"
+released_on = 2026-09-11
+
+[[patches]]
+version = "0.5.5c"
+released_on = 2026-09-17
+
+[[patches]]
+version = "0.5.5d"
+released_on = 2026-09-28
+
+[[patches]]
+version = "0.5.5e"
+released_on = 2026-10-05
