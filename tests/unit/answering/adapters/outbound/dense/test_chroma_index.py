@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import chromadb
 import numpy
@@ -31,7 +32,9 @@ from poe2_rag.answering.adapters.outbound.dense.chroma_index import (
     VectorIndexError,
     VectorIndexReadError,
     VectorIndexWriteError,
+    VersionCodecMismatchError,
 )
+from poe2_rag.answering.adapters.outbound.dense.version_codec import CODEC_VERSION
 from poe2_rag.answering.application import VectorIndex
 from poe2_rag.answering.domain import RetrievedChunk
 from poe2_rag.ingestion.application import VectorIndexWriter
@@ -475,6 +478,103 @@ class TestAtomicity:
             path=str(tmp_path), settings=Settings(anonymized_telemetry=False)
         )
         assert len(client.list_collections()) == 1
+
+
+def collection_metadata(directory: Path) -> dict[str, Any]:
+    """Read the metadata of the collection the pointer names, as any reader would see it."""
+    pointer = json.loads((directory / "poe2_chunks.current.json").read_text(encoding="utf-8"))
+    client = chromadb.PersistentClient(
+        path=str(directory), settings=Settings(anonymized_telemetry=False)
+    )
+    collected = client.get_collection(pointer["collection"], embedding_function=None)
+    return dict(collected.metadata or {})
+
+
+def rewrite_metadata(directory: Path, metadata: dict[str, Any]) -> None:
+    """Replace the collection metadata, which is how an index from another version looks."""
+    pointer = json.loads((directory / "poe2_chunks.current.json").read_text(encoding="utf-8"))
+    client = chromadb.PersistentClient(
+        path=str(directory), settings=Settings(anonymized_telemetry=False)
+    )
+    client.get_collection(pointer["collection"], embedding_function=None).modify(
+        metadata=metadata
+    )
+
+
+class TestCodecVersion:
+    def test_the_collection_records_the_codec_version_next_to_the_model(
+        self, tmp_path: Path
+    ) -> None:
+        build(tmp_path, (make_chunk(),))
+
+        metadata = collection_metadata(tmp_path)
+
+        assert metadata["version_codec"] == CODEC_VERSION
+        assert metadata["embedding_model"] == "fake-hashed-bow"
+
+    @pytest.mark.parametrize("stored", [1, 0, "2", None])
+    def test_an_index_written_with_another_encoding_is_refused(
+        self, tmp_path: Path, stored: object
+    ) -> None:
+        """Silently reading it would compare a new version against suffix-blind bounds (ADR-0003)."""
+        build(tmp_path, (make_chunk(),))
+        metadata = collection_metadata(tmp_path)
+        metadata["version_codec"] = stored
+        rewrite_metadata(tmp_path, metadata)
+        index = ChromaVectorIndex(tmp_path, embedder=HashingEmbedder())
+
+        with pytest.raises(VersionCodecMismatchError, match="reindex"):
+            index.search(HashingEmbedder().embed("Spark damage."), TARGET, 10)
+
+    def test_an_index_that_predates_the_guard_is_refused(self, tmp_path: Path) -> None:
+        build(tmp_path, (make_chunk(),))
+        metadata = collection_metadata(tmp_path)
+        metadata.pop("version_codec")
+        rewrite_metadata(tmp_path, metadata)
+        index = ChromaVectorIndex(tmp_path, embedder=HashingEmbedder())
+
+        with pytest.raises(VersionCodecMismatchError, match="reindex"):
+            index.search(HashingEmbedder().embed("Spark damage."), TARGET, 10)
+
+
+class TestHotfixValidity:
+    def test_each_hotfix_sees_only_the_chunks_valid_at_it(self, tmp_path: Path) -> None:
+        chunks = (
+            make_chunk("base", version="0.5.5", valid_until="0.5.5e"),
+            make_chunk("hotfix-e", version="0.5.5e", valid_until="0.5.6"),
+            make_chunk("later", version="0.5.6"),
+        )
+        embedder = HashingEmbedder()
+        index = build(tmp_path, chunks)
+
+        for version, expected in (
+            ("0.5.5", ["base"]),
+            ("0.5.5d", ["base"]),
+            ("0.5.5e", ["hotfix-e"]),
+            ("0.5.5z", ["hotfix-e"]),
+            ("0.5.6", ["later"]),
+        ):
+            sections = [
+                item.chunk.section
+                for item in index.search(
+                    embedder.embed("Spark damage."), PatchVersion.parse(version), 10
+                )
+            ]
+
+            assert sections == expected, f"wrong validity at {version}"
+
+    def test_a_hotfix_bound_is_stored_and_read_back(self, tmp_path: Path) -> None:
+        """`valid_until` at a hotfix excludes that hotfix and keeps the base patch open below it."""
+        chunk = make_chunk("base", version="0.5.5", valid_until="0.5.5e")
+        index = build(tmp_path, (chunk,))
+        embedder = HashingEmbedder()
+
+        assert chunk_ids(index.search(embedder.embed("Spark damage."), PatchVersion.parse("0.5.5d"), 10)) == [
+            chunk.chunk_id
+        ]
+        assert (
+            index.search(embedder.embed("Spark damage."), PatchVersion.parse("0.5.5e"), 10) == ()
+        )
 
 
 @dataclass(frozen=True)
