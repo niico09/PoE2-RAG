@@ -94,7 +94,7 @@ El esquema actual del README tiene dos problemas de diseño:
 
 | Concepto | Tipo | Responsabilidad e invariantes |
 |---|---|---|
-| `PatchVersion` | Value object | Versión semántica comparable (`0.1.2 > 0.1.0`). Inmutable. Rechaza formatos inválidos. |
+| `PatchVersion` | Value object | Versión `major.minor.patch` con hotfix opcional de una letra (`0.5.5e`), comparable (`0.5.5 < 0.5.5a < ... < 0.5.5z < 0.5.6`). Inmutable. Rechaza formatos inválidos: minúscula simple `a-z`, sin mayúsculas, sin dos letras, sin dígitos después de la letra y sin ceros a la izquierda. Un hotfix es una versión propia, nunca un alias de su parche base, porque cambia números de balance y D1 exige validez exacta. |
 | `Validity` | Value object | Rango `[valid_from, valid_until)`. `valid_until` vacío = vigente. Responde `is_valid_at(version)`. Invariante: `valid_from < valid_until`. |
 | `PatchRelease` | Value object | Un parche conocido y el día en que se publicó. El catálogo se construye con estas values, así que un parche conocido sin fecha no es representable y las fechas deben crecer estrictamente con las versiones. |
 | `PatchCatalog` | Puerto de dominio | Parches conocidos, cuál es el actual (`current()`, el puntero configurado) y cuál regía en una fecha (`current_at(day)`, la última publicación en o antes de ese día). Única fuente de verdad de "actual". |
@@ -110,6 +110,10 @@ El esquema actual del README tiene dos problemas de diseño:
 
 > Ejemplo ilustrativo. El parche que el sistema considera actual lo declara `current` en
 > `config/patches.toml`; un chunk es vigente por su rango de `Validity`, nunca por una marca propia.
+> El tramo de versión del `chunk_id` y de `validity` es el texto canónico de `PatchVersion`, así que
+> puede llevar hotfix (`patch_notes:patch_notes:0-5-5@0.5.5e#notes`). La clave de la entidad
+> (`0-5-5`) no lo lleva: identifica la línea del parche, así que una captura de hotfix más nueva
+> supersede a la anterior de la misma línea, igual que una recaptura.
 
 ```json
 {

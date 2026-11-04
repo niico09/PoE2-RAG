@@ -77,6 +77,24 @@ class TestPersistence:
 
         assert JsonChunkRepository(tmp_path).all() == (chunk,)
 
+    def test_a_hotfix_version_round_trips(self, tmp_path: Path) -> None:
+        hotfix = PatchVersion.parse("0.5.5e")
+        chunk = Chunk(
+            entity=EntityRef("patch_notes", "0-5-5", "Patch 0.5.5e"),
+            validity=Validity(hotfix),
+            section="notes",
+            text="Reduced the damage of Explosive Shot.",
+            source=SourceRef("patch_notes", THREAD_URL, date(2026, 11, 4)),
+        )
+        repository = JsonChunkRepository(tmp_path)
+
+        repository.save((chunk,))
+
+        (stored,) = JsonChunkRepository(tmp_path).all()
+        assert stored == chunk
+        assert stored.validity.valid_from == hotfix
+        assert stored.chunk_id.endswith("@0.5.5e#notes")
+
     def test_a_missing_file_reads_as_an_empty_repository(self, tmp_path: Path) -> None:
         assert JsonChunkRepository(tmp_path / "missing").all() == ()
 

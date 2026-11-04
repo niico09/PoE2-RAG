@@ -181,3 +181,66 @@ class TestInvariants:
     def test_rejects_a_non_version_current(self) -> None:
         with pytest.raises(InvalidPatchCatalogError):
             InMemoryPatchCatalog([release("0.1.0")], "0.1.0")  # type: ignore[arg-type]
+
+
+HOTFIX_RELEASED_ON: dict[str, date] = {
+    "0.5.5": date(2026, 10, 20),
+    "0.5.5d": date(2026, 11, 2),
+    "0.5.5e": date(2026, 11, 4),
+    "0.5.6": date(2026, 11, 10),
+}
+
+
+def hotfix_catalog(*raw_versions: str, current: str = "0.5.5e") -> InMemoryPatchCatalog:
+    """A catalog whose versions are a patch, its two hotfixes and the next patch."""
+    releases = [PatchRelease(v(raw), HOTFIX_RELEASED_ON[raw]) for raw in raw_versions]
+    return InMemoryPatchCatalog(releases, v(current))
+
+
+class TestHotfixes:
+    def test_known_sorts_each_hotfix_after_its_patch(self) -> None:
+        patch_catalog = hotfix_catalog("0.5.5e", "0.5.5", "0.5.6", "0.5.5d")
+
+        assert [str(version) for version in patch_catalog.known()] == [
+            "0.5.5",
+            "0.5.5d",
+            "0.5.5e",
+            "0.5.6",
+        ]
+
+    def test_current_at_between_two_hotfixes_returns_the_earlier_one(self) -> None:
+        patch_catalog = hotfix_catalog("0.5.5", "0.5.5d", "0.5.5e", "0.5.6")
+
+        assert patch_catalog.current_at(date(2026, 11, 3)) == v("0.5.5d")
+
+    def test_current_at_on_a_hotfix_day_returns_that_hotfix(self) -> None:
+        patch_catalog = hotfix_catalog("0.5.5", "0.5.5d", "0.5.5e", "0.5.6")
+
+        assert patch_catalog.current_at(date(2026, 11, 4)) == v("0.5.5e")
+        assert patch_catalog.current_at(date(2026, 11, 9)) == v("0.5.5e")
+
+    def test_contains_distinguishes_a_hotfix_from_its_patch(self) -> None:
+        patch_catalog = hotfix_catalog("0.5.5", "0.5.5d", "0.5.5e")
+
+        assert patch_catalog.contains(v("0.5.5e"))
+        assert not patch_catalog.contains(v("0.5.5f"))
+
+    def test_rejects_two_hotfixes_released_the_same_day(self) -> None:
+        with pytest.raises(InvalidPatchCatalogError, match=r"0\.5\.5d.*0\.5\.5e"):
+            InMemoryPatchCatalog(
+                [
+                    PatchRelease(v("0.5.5d"), date(2026, 11, 4)),
+                    PatchRelease(v("0.5.5e"), date(2026, 11, 4)),
+                ],
+                v("0.5.5e"),
+            )
+
+    def test_rejects_a_hotfix_released_before_its_base_patch(self) -> None:
+        with pytest.raises(InvalidPatchCatalogError, match=r"0\.5\.5e.*0\.5\.6"):
+            InMemoryPatchCatalog(
+                [
+                    PatchRelease(v("0.5.5e"), date(2026, 11, 10)),
+                    PatchRelease(v("0.5.6"), date(2026, 11, 4)),
+                ],
+                v("0.5.5e"),
+            )

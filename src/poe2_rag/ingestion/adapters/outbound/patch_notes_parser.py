@@ -37,7 +37,11 @@ from poe2_rag.shared.domain import (
 )
 
 _SOURCE_TYPE = "patch_notes"
-_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)*[A-Za-z]?")
+# A version token must end at a word boundary: without the lookahead, `0.5.5hotfix` would match
+# `0.5.5h` and a glued word would be read as a hotfix, which is exactly the silent mapping the
+# parser must not do. The trailing `[A-Za-z]*` keeps the whole glued run as one candidate, so the
+# error can name it instead of reporting a prefix.
+_VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)*[A-Za-z]*(?![A-Za-z0-9])")
 _HEADING_LEVELS = {"h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 _HEADING_TAGS = frozenset(_HEADING_LEVELS)
 _BLOCK_TAGS = frozenset(
@@ -147,8 +151,10 @@ def _extract_version(title: str) -> PatchVersion:
     """Return the first token in the title that parses as a patch version.
 
     A title can carry other numbers before the patch version (`Path of Exile 2 - 0.5.0 Patch
-    Notes`), so every candidate is tried. When none parses, the first candidate is reported, which
-    keeps a suffixed patch such as `0.5.5e` an explicit unparseable value instead of a silent map.
+    Notes`), so every candidate is tried. A hotfix such as `0.5.5e` parses as its own version, not
+    as its base patch: a hotfix changes balance numbers, so mapping it to `0.5.5` would answer with
+    numbers that patch never had. When none parses, the most version-like candidate is reported,
+    which keeps an unknown version format an explicit unparseable value instead of a silent map.
     """
     candidates = list(_VERSION_TOKEN.finditer(title))
     if not candidates:
@@ -158,9 +164,11 @@ def _extract_version(title: str) -> PatchVersion:
             return PatchVersion.parse(candidate.group(0))
         except InvalidPatchVersionError:
             continue
-    first = candidates[0].group(0)
+    # The title can hold other numbers (`Path of Exile 2`), so the reported candidate is the most
+    # version-like one: the most dotted token, and the first among equals.
+    unparsed = max(candidates, key=lambda match: match.group(0).count(".")).group(0)
     raise PatchVersionUnparseableError(
-        f"cannot parse a version from title {title!r} (first candidate {first!r})"
+        f"cannot parse a version from title {title!r} (candidate {unparsed!r})"
     )
 
 
@@ -197,7 +205,13 @@ def _build_chunks(
     thread_url: str,
     captured_at: date,
 ) -> tuple[Chunk, ...]:
-    """Split the post body into one chunk per top-level section, merging equal slugs."""
+    """Split the post body into one chunk per top-level section, merging equal slugs.
+
+    The entity key is `<major>-<minor>-<patch>` and deliberately leaves the hotfix out: the key
+    identifies the patch line, so a capture of `0.5.5e` supersedes an earlier `0.5.5d` capture of the
+    same line instead of leaving two open ranges beside each other. The version itself, which carries
+    the hotfix, lives in `Validity` and in the `chunk_id`.
+    """
     entity = EntityRef(
         "patch_notes",
         f"{version.major}-{version.minor}-{version.patch}",

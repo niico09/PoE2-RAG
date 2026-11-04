@@ -247,3 +247,42 @@ class TestCatalogInvariants:
 class TestErrorHierarchy:
     def test_load_error_is_not_a_domain_error(self) -> None:
         assert not issubclass(PatchCatalogLoadError, DomainError)
+
+
+HOTFIXES = """\
+current = "0.5.5e"
+
+[[patches]]
+version = "0.5.5"
+released_on = 2026-10-20
+
+[[patches]]
+version = "0.5.5d"
+released_on = 2026-11-02
+
+[[patches]]
+version = "0.5.5e"
+released_on = 2026-11-04
+"""
+
+
+class TestHotfixes:
+    def test_reads_hotfix_versions_with_their_dates(self, tmp_path: Path) -> None:
+        catalog = TomlPatchCatalog(write_catalog(tmp_path, HOTFIXES))
+
+        assert catalog.known() == (v("0.5.5"), v("0.5.5d"), v("0.5.5e"))
+        assert catalog.current() == v("0.5.5e")
+        assert [str(version) for version in catalog.known()] == ["0.5.5", "0.5.5d", "0.5.5e"]
+
+    def test_current_at_between_two_hotfixes_returns_the_earlier_one(self, tmp_path: Path) -> None:
+        catalog = TomlPatchCatalog(write_catalog(tmp_path, HOTFIXES))
+
+        assert catalog.current_at(date(2026, 11, 1)) == v("0.5.5")
+        assert catalog.current_at(date(2026, 11, 3)) == v("0.5.5d")
+        assert catalog.current_at(date(2026, 11, 4)) == v("0.5.5e")
+
+    def test_rejects_two_hotfixes_released_the_same_day(self, tmp_path: Path) -> None:
+        same_day = HOTFIXES.replace("released_on = 2026-11-02", "released_on = 2026-11-04")
+
+        with pytest.raises(InvalidPatchCatalogError, match=r"0\.5\.5d.*0\.5\.5e"):
+            TomlPatchCatalog(write_catalog(tmp_path, same_day))

@@ -68,11 +68,52 @@ class TestVersionDetection:
 
         assert "0.2" in str(exc_info.value)
 
-    def test_suffixed_version_raises(self) -> None:
-        with pytest.raises(PatchVersionUnparseableError) as exc_info:
-            PatchNotesParser().parse(make_raw("suffixed_version.html"))
+    def test_an_unparseable_version_names_the_version_token_not_another_number(self) -> None:
+        """A still-unknown format is a specific error; `Path of Exile 2` must not shadow it."""
+        content = fixture("suffixed_version.html").replace(
+            "0.5.5e Patch Notes", "Path of Exile 2 - 0.5.5E Patch Notes"
+        )
+        raw = RawDocument(
+            locator="data/raw/uppercase_hotfix.html",
+            content=content,
+            fetched_at=CAPTURED_AT,
+            source_type="patch_notes",
+        )
 
-        assert "0.5.5e" in str(exc_info.value)
+        with pytest.raises(PatchVersionUnparseableError) as exc_info:
+            PatchNotesParser().parse(raw)
+
+        assert "0.5.5E" in str(exc_info.value)
+        assert "'2'" not in str(exc_info.value)
+
+    def test_a_version_glued_to_a_word_is_not_read_as_a_hotfix(self) -> None:
+        """`0.5.5hotfix` must not become `0.5.5h`: a word's first letter is not a hotfix (S5)."""
+        content = fixture("suffixed_version.html").replace(
+            "0.5.5e Patch Notes", "0.5.5hotfix Patch Notes"
+        )
+        raw = RawDocument(
+            locator="data/raw/glued_hotfix.html",
+            content=content,
+            fetched_at=CAPTURED_AT,
+            source_type="patch_notes",
+        )
+
+        with pytest.raises(PatchVersionUnparseableError) as exc_info:
+            PatchNotesParser().parse(raw)
+
+        assert "0.5.5hotfix" in str(exc_info.value)
+
+    def test_a_hotfix_shares_the_entity_key_of_its_patch_line(self) -> None:
+        """The key identifies the patch line; the hotfix lives in `Validity` and in the chunk id."""
+        chunks = PatchNotesParser().parse(make_raw("suffixed_version.html"))
+
+        assert chunks[0].entity.key == "patch_notes:0-5-5"
+
+    def test_a_suffixed_version_parses_as_a_hotfix(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("suffixed_version.html"))
+
+        assert chunks[0].validity.valid_from == PatchVersion.parse("0.5.5e")
+        assert chunks[0].chunk_id.endswith("@0.5.5e#notes")
 
 
 class TestThreadUrl:

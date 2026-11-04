@@ -36,6 +36,7 @@ from chromadb.config import Settings
 from chromadb.errors import NotFoundError
 
 from poe2_rag.answering.adapters.outbound.dense.version_codec import (
+    CODEC_VERSION,
     VersionCodecError,
     encode_validity,
     encode_version,
@@ -103,6 +104,15 @@ class UnsupportedIndexSchemaError(VectorIndexReadError):
 
 class EmbeddingModelMismatchError(VectorIndexReadError):
     """Raised when the configured embedder does not match the index metadata."""
+
+
+class VersionCodecMismatchError(VectorIndexReadError):
+    """Raised when the index was written with another version-codec layout (ADR-0003).
+
+    The integer encoding of a version changed when hotfixes became first-class, so a stored
+    `valid_from_code` / `valid_until_code` means something else in each layout. Reading an index
+    built with another layout would answer with subtly wrong validity, so it is refused instead.
+    """
 
 
 class IndexCorruptError(VectorIndexReadError):
@@ -218,6 +228,7 @@ class ChromaVectorIndex:
                 configuration={"hnsw": {"space": "cosine"}},
                 metadata={
                     "index_schema_version": SCHEMA_VERSION,
+                    "version_codec": CODEC_VERSION,
                     "embedding_model": self._embedder.model_id,
                     "dimension": self._embedder.dimension,
                     "chunk_count": len(materialized_chunks),
@@ -295,6 +306,7 @@ class ChromaVectorIndex:
 
         metadata = collection.metadata or {}
         self._check_schema(metadata)
+        self._check_codec(metadata)
         self._check_embedder(metadata)
 
         # `limit` cannot be pushed into the query: Chroma breaks equal distances arbitrarily, so
@@ -468,6 +480,15 @@ class ChromaVectorIndex:
                 f"collection schema version {stored_version!r} is not supported"
             )
 
+    def _check_codec(self, metadata: dict[str, Any]) -> None:
+        """Refuse a collection whose stored codes were written with another version layout."""
+        stored_codec = metadata.get("version_codec")
+        if stored_codec != CODEC_VERSION:
+            raise VersionCodecMismatchError(
+                f"index was built with version codec {stored_codec!r}, but this reader encodes "
+                f"versions with codec {CODEC_VERSION}; reindex the corpus to rebuild the collection"
+            )
+
     def _check_embedder(self, metadata: dict[str, Any]) -> None:
         """Refuse a collection built by a different embedding model or dimension."""
         expected_model = self._embedder.model_id
@@ -515,7 +536,14 @@ class ChromaVectorIndex:
                 and _SEGMENT_DIRECTORY.fullmatch(child.name)
                 and child.name not in referenced
             ):
-                shutil.rmtree(child, ignore_errors=True)
+                # Best effort: a segment directory this process cannot remove must not fail a
+                # rebuild whose collection is already promoted, so the failure moves on to the next
+                # one. `ignore_errors=False` keeps the exception real, which is what makes this a
+                # guard instead of a decoration around `rmtree`'s own error handling.
+                try:
+                    shutil.rmtree(child)
+                except OSError:
+                    continue
 
 
 def _fsync_directory(directory: Path) -> None:

@@ -46,6 +46,19 @@ def test_chunk_id_is_equal_when_source_entity_version_and_section_match() -> Non
     assert first.chunk_id == second.chunk_id
 
 
+def test_chunk_id_carries_a_hotfix_version() -> None:
+    chunk = make_chunk(validity=Validity(PatchVersion.parse("0.5.5e")))
+
+    assert chunk.chunk_id == "poe2db:active_gem:spark@0.5.5e#description"
+
+
+def test_chunk_id_differs_between_a_patch_and_its_hotfix() -> None:
+    base = make_chunk(validity=Validity(PatchVersion.parse("0.5.5")))
+    hotfix = make_chunk(validity=Validity(PatchVersion.parse("0.5.5e")))
+
+    assert base.chunk_id != hotfix.chunk_id
+
+
 def test_tags_and_modifiers_default_to_empty_tuples() -> None:
     chunk = make_chunk()
 
