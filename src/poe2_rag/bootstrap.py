@@ -71,6 +71,7 @@ from poe2_rag.evaluation.application import (
     EvaluationError,
     RunEvaluation,
 )
+from poe2_rag.ingestion.adapters.inbound.cli.ingest import IngestSourceRunner
 from poe2_rag.ingestion.adapters.outbound import patch_notes_parser
 from poe2_rag.ingestion.adapters.outbound.http import (
     HttpFetchError,
@@ -87,6 +88,7 @@ from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import (
     LocalFileFetcher,
     LocalSnapshotError,
 )
+from poe2_rag.ingestion.adapters.outbound.locator_fetching import LocatorFetcher
 from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
     PatchNotesParseError,
     PatchNotesParser,
@@ -208,9 +210,9 @@ def build_container(environ: Mapping[str, str] | None = None) -> Container:
 class Container:
     """Every adapter of one run, built on first use and then shared.
 
-    The properties are the composition root's only public surface: `ingest_source` with
-    `reindex_corpus` for the write half, `answer_question` for the read half, and the shared adapters
-    in between so a test can assert that both halves really use one instance per port.
+    Its public surface is the write half (`ingest_source`, one method for every source, with
+    `reindex_corpus`), the read half (`answer_question`) and the shared adapters in between, so a test
+    can assert that both halves really use one instance per port.
     """
 
     __slots__ = (
@@ -222,11 +224,12 @@ class Container:
         "_evaluation",
         "_has_api_key",
         "_http_client_instance",
-        "_ingest_source",
         "_injected_http_client",
         "_language_model",
         "_lexical_index",
         "_patch_catalog",
+        "_patch_notes_ingest",
+        "_patch_notes_refresh_ingest",
         "_poe2db_ingest",
         "_poe2db_refresh_ingest",
         "_reindex_corpus",
@@ -259,7 +262,8 @@ class Container:
         self._lexical_index: Bm25Index | None = None
         self._vector_index: ChromaVectorIndex | None = None
         self._reranker: CrossEncoderReranker | None = None
-        self._ingest_source: IngestSource | None = None
+        self._patch_notes_ingest: IngestSource | None = None
+        self._patch_notes_refresh_ingest: IngestSource | None = None
         self._poe2db_ingest: IngestSource | None = None
         self._poe2db_refresh_ingest: IngestSource | None = None
         self._injected_http_client = http_client
@@ -337,40 +341,59 @@ class Container:
             )
         return self._language_model
 
-    @property
-    def ingest_source(self) -> IngestSource:
-        """Fetch a local snapshot, parse it and upsert the chunks it produces."""
-        if self._ingest_source is None:
-            self._ingest_source = IngestSource(
-                fetcher=_RawDirectoryFetcher(
+    def ingest_source(self, *, source: str, refresh: bool) -> IngestSourceRunner:
+        """Return the runner that ingests `source`, bypassing its cache when `refresh` is true.
+
+        One source-aware entry point for every published source: the CLI asks which runner a source
+        gets instead of casting the container to a per-source protocol, so the composition root stays
+        the only place that knows which fetcher, parser and cache policy a source receives. An unknown
+        name fails here, before any adapter is built, with the same shape the inbound adapter uses.
+
+        One runner per cache policy: `refresh` is a property of the fetcher, so a cached run and a
+        forced run cannot share one instance without one of them changing the other's behaviour. Both
+        runners of a source share the corpus and the catalog.
+        """
+        builder = _INGEST_BUILDERS.get(source)
+        if builder is None:
+            raise ValueError(f"unknown source: {source!r}")
+        return builder(self, refresh)
+
+    def _build_patch_notes_runner(self, refresh: bool) -> IngestSource:
+        """Ingest a local snapshot or a forum thread URL through the locator dispatcher.
+
+        The local branch resolves a relative locator against `POE2_RAG_RAW_DIR` and keeps an absolute
+        one as given; the URL branch is the polite fetcher under the closed forum policy. The HTTP
+        branch is built on the first URL and not before, so a local snapshot still needs no
+        `POE2_RAG_HTTP_CONTACT`.
+        """
+        existing = self._patch_notes_refresh_ingest if refresh else self._patch_notes_ingest
+        if existing is not None:
+            return existing
+        runner = IngestSource(
+            fetcher=LocatorFetcher(
+                local=_RawDirectoryFetcher(
                     self._config.raw_dir,
                     LocalFileFetcher(source_type=patch_notes_parser.SOURCE_TYPE),
                 ),
-                parser=PatchNotesParser(),
-                repository=self.chunk_repository,
-                catalog=self.patch_catalog,
-            )
-        return self._ingest_source
+                http=lambda: self._forum_fetcher(refresh),
+            ),
+            parser=PatchNotesParser(),
+            repository=self.chunk_repository,
+            catalog=self.patch_catalog,
+        )
+        if refresh:
+            self._patch_notes_refresh_ingest = runner
+        else:
+            self._patch_notes_ingest = runner
+        return runner
 
-    def poe2db_ingest_source(self, *, refresh: bool) -> IngestSource:
-        """Fetch one poe2db page over HTTP, parse it and upsert the chunks it produces.
-
-        One runner per cache policy: `refresh` is a property of the fetcher, so a cached run and a
-        forced run cannot share one instance without one of them changing the other's behaviour.
-        Both runners share the corpus and the catalog, exactly like the patch-notes pair.
-        """
+    def _build_poe2db_runner(self, refresh: bool) -> IngestSource:
+        """Fetch one poe2db page over HTTP, parse it and upsert the chunks it produces."""
         existing = self._poe2db_refresh_ingest if refresh else self._poe2db_ingest
         if existing is not None:
             return existing
         runner = IngestSource(
-            fetcher=PoliteHttpFetcher(
-                client=self._http_client(),
-                cache_dir=self._config.raw_dir,
-                contact=self._config.http_contact,
-                request_interval=self._config.http_request_interval,
-                timeout=self._config.http_timeout,
-                refresh=refresh,
-            ),
+            fetcher=self._poe2db_fetcher(refresh),
             parser=Poe2dbGemPageParser(self.patch_catalog),
             repository=self.chunk_repository,
             catalog=self.patch_catalog,
@@ -380,6 +403,29 @@ class Container:
         else:
             self._poe2db_ingest = runner
         return runner
+
+    def _forum_fetcher(self, refresh: bool) -> PoliteHttpFetcher:
+        """The polite fetcher restricted to official patch-notes threads."""
+        return PoliteHttpFetcher(
+            policy=FORUM_POLICY,
+            client=self._http_client(),
+            cache_dir=self._config.raw_dir,
+            contact=self._config.http_contact,
+            request_interval=self._config.http_request_interval,
+            timeout=self._config.http_timeout,
+            refresh=refresh,
+        )
+
+    def _poe2db_fetcher(self, refresh: bool) -> PoliteHttpFetcher:
+        """The polite fetcher restricted to poe2db gem pages, the policy it defaults to."""
+        return PoliteHttpFetcher(
+            client=self._http_client(),
+            cache_dir=self._config.raw_dir,
+            contact=self._config.http_contact,
+            request_interval=self._config.http_request_interval,
+            timeout=self._config.http_timeout,
+            refresh=refresh,
+        )
 
     def _http_client(self) -> httpx2.Client:
         """Build the HTTP client on first use, or return the one a test injected."""
@@ -470,6 +516,17 @@ class Container:
                 f"{API_KEY_VARIABLE} is not set. Export it, or pass it with "
                 f"`uv run --env-file .env ...` (see .env.example)."
             )
+
+
+_INGEST_BUILDERS: dict[str, Callable[[Container, bool], IngestSource]] = {
+    "patch-notes": Container._build_patch_notes_runner,
+    "poe2db": Container._build_poe2db_runner,
+}
+"""The one table that maps a published source name to the builder of its runner.
+
+Its keys are the names `ingest_cli.SOURCES` publishes, and a test parametrized over that tuple keeps
+the two layers from drifting. `Container.ingest_source` is the only caller.
+"""
 
 
 class _RawDirectoryFetcher:

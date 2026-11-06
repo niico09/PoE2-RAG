@@ -39,6 +39,8 @@ from poe2_rag.ingestion.adapters.inbound.cli import (
 from poe2_rag.ingestion.application import EmptyCorpusError
 from poe2_rag.shared.domain import PatchVersion
 
+THREAD_URL = "https://www.pathofexile.com/forum/view-thread/4009785"
+
 
 class EvalOnlyContainer:
     """A container whose only working runner is the evaluation one.
@@ -53,8 +55,9 @@ class EvalOnlyContainer:
     def __init__(self, evaluation: FakeEvaluationRunner | None = None) -> None:
         self.evaluation = evaluation or FakeEvaluationRunner()
 
-    @property
-    def ingest_source(self) -> IngestSourceRunner:  # pragma: no cover - must not be reached
+    def ingest_source(  # pragma: no cover - must not be reached
+        self, *, source: str, refresh: bool
+    ) -> IngestSourceRunner:
         raise AssertionError("`eval` must not ask for the ingest runner")
 
     @property
@@ -74,7 +77,8 @@ def test_ingest_runs_source_and_reindex_with_locator() -> None:
     result = main(["ingest", "patch-notes", locator], container=fake)
 
     assert result == 0
-    assert fake.ingest_source.calls == [locator]
+    assert fake.ingest.calls == [locator]
+    assert fake.ingest_requests == [("patch-notes", False)]
     assert len(fake.reindex_corpus.calls) == 1
 
 
@@ -139,10 +143,13 @@ def test_importing_the_cli_pulls_in_no_adapter_dependency(
     A subprocess is the honest way to assert this: the suite itself has long since imported chromadb and
     the SDK, so `sys.modules` here says nothing about what the module alone drags in.
     """
-    code = (
-        "import sys, poe2_rag.cli;"
-        "print(sorted(m for m in ('chromadb', 'anthropic', 'torch') if m in sys.modules))"
+    heavy = (
+        "'chromadb', 'anthropic', 'torch', 'bs4',"
+        "'poe2_rag.ingestion.adapters.outbound.patch_notes_parser',"
+        "'poe2_rag.ingestion.adapters.outbound.http.polite_http_fetcher',"
+        "'poe2_rag.ingestion.adapters.outbound.local_file_fetcher'"
     )
+    code = f"import sys, poe2_rag.cli;print(sorted(m for m in ({heavy}) if m in sys.modules))"
 
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=False
@@ -163,18 +170,6 @@ def test_unknown_source_is_usage_error(capsys: pytest.CaptureFixture[str]) -> No
     assert "poe2wiki" in capsys.readouterr().err
 
 
-class FakePoe2dbContainer(FakeContainer):
-    """A container that answers the poe2db runner request and records the refresh flag."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.refresh_calls: list[bool] = []
-
-    def poe2db_ingest_source(self, *, refresh: bool) -> object:
-        self.refresh_calls.append(refresh)
-        return self.ingest_source
-
-
 @pytest.mark.parametrize(
     ("argv", "refresh"),
     [
@@ -183,21 +178,23 @@ class FakePoe2dbContainer(FakeContainer):
     ],
     ids=["cached", "refresh"],
 )
-def test_poe2db_runs_the_source_aware_runner_and_reindexes(
+def test_poe2db_asks_the_container_for_its_runner_and_reindexes(
     argv: list[str], refresh: bool
 ) -> None:
     """`--refresh` selects a fetcher that ignores the cache; the source decides which runner runs."""
-    container = FakePoe2dbContainer()
+    container = FakeContainer()
 
     assert main(argv, container=container) == 0
-    assert container.refresh_calls == [refresh]
-    assert container.ingest_source.calls == ["https://poe2db.tw/us/Spark"]
+    assert container.ingest_requests == [("poe2db", refresh)]
+    assert container.ingest.calls == ["https://poe2db.tw/us/Spark"]
     assert len(container.reindex_corpus.calls) == 1
 
 
-def test_refresh_is_a_usage_error_for_another_source(capsys: pytest.CaptureFixture[str]) -> None:
-    """`--refresh` means "fetch poe2db again"; accepting it for a local snapshot would be a lie."""
-    container = FakePoe2dbContainer()
+def test_refresh_is_a_usage_error_for_a_local_snapshot(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--refresh` means "fetch again"; a local snapshot has no cache to bypass."""
+    container = FakeContainer()
 
     with pytest.raises(SystemExit) as exc_info:
         main(["ingest", "patch-notes", "x.html", "--refresh"], container=container)
@@ -205,16 +202,69 @@ def test_refresh_is_a_usage_error_for_another_source(capsys: pytest.CaptureFixtu
     assert exc_info.value.code == 2
     stderr = capsys.readouterr().err
     assert "--refresh" in stderr
+    assert "patch-notes URLs" in stderr
     assert "usage: poe2-rag ingest" in stderr
-    assert container.ingest_source.calls == []
+    assert container.ingest_requests == []
 
 
-def test_patch_notes_still_uses_the_shared_ingest_runner() -> None:
-    container = FakePoe2dbContainer()
+def test_refresh_is_accepted_for_a_patch_notes_url() -> None:
+    """A thread URL has a cache, so the flag reaches the container instead of argparse."""
+    container = FakeContainer()
+
+    assert main(["ingest", "patch-notes", THREAD_URL, "--refresh"], container=container) == 0
+    assert container.ingest_requests == [("patch-notes", True)]
+    assert container.ingest.calls == [THREAD_URL]
+
+
+def test_patch_notes_without_refresh_uses_the_same_entry_point() -> None:
+    container = FakeContainer()
 
     assert main(["ingest", "patch-notes", "x.html"], container=container) == 0
-    assert container.refresh_calls == []
-    assert container.ingest_source.calls == ["x.html"]
+    assert container.ingest_requests == [("patch-notes", False)]
+    assert container.ingest.calls == ["x.html"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "locator"),
+    [
+        (["ingest", "poe2db", "data/raw/patch-notes-0.1.1.html"], "data/raw/patch-notes-0.1.1.html"),
+        (["ingest", "patch-notes", "ftp://x"], "ftp://x"),
+        (["ingest", "patch-notes", "ftp://x", "--refresh"], "ftp://x"),
+    ],
+    ids=["poe2db-path", "other-scheme", "other-scheme-refresh"],
+)
+def test_a_locator_outside_the_allow_list_is_one_line_and_exits_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str], locator: str
+) -> None:
+    """The real container and the real fetcher: the policy rejects before any request.
+
+    `ftp://x` reaches the HTTP branch with *and* without `--refresh`, which is why the guard cannot
+    treat every non-`path` locator as a usage error: both cases must report the same fetcher error.
+    """
+    import cli_e2e
+
+    from poe2_rag.bootstrap import Container
+
+    container = Container(cli_e2e.integration_config(tmp_path), environ={})
+
+    assert main(argv, container=container) == 1
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    assert len(lines) == 1
+    assert lines[0] == f"error: only https URLs are allowed, got '{locator}'"
+    assert captured.out == ""
+
+
+def test_an_unknown_source_cannot_reach_a_runner(tmp_path: Path) -> None:
+    """The choices argparse publishes and the container's builders are one closed set."""
+    import cli_e2e
+
+    from poe2_rag.bootstrap import Container
+
+    container = Container(cli_e2e.integration_config(tmp_path), environ={})
+
+    with pytest.raises(ValueError, match="unknown source: 'poe2wiki'"):
+        container.ingest_source(source="poe2wiki", refresh=False)
 
 
 def test_missing_api_key_prints_one_line_and_exits_one(

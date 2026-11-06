@@ -141,7 +141,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   that `test_polite_http_fetcher.py` already uses, against the local run over the same fixture, comparing
   full `chunk_id`s, `source.type`, `source.url` and the detected version; a separate test pins
   `captured_at == fetched_at.date()` for a fresh fetch and for a cache hit. Route: inline. S1, S4, S6.
-- [ ] T4 — Composition root and CLI. `bootstrap.Container` gets one method
+- [x] T4 — Composition root and CLI. `bootstrap.Container` gets one method
   `ingest_source(*, source: str, refresh: bool) -> IngestSourceRunner` that raises
   `ValueError(f"unknown source: {source!r}")` with the same shape as
   `ingestion/adapters/inbound/cli/ingest.py:88-90` (the `if handler is None:` guard and its `raise`), so an
@@ -220,7 +220,12 @@ Filled as each task closes: RED → GREEN counts, the focused command, and the c
   the dispatcher table became one row per `(kind, branch)` decision, `captured_at` is compared with the
   cache sidecar's `fetched_at` instead of `date.today()`, and the temporary-path literal lost its `noqa`.
   Commit: `feat(ingest): dispatch the patch-notes locator by kind`.
-- T4 —
+- T4 — RED: `uv run pytest -q tests/unit/test_cli.py tests/unit/test_bootstrap.py` → 17 failed
+  (10 CLI cases against the property-shaped container protocol, 7 bootstrap cases against the removed
+  `poe2db_ingest_source`). GREEN: the same two files → 76 passed; `uv run pytest -q` → 1477 passed, 24
+  deselected (+12 on 1465). `uv run poe2-rag ingest --help` renders `{patch-notes,poe2db} path or URL`
+  with both refresh cases in the option text. Commit: `feat(cli): ask the container for the source's
+  runner`.
 - T5 —
 - T6 —
 - T7 —
