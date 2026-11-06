@@ -177,12 +177,19 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 
 Las notas de parche son la primera fuente implementada; el modelo de vigencia que usan se registra en §10.1.
 
-La fuente poe2db reutiliza los seis pasos con dos diferencias. El `PoliteHttpFetcher` valida el locator
-antes de tocar la red (solo `https://poe2db.tw/us/<slug>`), consulta `robots.txt` una vez por host, impone
-un intervalo mínimo por host, aplica un timeout, no reintenta y cachea la página en `data/raw/poe2db/` con
-un sidecar (`url`, `fetched_at`, `status` y `sha256`); una segunda corrida lee la caché y no hace ningún
-pedido, y `--refresh` fuerza la descarga. El parser elige `active_gem` o `support_gem` desde el type line
-de la página y produce `description`, `properties`, `implicit-modifiers`, `explicit-modifiers` y un bloque
+Las dos fuentes HTTP reutilizan los seis pasos con dos diferencias. El `PoliteHttpFetcher` aplica una
+política cerrada que recibe como valor (`HttpSourcePolicy`: host, prefijo y patrón del path, tipo de fuente
+y segmento de caché), así que la regla de cada host se declara una vez en el composition root en lugar de
+ramificarse en el adaptador; el esquema queda fijo en https para todas. Con esa política valida el locator
+antes de tocar la red, consulta `robots.txt` una vez por host, impone un intervalo mínimo por host, aplica
+un timeout, no reintenta y cachea la página en `data/raw/<segmento>/` con un sidecar (`url`, `fetched_at`,
+`status` y `sha256`); una segunda corrida lee la caché y no hace ningún pedido, y `--refresh` fuerza la
+descarga. La política de poe2db admite solo `https://poe2db.tw/us/<slug>`, y la del foro, solo
+`https://www.pathofexile.com/forum/view-thread/<id>`: cualquier otro host, esquema, puerto, query, fragmento
+o forma de path se rechaza con un mensaje propio antes de tocar la red.
+
+La fuente poe2db conserva además una diferencia de contenido: el parser elige `active_gem` o
+`support_gem` desde el type line de la página y produce `description`, `properties`, `implicit-modifiers`, `explicit-modifiers` y un bloque
 por cada tramo de 10 filas de la tabla de niveles (`levels-01-10`, `levels-11-20`, …), con el texto exacto
 de la página. Solo las formas limpias (`N% increased|reduced|more|less X`, `+N X`) se
 mapean a `Modifier`; un rango como `(1—11)` conserva su texto porque tiene dos números. Cada bloque repite
@@ -192,6 +199,14 @@ en la ventana de 512 que ambos modelos comparten, así que el índice denso solo
 bloques de 10 filas el peor caso observado mide 380 tokens y entra completo, sin truncamiento que reportar
 (ADR-0004); si la primera columna de la tabla no es una serie de niveles estrictamente creciente, los
 bloques se identifican por posición (`rows-01-10`) para no inventar números que la página no muestra.
+
+Para las notas de parche el locator puede ser una ruta local o la URL del hilo oficial, y la elección es
+del composition root: `LocatorFetcher` clasifica el locator (http(s), otro esquema, ruta) y delega en el
+fetcher local o en el `PoliteHttpFetcher` del foro. Ni `IngestSource` ni el parser conocen el transporte, y
+la rama local resuelve una ruta relativa contra `POE2_RAG_RAW_DIR` sin pedir `POE2_RAG_HTTP_CONTACT`. Una
+URL cachea el hilo en `data/raw/patch_notes/` y toma `captured_at` de `fetched_at`, así que ingerir el mismo
+hilo desde su URL y desde una captura local produce los mismos `chunk_id`: el id lleva tipo de fuente,
+identidad, versión y sección, nunca la fecha de captura.
 
 La vigencia de un snapshot sale de su fecha de captura: `PatchCatalog.current_at(fetched_at)` con
 `fetched_at` normalizado a fecha UTC, y un `fetched_at` sin zona se rechaza en vez de adivinar el huso
@@ -356,7 +371,7 @@ se puede medir sola (ADR-0005). `RunEvaluation` depende **solo** de `RetrieveCon
 
 | Puerto | Responsabilidad | Adaptadores candidatos |
 |---|---|---|
-| `SourceFetcher` | Obtener contenido crudo de una fuente | poe2db, notas de parche, poe2wiki.net, archivo local |
+| `SourceFetcher` | Obtener contenido crudo de una fuente | poe2db, notas de parche (hilo por URL o snapshot local), poe2wiki.net, archivo local |
 | `DocumentParser` | Contenido crudo → chunks del dominio (uno por tipo de fuente) | parser de gemas, parser de notas de parche |
 | `ChunkRepository` | Persistir y leer el corpus procesado | JSON en `data/processed/` |
 | `LexicalIndexWriter` | Reconstruir el índice léxico desde el corpus | el mismo adaptador BM25 que `LexicalIndex` |

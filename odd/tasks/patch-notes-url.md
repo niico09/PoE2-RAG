@@ -187,7 +187,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   `data/`), asserting the detected version, `source.type`, `source.url`, the chunk list and the cache under
   `tmp_path/patch_notes/`. The `network` marker description in `pyproject.toml:44` is generalized to the
   remote hosts it now covers. Run once manually and record the result. Route: inline. S6.
-- [ ] T6 — Documentation. README usage gains the URL form, and the sidecar paragraph says the sidecar is
+- [x] T6 — Documentation. README usage gains the URL form, and the sidecar paragraph says the sidecar is
   the local-snapshot rule while a URL takes `captured_at` from the fetch, naming the URL allow-list, the
   `data/raw/patch_notes/` cache and `--refresh`; `docs/architecture.md` §5.2 (the poe2db paragraph and the
   ingest-source list), the `SourceFetcher` row of §6 and the README status/roadmap lines follow. Two README
@@ -235,7 +235,13 @@ Filled as each task closes: RED → GREEN counts, the focused command, and the c
   deselected. The 0.5.5e staff post is a hotfix body (an `h3` repeating the title plus five bullets), so
   one `notes` chunk is the thread's real shape. Commit: `test(ingest): capture one real patch-notes
   thread`.
-- T6 —
+- T6 — No behaviour change, so no RED: documentation plus one pin for the help text it promises
+  (`tests/unit/test_cli.py::test_ingest_help_names_the_url_form`, GREEN in the same run). README: the two
+  URL forms in the usage block, the sidecar paragraph rewritten around "local snapshot needs a sidecar,
+  a URL takes `captured_at` from the fetch", the HTTP-contact sentence now names both hosts, the
+  `POE2_RAG_RAW_DIR` row names the HTTP cache, and the status line plus roadmap follow. `docs/architecture.md`
+  §5.2 (policy-driven fetcher, the two closed policies and the locator dispatch) and the `SourceFetcher` row
+  of §6 are updated. Commit: `docs(cli): document the patch-notes URL ingest`.
 - T7 —
 
 ## Findings applied (gate rounds 1-6)

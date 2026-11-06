@@ -135,6 +135,17 @@ def test_ingest_help_shows_the_closed_source_set(capsys: pytest.CaptureFixture[s
     assert "{patch-notes,poe2db}" in capsys.readouterr().out
 
 
+def test_ingest_help_names_the_url_form(capsys: pytest.CaptureFixture[str]) -> None:
+    """S5: the usage line says the patch-notes locator may be a path or a URL."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["ingest", "--help"])
+
+    assert exc_info.value.code == 0
+    printed = capsys.readouterr().out
+    assert "path or URL" in printed
+    assert "patch-notes URLs" in printed
+
+
 def test_importing_the_cli_pulls_in_no_adapter_dependency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
