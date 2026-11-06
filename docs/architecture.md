@@ -111,9 +111,10 @@ El esquema actual del README tiene dos problemas de diseño:
 > Ejemplo ilustrativo. El parche que el sistema considera actual lo declara `current` en
 > `config/patches.toml`; un chunk es vigente por su rango de `Validity`, nunca por una marca propia.
 > El tramo de versión del `chunk_id` y de `validity` es el texto canónico de `PatchVersion`, así que
-> puede llevar hotfix (`patch_notes:patch_notes:0-5-5@0.5.5e#notes`). La clave de la entidad
-> (`0-5-5`) no lo lleva: identifica la línea del parche, así que una captura de hotfix más nueva
-> supersede a la anterior de la misma línea, igual que una recaptura.
+> puede llevar hotfix (`patch_notes:patch_notes:0-5-5e@0.5.5e#notes`). En las notas de parche, la
+> clave de la entidad también lo lleva (`0-5-5e`): cada hilo del foro, incluido cada hotfix, es un
+> delta que solo lista sus propios cambios. Por eso el hilo de `0.5.5e` no supersede al de `0.5.5` y
+> ambos quedan abiertos. Solo una recaptura del mismo hilo supersede a la anterior.
 
 ```json
 {

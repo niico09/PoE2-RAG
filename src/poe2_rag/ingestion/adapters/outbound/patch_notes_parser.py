@@ -213,14 +213,14 @@ def _build_chunks(
 ) -> tuple[Chunk, ...]:
     """Split the post body into one chunk per top-level section, merging equal slugs.
 
-    The entity key is `<major>-<minor>-<patch>` and deliberately leaves the hotfix out: the key
-    identifies the patch line, so a capture of `0.5.5e` supersedes an earlier `0.5.5d` capture of the
-    same line instead of leaving two open ranges beside each other. The version itself, which carries
-    the hotfix, lives in `Validity` and in the `chunk_id`.
+    The entity key is `<major>-<minor>-<patch><hotfix>` (`0-5-5`, `0-5-5e`): every forum thread,
+    hotfix threads included, is a separate delta that only lists its own changes. A `0.5.5e`
+    thread therefore never supersedes the `0.5.5` thread; both stay open side by side. Only a
+    re-capture of the same thread supersedes the earlier one.
     """
     entity = EntityRef(
         "patch_notes",
-        f"{version.major}-{version.minor}-{version.patch}",
+        f"{version.major}-{version.minor}-{version.patch}{version.hotfix}",
         f"Patch {version}",
     )
     source = SourceRef(SOURCE_TYPE, thread_url, captured_at)

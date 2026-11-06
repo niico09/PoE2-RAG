@@ -83,7 +83,7 @@ def test_one_real_thread_ingest_keeps_everything_under_tmp_path(tmp_path: Path) 
     assert {chunk.source.url for chunk in chunks} == {URL}
     assert [chunk.section for chunk in chunks] == REPORTED_SECTIONS
     assert [chunk.chunk_id for chunk in chunks] == [
-        f"patch_notes:patch_notes:0-5-5@{VERSION}#{section}" for section in REPORTED_SECTIONS
+        f"patch_notes:patch_notes:0-5-5e@{VERSION}#{section}" for section in REPORTED_SECTIONS
     ]
 
     cache_directory = tmp_path / "patch_notes"
