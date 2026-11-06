@@ -210,7 +210,7 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
     "url": "https://poe2db.tw/us/Spark",
     "captured_at": "2026-10-29"
   },
-  "text": "Spark fires lightning projectiles that bounce off walls and move erratically..."
+  "text": "Spark — Description\nLaunch a spray of sparking Projectiles ..."
 }
 ```
 

@@ -532,6 +532,33 @@ def test_a_citation_spanning_several_lines_of_the_same_chunk_is_accepted() -> No
     assert generated.citations == (Citation(SPARK.chunk.chunk_id, "Spark deals 10 damage.\nChains to 2 enemies."),)
 
 
+def test_a_context_line_is_citable_and_a_body_quote_still_verifies() -> None:
+    """The context line is part of the document text, so it is citable like any other line."""
+    chunk = make_chunk("properties", "Spark — Properties\nSpark deals 10 damage.")
+    gateway = Gateway(
+        message(
+            text_block(
+                "Body and context.",
+                location_citation("Spark deals 10 damage.", 0),
+                location_citation("Spark — Properties", 0),
+            )
+        )
+    )
+
+    generated = generate(gateway, (delivered(chunk),))
+
+    (document,) = documents_of(gateway.body)
+    assert document["source"]["content"] == [
+        {"type": "text", "text": "Spark — Properties"},
+        {"type": "text", "text": "Spark deals 10 damage."},
+    ]
+    # The context line is part of the document text, so it is citable like any other line.
+    assert generated.citations == (
+        Citation(chunk.chunk_id, "Spark deals 10 damage."),
+        Citation(chunk.chunk_id, "Spark — Properties"),
+    )
+
+
 def test_a_response_without_any_text_raises() -> None:
     gateway = Gateway(
         message({"type": "thinking", "thinking": "nothing to say", "signature": "sig"})

@@ -22,6 +22,13 @@ alone, and a single 40-row table overflows the 512-token window they share, so r
 third would never reach dense retrieval or reranking (D1 of `odd/tasks/poe2db-source.md`,
 superseded by this feature).
 
+Every chunk opens with one context line, `<gem> — <section>` (`Fireball — Properties`) or, for a
+level block, `<gem> — levels 11–20`: the dense embedder and the reranker score a chunk's text alone
+(the lexical index also appends the gem name and the section), so a chunk that named its gem only in
+the `chunk_id` was unreachable by name. Split blocks carry their range in that same line instead of
+adding a second one, and everything below it stays the page's own rendering, verbatim, because a
+citation quotes it.
+
 `valid_from` is the patch the catalog says was current at the capture instant:
 `current_at(captured_on)`, where `captured_on` is `fetched_at` normalized to a UTC date. The page
 carries no patch version, so the capture time is the only evidence available; a naive `fetched_at` is
@@ -201,8 +208,10 @@ def _gem_kind(popup: Tag) -> str:
     return "support_gem" if _SUPPORT_MARKER in text else "active_gem"
 
 
-def _sections(popup: Tag, name: str, level_block_size: int) -> list[tuple[str, str, tuple, tuple]]:
-    """Build every section the page offers, in a stable order."""
+def _sections(
+    popup: Tag, name: str, level_block_size: int
+) -> list[tuple[str, str, tuple, tuple]]:
+    """Build every section the page offers, in a stable order, each with its context line."""
     content = popup.find(class_="content")
     scope = content if isinstance(content, Tag) else popup
     blocks = _direct_tags(scope, "Stats")
@@ -216,28 +225,58 @@ def _sections(popup: Tag, name: str, level_block_size: int) -> list[tuple[str, s
     if isinstance(description, Tag):
         text = _clean_text(_inline(description))
         if text:
-            sections.append(("description", text, (), ()))
+            sections.append(("description", _describe(name, "Description", text), (), ()))
 
     if isinstance(properties, Tag):
         lines = _property_lines(properties)
         if lines:
             sections.append(
-                ("properties", "\n".join(lines), _tags(properties), ())
+                (
+                    "properties",
+                    _describe(name, "Properties", "\n".join(lines)),
+                    _tags(properties),
+                    (),
+                )
             )
 
     implicit = _implicit_modifiers(properties, modifiers)
     if implicit:
-        sections.append(("implicit-modifiers", "\n".join(implicit), (), _parse_modifiers(implicit)))
+        sections.append(
+            (
+                "implicit-modifiers",
+                _describe(name, "Implicit Modifiers", "\n".join(implicit)),
+                (),
+                _parse_modifiers(implicit),
+            )
+        )
 
     explicit = (
         _modifier_lines(modifiers, "explicitMod") if isinstance(modifiers, Tag) else []
     )
     if explicit:
-        sections.append(("explicit-modifiers", "\n".join(explicit), (), _parse_modifiers(explicit)))
+        sections.append(
+            (
+                "explicit-modifiers",
+                _describe(name, "Explicit Modifiers", "\n".join(explicit)),
+                (),
+                _parse_modifiers(explicit),
+            )
+        )
 
-    levels = _level_blocks(popup, name, level_block_size)
-    sections.extend((section, text, (), ()) for section, text in levels)
+    sections.extend(_level_blocks(popup, name, level_block_size))
     return sections
+
+
+def _describe(name: str, label: str, body: str) -> str:
+    """Prefix `body` with the one line that names the gem and the part of its page it holds.
+
+    The dense embedder and the reranker score a chunk's text alone, so this line is what lets
+    `Fireball — Properties` answer a question about Fireball's cast time; the lexical index also
+    appends the gem name and the section to the text it indexes. `body` keeps the page's own
+    rendering, verbatim, because a citation quotes it, and a block that already carries its range
+    passes that range as `label` instead of adding a second line.
+    """
+    return f"{name} — {label}\n{body}"
 
 
 def _has_core_sections(sections: Sequence[tuple[str, str, tuple, tuple]]) -> bool:
@@ -386,15 +425,18 @@ def _stat(text: str) -> str:
     return text.strip().rstrip(".")
 
 
-def _level_blocks(popup: Tag, name: str, block_size: int) -> list[tuple[str, str]]:
-    """Split the gem's per-level table into self-describing row blocks (D1 of this feature).
+def _level_blocks(
+    popup: Tag, name: str, block_size: int
+) -> list[tuple[str, str, tuple, tuple]]:
+    """Split the gem's per-level table into row blocks that name their own range (D1).
 
     A block is `levels-<first>-<last>` (or `rows-<first>-<last>` when the first column is not a level
-    series), zero-padded so the ids sort in table order, and its text is the gem name with that range,
-    the table header and the rows, exactly as the page renders them: a chunk is read alone by the
-    embedder and the reranker, so a block that dropped the header would turn a column of numbers into
-    unexplained values. Empty cells are kept so a value never slides under the wrong column header,
-    and a table with a header but no data rows is no table of levels at all.
+    series), zero-padded so the ids sort in table order, and its body is the table header plus its
+    rows, exactly as the page renders them: a chunk is read alone by the embedder and the reranker,
+    so a block that dropped the header would turn a column of numbers into unexplained values. Its
+    label is `levels 1–10`, which `_describe` turns into the same single context line the whole
+    sections carry. Empty cells are kept so a value never slides under the wrong column header, and
+    a table with a header but no data rows is no table of levels at all.
     """
     table = _level_table(popup)
     if table is None:
@@ -402,14 +444,20 @@ def _level_blocks(popup: Tag, name: str, block_size: int) -> list[tuple[str, str
     header, rows = table
     prefix, labels, width = _level_labels(rows)
     header_line = " | ".join(header)
-    blocks: list[tuple[str, str]] = []
+    blocks: list[tuple[str, str, tuple, tuple]] = []
     for start in range(0, len(rows), block_size):
         block = rows[start : start + block_size]
         first, last = labels[start], labels[start + len(block) - 1]
         section = f"{prefix}-{first.zfill(width)}-{last.zfill(width)}"
-        title = f"{name} — {prefix} {first}–{last}"
         rendered = [" | ".join(cells) for cells in block]
-        blocks.append((section, "\n".join([title, header_line, *rendered])))
+        blocks.append(
+            (
+                section,
+                _describe(name, f"{prefix} {first}–{last}", "\n".join([header_line, *rendered])),
+                (),
+                (),
+            )
+        )
     return blocks
 
 

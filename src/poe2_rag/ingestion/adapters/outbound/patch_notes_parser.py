@@ -13,8 +13,14 @@ slugify alike, or a preamble next to an `Overview` heading never produce two chu
 `chunk_id`. Empty or decorative headings are skipped instead of aborting the whole document. Hotfix
 threads have no section headings, so their body becomes one `notes` chunk. Headings deeper than the
 shallowest one stay inside their section as text lines, which is what "one chunk per top-level
-section" means here. A section wider than the token budget becomes consecutive numbered blocks that
-each repeat a context line, because the embedder and the reranker read one block at a time (S3).
+section" means here.
+
+Every chunk opens with one context line naming the patch and the section (`Patch 0.5.5 — Ritual
+Changes`), because the dense embedder and the reranker score one chunk's text alone (the lexical
+index also appends the entity name and the section), so the `chunk_id` never reaches either. A
+section wider than the token budget becomes consecutive numbered blocks that keep that line with
+their part counter (`Patch 0.5.5 — Endgame Changes (part 2/3)`), so the line is never repeated, and
+the line counts toward the budget (S3).
 """
 
 from __future__ import annotations
@@ -383,6 +389,17 @@ def _build_chunks(
     )
 
 
+def _context_line(entity_name: str, heading: str) -> str:
+    """Return the one line that names the patch and the section a chunk holds.
+
+    `entity_name` is `Patch <version>` and `heading` is the section's human-readable title, never its
+    slug: the dense embedder and the reranker never read the `chunk_id`, so this line is what puts
+    the patch and the section into the text they score. Split blocks append their part counter to
+    this line instead of adding a second one.
+    """
+    return f"{entity_name} — {heading}"
+
+
 def _section_chunks(
     entity: EntityRef,
     validity: Validity,
@@ -395,16 +412,18 @@ def _section_chunks(
     """Return the section as one chunk, or as consecutive blocks when it exceeds the budget.
 
     A section that fits keeps its own id, so an unchanged section keeps its `chunk_id` across
-    captures. A section that does not fit is cut at line boundaries, never mid-sentence, into blocks
-    that each repeat the context line: the embedder and the reranker see one block's text alone, so a
-    block without it would be unsearchable.
+    captures. Every chunk opens with the same context line, and that line counts toward the budget,
+    so a section only keeps its id when its text and the line fit together. A section that does not
+    fit is cut at line boundaries, never mid-sentence, into blocks that keep the line with their part
+    counters: the embedder and the reranker see one block's text alone, so a block without it would
+    be unsearchable.
     """
-    if estimate_tokens(text) <= max_block_tokens:
-        return (Chunk(entity, validity, slug, text, source, (), ()),)
+    context = _context_line(entity.name, heading)
+    whole = f"{context}\n{text}"
+    if estimate_tokens(whole) <= max_block_tokens:
+        return (Chunk(entity, validity, slug, whole, source, (), ()),)
 
-    blocks = _pack_blocks(
-        text.split("\n"), max_block_tokens, f"{entity.name} — {heading}"
-    )
+    blocks = _pack_blocks(text.split("\n"), max_block_tokens, context)
     width = max(2, len(str(len(blocks))))
     return tuple(
         Chunk(entity, validity, f"{slug}-{index:0{width}d}", block, source, (), ())
@@ -419,12 +438,12 @@ def _pack_blocks(
 ) -> list[str]:
     """Group consecutive lines into blocks that fit the budget, each with its context line.
 
-    `prefix` is the context line without its counters (`Patch 0.5.5 — Endgame Changes`), so every
-    block starts with `prefix (part N/M)`. The number of blocks is only known once the grouping is
-    done, so the grouping reserves the widest counter it could need plus the one token the newline
-    joining the context line to the body can add; a real counter is never wider and the join never
-    costs more, so every block stays inside the budget. A single line wider than the budget still
-    becomes its own block: cutting a sentence would break the citation.
+    `prefix` is the context line `_context_line` builds, without its counters (`Patch 0.5.5 — Endgame
+    Changes`), so every block starts with `prefix (part N/M)`. The number of blocks is only known
+    once the grouping is done, so the grouping reserves the widest counter it could need plus the one
+    token the newline joining the context line to the body can add; a real counter is never wider and
+    the join never costs more, so every block stays inside the budget. A single line wider than the
+    budget still becomes its own block: cutting a sentence would break the citation.
     """
     width = len(str(len(lines)))
     widest = 10**width - 1

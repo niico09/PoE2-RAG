@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from chunk_text import body, context_line
 
 from poe2_rag.ingestion.adapters.outbound.poe2db.gem_page_parser import (
     DEFAULT_LEVEL_BLOCK_SIZE,
@@ -174,7 +175,8 @@ class TestActiveGem:
     def test_description_keeps_the_page_wording(self) -> None:
         description = by_section(build_parser().parse(raw_document()), "description")
 
-        assert description.text == (
+        assert context_line(description) == "Spark — Description"
+        assert body(description) == (
             "Launch a spray of sparking Projectiles that travel erratically along the ground "
             "until they hit an enemy or expire. Consumes a Cold Infusion if possible to fire many "
             "sparks in a circle."
@@ -184,6 +186,7 @@ class TestActiveGem:
         properties = by_section(build_parser().parse(raw_document()), "properties")
 
         assert line_set(properties.text) == [
+            "Spark — Properties",
             "Projectile, Lightning, Duration, Repeatable",
             "Tier: 1",
             "Level: (1—20)",
@@ -201,6 +204,7 @@ class TestActiveGem:
         )
 
         assert line_set(modifiers.text) == [
+            "Spark — Explicit Modifiers",
             "Deals (1—11) to (10—216) Lightning Damage",
             "Fires (4—9) Projectiles",
             "Projectile duration is 2 seconds",
@@ -246,6 +250,47 @@ class TestActiveGem:
             "poe2db:active_gem:spark@0.1.1#explicit-modifiers",
             "poe2db:active_gem:spark@0.1.1#levels-01-20",
         ]
+
+
+class TestChunkContextLines:
+    """Every chunk names its gem and section in one line, not only the level blocks (S1-S2)."""
+
+    def test_every_chunk_starts_with_its_context_line(self) -> None:
+        chunks = build_parser().parse(raw_document())
+
+        assert [context_line(chunk) for chunk in chunks] == [
+            "Spark — Description",
+            "Spark — Properties",
+            "Spark — Explicit Modifiers",
+            "Spark — levels 1–20",
+        ]
+
+    def test_the_body_after_the_line_is_the_page_text_unchanged(self) -> None:
+        """The line is added, never substituted: the rest is the page's own rendering (S5)."""
+        chunks = build_parser().parse(raw_document())
+
+        assert body(by_section(chunks, "description")).startswith("Launch a spray of sparking")
+        assert body(by_section(chunks, "properties")).endswith(
+            "Requires: Level (1—90), (4—157) Int"
+        )
+        assert line_set(body(by_section(chunks, "levels-01-20")))[0].startswith(
+            "Level | Requires Level"
+        )
+
+    def test_no_chunk_carries_a_second_context_line(self) -> None:
+        chunks = build_parser().parse(raw_document())
+
+        for chunk in chunks:
+            line = context_line(chunk)
+            assert line_set(chunk.text).count(line) == 1
+
+    def test_every_level_block_carries_the_line_once(self) -> None:
+        blocks = level_chunks(build_parser().parse(raw_document(content=level_page(40))))
+
+        for block in blocks:
+            lines = line_set(block.text)
+            assert lines[0].startswith("Probe — levels ")
+            assert sum(line.startswith("Probe — ") for line in lines) == 1
 
 
 class TestLevelBlocks:
@@ -383,8 +428,10 @@ class TestSupportGem:
 
         implicit = by_section(chunks, "implicit-modifiers")
         explicit = by_section(chunks, "explicit-modifiers")
-        assert implicit.text == "Supported Skills Pierce an additional Enemy"
+        assert context_line(implicit) == "Pierce — Implicit Modifiers"
+        assert body(implicit) == "Supported Skills Pierce an additional Enemy"
         assert line_set(explicit.text) == [
+            "Pierce — Explicit Modifiers",
             "Supported Skills deal 10% increased Projectile Damage",
             "Supported Skills Pierce 1 additional Enemy",
         ]
@@ -498,7 +545,8 @@ class TestLayoutRobustness:
         chunks = build_parser().parse(raw_document(content=content))
         implicit = by_section(chunks, "implicit-modifiers")
 
-        assert implicit.text == "+5 to maximum Life"
+        assert context_line(implicit) == "Probe — Implicit Modifiers"
+        assert body(implicit) == "+5 to maximum Life"
         assert len(implicit.modifiers) == 1
 
     def test_a_separator_between_the_tab_header_and_its_stats_keeps_the_modifiers(self) -> None:
@@ -518,7 +566,8 @@ class TestLayoutRobustness:
             build_parser().parse(raw_document(content=content)), "explicit-modifiers"
         )
 
-        assert explicit.text == "10% increased Life"
+        assert context_line(explicit) == "Probe — Explicit Modifiers"
+        assert body(explicit) == "10% increased Life"
 
     def test_a_wrapper_between_the_tab_header_and_its_stats_keeps_the_modifiers(self) -> None:
         content = gem_page(
@@ -536,7 +585,8 @@ class TestLayoutRobustness:
             build_parser().parse(raw_document(content=content)), "explicit-modifiers"
         )
 
-        assert explicit.text == "10% increased Life"
+        assert context_line(explicit) == "Probe — Explicit Modifiers"
+        assert body(explicit) == "10% increased Life"
 
     def test_a_first_tab_that_is_not_base_does_not_contribute_modifiers(self) -> None:
         """The documented guarantee is that variant text is never attributed to the base gem."""
@@ -615,7 +665,8 @@ class TestLayoutRobustness:
         )
 
         assert properties.tags == ("Attack",)
-        assert properties.text == "Attack"
+        assert context_line(properties) == "Probe — Properties"
+        assert body(properties) == "Attack"
 
     def test_a_gem_page_with_only_a_level_table_is_rejected(self) -> None:
         content = gem_page("") + """
