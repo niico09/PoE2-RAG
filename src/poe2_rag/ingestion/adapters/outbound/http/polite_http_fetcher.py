@@ -1,9 +1,13 @@
-"""Polite HTTP fetcher for poe2db gem pages.
+"""Polite HTTP fetcher for the closed set of hosts this project may fetch.
 
 The adapter implements `SourceFetcher` with the four respectful-access rules from ADR-0002:
 an identifiable `User-Agent` with contact, a per-host rate limit, an in-memory `robots.txt` cache,
 and an on-disk page cache.  Every failure that originates here is a `HttpFetchError` so callers can
 tell network/cache failures from malformed documents.
+
+Which hosts and which paths are allowed is a `HttpSourcePolicy`: the fetcher applies a rule it was
+handed and never decides one for itself. Adding a second host is therefore a declaration in the
+composition root, not a branch here, and the scheme stays fixed to https for every policy.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import os
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -28,10 +33,7 @@ from poe2_rag.ingestion.application import RawDocument
 from poe2_rag.shared.domain import is_blank
 
 SOURCE_TYPE = "poe2db"
-_ALLOWED_HOST = "poe2db.tw"
 _ALLOWED_SCHEME = "https"
-_PATH_PREFIX = "/us/"
-_CACHE_SUBDIR = "poe2db"
 _SIDE_CAR_SUFFIX = ".meta.json"
 _TEMP_SUFFIX = ".tmp"
 _CACHE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -44,7 +46,7 @@ class HttpFetchError(RuntimeError):
 
 
 class UnsupportedLocatorError(HttpFetchError):
-    """Raised when a locator is not an allowed poe2db URL."""
+    """Raised when a locator does not match the policy the fetcher was built with."""
 
     __slots__ = ()
 
@@ -84,10 +86,62 @@ class HttpRequestError(HttpFetchError):
     __slots__ = ()
 
 
-class Poe2dbCacheError(HttpFetchError):
+class HttpCacheError(HttpFetchError):
     """Raised when the on-disk cache is unreadable or inconsistent."""
 
     __slots__ = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PathRule:
+    """The one path shape a policy accepts: a fixed prefix, then a slug matching `slug`.
+
+    `slug_message` is the sentence the rule contributes to `UnsupportedLocatorError`, so each host
+    names its own rejection ("slug must be non-empty with no slash", "thread id must be digits")
+    without the shared validator learning either vocabulary.
+    """
+
+    prefix: str
+    slug: re.Pattern[str]
+    slug_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class HttpSourcePolicy:
+    """One closed rule set: which host, which path, which source type, which cache segment.
+
+    `source_type` is the value the parser for this host accepts, so the kind is spelled once and a
+    test pins the two together. `cache_directory` is one path segment appended to the constructor's
+    `cache_dir`, and the noun every cache message uses derives from it: one string per concern, so
+    `patch_notes` reads `patch-notes` in a sentence and never grows a second name.
+    """
+
+    host: str
+    path: PathRule
+    source_type: str
+    cache_directory: str
+
+    def __post_init__(self) -> None:
+        if is_blank(self.host):
+            raise ValueError("host must be a non-blank string")
+        if is_blank(self.source_type):
+            raise ValueError("source_type must be a non-blank string")
+        segment = self.cache_directory
+        if is_blank(segment) or segment in {".", ".."} or "/" in segment or "\\" in segment:
+            raise ValueError(f"cache_directory must be one plain path segment, got {segment!r}")
+
+
+POE2DB_POLICY = HttpSourcePolicy(
+    host="poe2db.tw",
+    path=PathRule(
+        prefix="/us/",
+        slug=re.compile(r"[^/]+"),
+        slug_message="slug must be non-empty with no slash",
+    ),
+    source_type=SOURCE_TYPE,
+    cache_directory="poe2db",
+)
+"""The fetcher's default: the only host it accepted before policies existed, unchanged."""
 
 
 class MissingHttpContactError(ConfigurationError):
@@ -105,14 +159,16 @@ def _package_version() -> str:
 
 
 class PoliteHttpFetcher:
-    """Fetch poe2db gem pages politely: robots, rate limit, cache, identifiable User-Agent."""
+    """Fetch one policy's pages politely: robots, rate limit, cache, identifiable User-Agent."""
 
     __slots__ = (
         "_cache_dir",
+        "_cache_noun",
         "_client",
         "_clock",
         "_contact",
         "_last_request",
+        "_policy",
         "_refresh",
         "_request_interval",
         "_robots",
@@ -123,6 +179,7 @@ class PoliteHttpFetcher:
     def __init__(
         self,
         *,
+        policy: HttpSourcePolicy = POE2DB_POLICY,
         client: httpx2.Client,
         cache_dir: Path,
         contact: str | None,
@@ -136,6 +193,8 @@ class PoliteHttpFetcher:
             raise MissingHttpContactError(
                 "POE2_RAG_HTTP_CONTACT is required for outbound HTTP fetching"
             )
+        self._policy = policy
+        self._cache_noun = policy.cache_directory.replace("_", "-")
         self._client = client
         self._cache_dir = cache_dir
         self._contact = contact.strip()
@@ -148,7 +207,7 @@ class PoliteHttpFetcher:
         self._last_request: dict[str, float] = {}
 
     def fetch(self, locator: str) -> RawDocument:
-        """Return the poe2db page at `locator`, using the cache unless `refresh` is set."""
+        """Return the page at `locator`, using the cache unless `refresh` is set."""
         url = self._validate_locator(locator)
         if not self._refresh:
             cached = self._read_cache(url)
@@ -167,11 +226,19 @@ class PoliteHttpFetcher:
             locator=url,
             content=content,
             fetched_at=fetched_at,
-            source_type=SOURCE_TYPE,
+            source_type=self._policy.source_type,
         )
 
     def _validate_locator(self, locator: str) -> str:
-        """Return the canonical URL if the locator is allowed, else raise."""
+        """Return the canonical URL if the locator matches the policy, else raise.
+
+        The order is fixed and shared by every policy: scheme, host, port, userinfo, query, fragment,
+        then the path rule (prefix, trailing slash, slug). The scheme, port, userinfo, query,
+        fragment and trailing-slash sentences stay literal because they are host-independent; the
+        host, prefix and slug come from the policy, which is the only place that knows a host.
+        """
+        policy = self._policy
+        rule = policy.path
         if is_blank(locator):
             raise UnsupportedLocatorError(f"locator must be a non-blank URL, got {locator!r}")
         try:
@@ -181,8 +248,8 @@ class PoliteHttpFetcher:
 
         if parsed.scheme != _ALLOWED_SCHEME:
             raise UnsupportedLocatorError(f"only https URLs are allowed, got {locator!r}")
-        if parsed.hostname != _ALLOWED_HOST:
-            raise UnsupportedLocatorError(f"only poe2db.tw is allowed, got {locator!r}")
+        if parsed.hostname != policy.host:
+            raise UnsupportedLocatorError(f"only {policy.host} is allowed, got {locator!r}")
         try:
             port = parsed.port
         except ValueError as exc:
@@ -197,21 +264,21 @@ class PoliteHttpFetcher:
             raise UnsupportedLocatorError(f"no fragment is allowed, got {locator!r}")
 
         path = parsed.path
-        if not path.startswith(_PATH_PREFIX):
+        if not path.startswith(rule.prefix):
             raise UnsupportedLocatorError(
-                f"path must start with {_PATH_PREFIX!r}, got {locator!r}"
+                f"path must start with {rule.prefix!r}, got {locator!r}"
             )
         if path.endswith("/"):
             raise UnsupportedLocatorError(f"no trailing slash is allowed, got {locator!r}")
-        slug = path[len(_PATH_PREFIX) :]
-        if not slug or "/" in slug:
-            raise UnsupportedLocatorError(f"slug must be non-empty with no slash, got {locator!r}")
+        slug = path[len(rule.prefix) :]
+        if rule.slug.fullmatch(slug) is None:
+            raise UnsupportedLocatorError(f"{rule.slug_message}, got {locator!r}")
 
-        return f"{_ALLOWED_SCHEME}://{_ALLOWED_HOST}{path}"
+        return f"{_ALLOWED_SCHEME}://{policy.host}{path}"
 
     def _ensure_allowed_by_robots(self, url: str) -> None:
         """Raise if robots.txt disallows the given URL for our User-Agent."""
-        host = urlparse(url).hostname or _ALLOWED_HOST
+        host = urlparse(url).hostname or self._policy.host
         parser = self._robots_for(host)
         if not parser.can_fetch(self._user_agent(), url):
             raise RobotsDisallowedError(f"robots.txt disallows {url}")
@@ -245,7 +312,7 @@ class PoliteHttpFetcher:
 
     def _request(self, url: str) -> httpx2.Response:
         """Make a single GET request after honouring the per-host rate limit."""
-        host = urlparse(url).hostname or _ALLOWED_HOST
+        host = urlparse(url).hostname or self._policy.host
         self._throttle(host)
         try:
             response = self._client.get(
@@ -286,7 +353,7 @@ class PoliteHttpFetcher:
         safe_path = parsed.path.strip("/").replace("/", "-")
         raw_name = f"{parsed.hostname}-{safe_path}"
         filename = f"{_CACHE_NAME_UNSAFE.sub('-', raw_name)}.html"
-        html_path = self._cache_dir / _CACHE_SUBDIR / filename
+        html_path = self._cache_dir / self._policy.cache_directory / filename
         meta_path = html_path.with_name(html_path.name + _SIDE_CAR_SUFFIX)
         return html_path, meta_path
 
@@ -306,8 +373,8 @@ class PoliteHttpFetcher:
             content = html_path.read_bytes().decode("utf-8")
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise Poe2dbCacheError(
-                f"poe2db cache is unreadable for {url}; use --refresh to rebuild it"
+            raise HttpCacheError(
+                f"{self._cache_noun} cache is unreadable for {url}; use --refresh to rebuild it"
             ) from exc
 
         if not isinstance(meta, dict):
@@ -335,12 +402,12 @@ class PoliteHttpFetcher:
             locator=url,
             content=content,
             fetched_at=fetched_at,
-            source_type=SOURCE_TYPE,
+            source_type=self._policy.source_type,
         )
 
-    def _cache_error(self, url: str) -> Poe2dbCacheError:
-        return Poe2dbCacheError(
-            f"poe2db cache sidecar is malformed for {url}; use --refresh to rebuild it"
+    def _cache_error(self, url: str) -> HttpCacheError:
+        return HttpCacheError(
+            f"{self._cache_noun} cache sidecar is malformed for {url}; use --refresh to rebuild it"
         )
 
     def _write_cache(self, url: str, content: str, fetched_at: datetime) -> None:
@@ -369,8 +436,8 @@ class PoliteHttpFetcher:
             self._fsync_dir(target.parent)
         except OSError as exc:
             self._remove_if_present(temp)
-            raise Poe2dbCacheError(
-                f"cannot write poe2db cache for {target}; use --refresh to retry"
+            raise HttpCacheError(
+                f"cannot write {self._cache_noun} cache for {target}; use --refresh to retry"
             ) from exc
 
     def _fsync_dir(self, directory: Path) -> None:

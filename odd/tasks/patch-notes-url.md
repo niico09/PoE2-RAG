@@ -66,7 +66,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
 
 - [ ] T1 — Branch `feat/patch-notes-url` from `main`, this feature document, Engram mirror. Route: inline.
   S12. Commit: `docs(odd): plan the patch-notes URL ingest`.
-- [ ] T2 — Closed fetch policy with poe2db as the default. `HttpSourcePolicy` is a frozen dataclass with
+- [x] T2 — Closed fetch policy with poe2db as the default. `HttpSourcePolicy` is a frozen dataclass with
   `host: str`, `path: PathRule`, `source_type: str` and `cache_directory: str`; `PathRule` is a frozen
   dataclass with `prefix: str`, `slug: re.Pattern[str]` and `slug_message: str`, consumed by one shared
   ordered validator (prefix → trailing slash → slug fullmatch) so the rule is declared and not a mini-DSL.
@@ -204,7 +204,15 @@ Filled as each task closes: RED → GREEN counts, the focused command, and the c
 `git log --oneline main..HEAD`.
 
 - T1 —
-- T2 —
+- T2 — RED: 2 collection errors (`ImportError`: `POE2DB_POLICY`, `HttpCacheError`, `HttpSourcePolicy`,
+  `PathRule` and `FORUM_POLICY` do not exist), blocking the 42 new cases in `test_polite_http_fetcher.py`,
+  `test_bootstrap.py` and `test_local_file_fetcher.py`. GREEN:
+  `uv run pytest -q tests/unit/ingestion/adapters/outbound/test_polite_http_fetcher.py
+  tests/unit/test_bootstrap.py tests/unit/ingestion/adapters/outbound/test_local_file_fetcher.py` → 136
+  passed; `uv run pytest -q` → 1448 passed, 24 deselected (+42 on the 1406 baseline). The four locator
+  sentences and the three cache sentences are drift pins: they pass before and after, and fail only if the
+  shared validator changes a user-visible message. Commit: `feat(ingest): declare the HTTP fetch policy in
+  one place`.
 - T3 —
 - T4 —
 - T5 —

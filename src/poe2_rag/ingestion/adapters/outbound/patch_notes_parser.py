@@ -36,7 +36,13 @@ from poe2_rag.shared.domain import (
     is_blank,
 )
 
-_SOURCE_TYPE = "patch_notes"
+SOURCE_TYPE = "patch_notes"
+"""The source type this parser handles.
+
+The one literal for the kind: the composition root hands it to the forum policy and to the local
+adapter, so a policy can never declare a source type the parser refuses. `EntityRef("patch_notes", ...)`
+below is the entity *kind*, a different concept that only coincides in text.
+"""
 # A version token must end at a word boundary: without the lookahead, `0.5.5hotfix` would match
 # `0.5.5h` and a glued word would be read as a hotfix, which is exactly the silent mapping the
 # parser must not do. The trailing `[A-Za-z]*` keeps the whole glued run as one candidate, so the
@@ -122,9 +128,9 @@ class PatchNotesParser:
         Raises a specific `PatchNotesParseError` subclass when the document does not match the
         expected forum thread shape or comes from another source type.
         """
-        if raw.source_type != _SOURCE_TYPE:
+        if raw.source_type != SOURCE_TYPE:
             raise UnsupportedSourceTypeError(
-                f"the parser handles {_SOURCE_TYPE!r}, got {raw.source_type!r}"
+                f"the parser handles {SOURCE_TYPE!r}, got {raw.source_type!r}"
             )
         if is_blank(raw.content):
             raise PatchNotesParseError("document is blank")
@@ -217,7 +223,7 @@ def _build_chunks(
         f"{version.major}-{version.minor}-{version.patch}",
         f"Patch {version}",
     )
-    source = SourceRef("patch_notes", thread_url, captured_at)
+    source = SourceRef(SOURCE_TYPE, thread_url, captured_at)
     nodes = [node for node in body.children if not _is_ignorable_heading(node, title)]
     split_level = _shallowest_heading_level(nodes)
     if split_level is None:

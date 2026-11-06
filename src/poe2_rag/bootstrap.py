@@ -14,6 +14,7 @@ message or log line in this module ever carries it.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,7 +71,13 @@ from poe2_rag.evaluation.application import (
     EvaluationError,
     RunEvaluation,
 )
-from poe2_rag.ingestion.adapters.outbound.http import HttpFetchError, PoliteHttpFetcher
+from poe2_rag.ingestion.adapters.outbound import patch_notes_parser
+from poe2_rag.ingestion.adapters.outbound.http import (
+    HttpFetchError,
+    HttpSourcePolicy,
+    PathRule,
+    PoliteHttpFetcher,
+)
 from poe2_rag.ingestion.adapters.outbound.json_chunk_repository import (
     ChunkRepositoryLoadError,
     ChunkRepositoryWriteError,
@@ -121,6 +128,23 @@ prompt can see, and the CLI feature was not allowed to invent a budget *variable
 because the composition root is the one place that must choose concrete values to build `AnswerQuestion`,
 and `tests/unit/test_bootstrap.py` pins each number so a change is a decision rather than an edit.
 `RetrievalSettings` independently validates the `final_top_k <= rerank_top_m` invariant.
+"""
+
+FORUM_POLICY = HttpSourcePolicy(
+    host="www.pathofexile.com",
+    path=PathRule(
+        prefix="/forum/view-thread/",
+        slug=re.compile(r"\d+"),
+        slug_message="thread id must be digits",
+    ),
+    source_type=patch_notes_parser.SOURCE_TYPE,
+    cache_directory="patch_notes",
+)
+"""The two forum rules this project may fetch: the official patch-notes threads and nothing else.
+
+It is built here, in the one module that already knows both the parser and the fetcher, and handed to
+`PoliteHttpFetcher` as a value. No adapter imports another, so importing the CLI cannot drag the
+beautifulsoup parser in through a policy (ADR-0006).
 """
 
 EXPECTED_ERRORS: tuple[type[Exception], ...] = (
@@ -318,7 +342,10 @@ class Container:
         """Fetch a local snapshot, parse it and upsert the chunks it produces."""
         if self._ingest_source is None:
             self._ingest_source = IngestSource(
-                fetcher=_RawDirectoryFetcher(self._config.raw_dir, LocalFileFetcher()),
+                fetcher=_RawDirectoryFetcher(
+                    self._config.raw_dir,
+                    LocalFileFetcher(source_type=patch_notes_parser.SOURCE_TYPE),
+                ),
                 parser=PatchNotesParser(),
                 repository=self.chunk_repository,
                 catalog=self.patch_catalog,

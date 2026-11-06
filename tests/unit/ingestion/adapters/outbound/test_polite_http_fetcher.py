@@ -7,6 +7,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -14,14 +15,18 @@ from unittest.mock import patch
 import httpx2
 import pytest
 
+from poe2_rag.bootstrap import FORUM_POLICY
 from poe2_rag.config import ConfigurationError
 from poe2_rag.ingestion.adapters.outbound.http.polite_http_fetcher import (
+    POE2DB_POLICY,
+    HttpCacheError,
     HttpFetchError,
     HttpRequestError,
+    HttpSourcePolicy,
     HttpStatusError,
     HttpTimeoutError,
     MissingHttpContactError,
-    Poe2dbCacheError,
+    PathRule,
     PoliteHttpFetcher,
     RobotsDisallowedError,
     RobotsUnavailableError,
@@ -85,6 +90,7 @@ def make_fetcher(
     client: Client,
     cache_dir: Path,
     *,
+    policy: HttpSourcePolicy = POE2DB_POLICY,
     contact: str | None = CONTACT,
     interval: float = 1.0,
     timeout: float = 30.0,
@@ -93,6 +99,7 @@ def make_fetcher(
     refresh: bool = False,
 ) -> PoliteHttpFetcher:
     return PoliteHttpFetcher(
+        policy=policy,
         client=client,
         cache_dir=cache_dir,
         contact=contact,
@@ -476,7 +483,7 @@ class TestCache:
         "meta_content",
         [None, "{bad", '{"url":"other"}', '{"status":200}', '{"url":"' + BASE_URL + '"}'],
     )
-    def test_corrupt_or_missing_sidecar_raises_poe2db_cache_error(
+    def test_corrupt_or_missing_sidecar_raises_an_http_cache_error(
         self, tmp_path: Path, meta_content: str | None
     ) -> None:
         html_path = cache_html_path(tmp_path)
@@ -489,7 +496,7 @@ class TestCache:
         handler = RecordingHandler({})
         with make_client(handler) as client:
             fetcher = make_fetcher(client, tmp_path)
-            with pytest.raises(Poe2dbCacheError) as exc_info:
+            with pytest.raises(HttpCacheError) as exc_info:
                 fetcher.fetch(BASE_URL)
 
         assert "--refresh" in str(exc_info.value)
@@ -516,7 +523,7 @@ class TestCache:
         handler = RecordingHandler({})
         with make_client(handler) as client:
             fetcher = make_fetcher(client, tmp_path)
-            with pytest.raises(Poe2dbCacheError) as exc_info:
+            with pytest.raises(HttpCacheError) as exc_info:
                 fetcher.fetch(BASE_URL)
 
         assert "--refresh" in str(exc_info.value)
@@ -546,7 +553,7 @@ class TestCache:
             os, "replace", side_effect=OSError("disk full")
         ):
             fetcher = make_fetcher(client, tmp_path)
-            with pytest.raises(Poe2dbCacheError):
+            with pytest.raises(HttpCacheError):
                 fetcher.fetch(BASE_URL)
 
         cache_dir = tmp_path / "poe2db"
@@ -595,6 +602,309 @@ class TestFetchErrors:
                 fetcher.fetch(BASE_URL)
 
 
+FORUM_THREAD_URL = "https://www.pathofexile.com/forum/view-thread/4009785"
+FORUM_ROBOTS_URL = "https://www.pathofexile.com/robots.txt"
+
+POLICY_CASES = [
+    pytest.param(
+        POE2DB_POLICY,
+        BASE_URL,
+        "https://www.pathofexile.com/us/Spark",
+        "https://poe2db.tw/gb/Spark",
+        "https://poe2db.tw/us/Spark/extra",
+        id="poe2db",
+    ),
+    pytest.param(
+        FORUM_POLICY,
+        FORUM_THREAD_URL,
+        "https://poe2db.tw/forum/view-thread/4009785",
+        "https://www.pathofexile.com/forum/post-reply/4009785",
+        "https://www.pathofexile.com/forum/view-thread/not-a-number",
+        id="forum",
+    ),
+]
+"""One row per policy: the policy, a locator it accepts, and locators it must reject.
+
+Every user-visible locator sentence is asserted through the policy that declares it, so the shared
+validator cannot change one host's message while the other host's half of the suite stays green.
+"""
+
+
+class TestFetchPolicy:
+    """The closed policy declares the rule; the fetcher only applies it (S2)."""
+
+    def test_the_policy_declares_exactly_the_four_fields(self) -> None:
+        assert [field.name for field in fields(HttpSourcePolicy)] == [
+            "host",
+            "path",
+            "source_type",
+            "cache_directory",
+        ]
+        assert [field.name for field in fields(PathRule)] == ["prefix", "slug", "slug_message"]
+
+    @pytest.mark.parametrize(
+        "segment",
+        ["", "   ", "a/b", "a\\b", ".", ".."],
+        ids=["blank", "spaces", "slash", "backslash", "dot", "dotdot"],
+    )
+    def test_a_cache_directory_must_be_one_plain_segment(self, segment: str) -> None:
+        """A policy must not be able to write outside the cache root it is given."""
+        with pytest.raises(ValueError):
+            HttpSourcePolicy(
+                host=POE2DB_POLICY.host,
+                path=POE2DB_POLICY.path,
+                source_type=POE2DB_POLICY.source_type,
+                cache_directory=segment,
+            )
+
+    @pytest.mark.parametrize(("policy", "url", "foreign_host", "_prefix", "_slug"), POLICY_CASES)
+    def test_a_foreign_host_names_the_policy_host(
+        self,
+        tmp_path: Path,
+        policy: HttpSourcePolicy,
+        url: str,
+        foreign_host: str,
+        _prefix: str,
+        _slug: str,
+    ) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(UnsupportedLocatorError) as exc_info:
+            make_fetcher(client, tmp_path, policy=policy).fetch(foreign_host)
+
+        assert f"only {policy.host} is allowed" in str(exc_info.value)
+        assert handler.requests == []
+
+    @pytest.mark.parametrize(("policy", "url", "_host", "foreign_path", "_slug"), POLICY_CASES)
+    def test_a_foreign_path_names_the_policy_prefix(
+        self,
+        tmp_path: Path,
+        policy: HttpSourcePolicy,
+        url: str,
+        _host: str,
+        foreign_path: str,
+        _slug: str,
+    ) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(UnsupportedLocatorError) as exc_info:
+            make_fetcher(client, tmp_path, policy=policy).fetch(foreign_path)
+
+        assert f"path must start with {policy.path.prefix!r}" in str(exc_info.value)
+        assert handler.requests == []
+
+    @pytest.mark.parametrize(("policy", "url", "_host", "_prefix", "_slug"), POLICY_CASES)
+    def test_a_trailing_slash_is_rejected_for_every_policy(
+        self,
+        tmp_path: Path,
+        policy: HttpSourcePolicy,
+        url: str,
+        _host: str,
+        _prefix: str,
+        _slug: str,
+    ) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(UnsupportedLocatorError) as exc_info:
+            make_fetcher(client, tmp_path, policy=policy).fetch(url + "/")
+
+        assert "no trailing slash is allowed" in str(exc_info.value)
+        assert handler.requests == []
+
+    @pytest.mark.parametrize(("policy", "url", "_host", "_prefix", "bad_slug"), POLICY_CASES)
+    def test_a_slug_the_rule_rejects_names_the_rule_message(
+        self,
+        tmp_path: Path,
+        policy: HttpSourcePolicy,
+        url: str,
+        _host: str,
+        _prefix: str,
+        bad_slug: str,
+    ) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(UnsupportedLocatorError) as exc_info:
+            make_fetcher(client, tmp_path, policy=policy).fetch(bad_slug)
+
+        assert policy.path.slug_message in str(exc_info.value)
+        assert handler.requests == []
+
+    @pytest.mark.parametrize(("policy", "url", "_host", "_prefix", "_slug"), POLICY_CASES)
+    def test_an_accepted_locator_comes_back_canonical(
+        self,
+        tmp_path: Path,
+        policy: HttpSourcePolicy,
+        url: str,
+        _host: str,
+        _prefix: str,
+        _slug: str,
+    ) -> None:
+        handler = RecordingHandler(
+            {
+                f"https://{policy.host}/robots.txt": Response(200, text=ROBOTS_ALLOW_ALL),
+                url: Response(200, text="<html>thread</html>"),
+            }
+        )
+        upper_host = url.replace(f"//{policy.host}", f"//{policy.host.upper()}")
+        with make_client(handler) as client:
+            raw = make_fetcher(client, tmp_path, policy=policy).fetch(upper_host)
+
+        assert raw.locator == url
+        assert raw.source_type == policy.source_type
+
+
+ACCEPTED_FORUM_URLS = [
+    "https://www.pathofexile.com/forum/view-thread/1",
+    "https://www.pathofexile.com/forum/view-thread/42",
+    "https://www.pathofexile.com/forum/view-thread/123456",
+    "https://www.pathofexile.com/forum/view-thread/4009785",
+]
+"""Thread ids of every length the forum serves today, so the rule is digits and not a width."""
+
+REJECTED_FORUM_URLS = [
+    "http://www.pathofexile.com/forum/view-thread/1",
+    "https://pathofexile.com/forum/view-thread/1",
+    "https://www.pathofexile.com:8443/forum/view-thread/1",
+    "https://user@www.pathofexile.com/forum/view-thread/1",
+    "https://www.pathofexile.com/forum/view-thread/1?page=2",
+    "https://www.pathofexile.com/forum/view-thread/1#post-2",
+    "https://www.pathofexile.com/forum/view-thread/1/",
+    "https://www.pathofexile.com/forum/view-thread/",
+    "https://www.pathofexile.com/forum/view-thread/not-a-number",
+    "https://www.pathofexile.com/forum/view-thread/1/extra",
+    "https://www.pathofexile.com/forum/post-reply/1",
+    "https://poe2db.tw/us/Spark",
+]
+"""Every way out of `/forum/view-thread/<digits>`, including the two neighbouring forum routes."""
+
+
+class TestForumPolicy:
+    """The forum rule is the second closed policy: only thread URLs under the staff forum (S2)."""
+
+    @pytest.mark.parametrize("url", ACCEPTED_FORUM_URLS)
+    def test_accepted_thread_urls_are_fetched_and_kept_as_given(
+        self, tmp_path: Path, url: str
+    ) -> None:
+        handler = RecordingHandler(
+            {
+                FORUM_ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                url: Response(200, text="<html>thread</html>"),
+            }
+        )
+        with make_client(handler) as client:
+            raw = make_fetcher(client, tmp_path, policy=FORUM_POLICY).fetch(url)
+
+        assert raw.locator == url
+        assert raw.content == "<html>thread</html>"
+        assert raw.source_type == FORUM_POLICY.source_type
+
+    @pytest.mark.parametrize("url", REJECTED_FORUM_URLS)
+    def test_rejected_locators_make_no_requests(self, tmp_path: Path, url: str) -> None:
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(UnsupportedLocatorError):
+            make_fetcher(client, tmp_path, policy=FORUM_POLICY).fetch(url)
+
+        assert handler.requests == []
+
+    def test_the_thread_is_cached_under_its_own_segment(self, tmp_path: Path) -> None:
+        handler = RecordingHandler(
+            {
+                FORUM_ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                FORUM_THREAD_URL: Response(200, text="<html>thread</html>"),
+            }
+        )
+        with make_client(handler) as client:
+            make_fetcher(client, tmp_path, policy=FORUM_POLICY).fetch(FORUM_THREAD_URL)
+
+        written = tmp_path / "patch_notes" / "www.pathofexile.com-forum-view-thread-4009785.html"
+        assert written.read_text(encoding="utf-8") == "<html>thread</html>"
+        assert written.with_name(written.name + ".meta.json").is_file()
+        assert not (tmp_path / "poe2db").exists()
+
+    def test_a_forum_cache_error_names_its_own_source_and_never_poe2db(
+        self, tmp_path: Path
+    ) -> None:
+        html_path = tmp_path / "patch_notes" / "www.pathofexile.com-forum-view-thread-4009785.html"
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<html>thread</html>", encoding="utf-8")
+        html_path.with_name(html_path.name + ".meta.json").write_text(
+            '{"url":"other"}', encoding="utf-8"
+        )
+
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(HttpCacheError) as exc_info:
+            make_fetcher(client, tmp_path, policy=FORUM_POLICY).fetch(FORUM_THREAD_URL)
+
+        message = str(exc_info.value)
+        assert message.startswith("patch-notes cache sidecar is malformed for ")
+        assert FORUM_THREAD_URL in message
+        assert "poe2db" not in message
+        assert handler.requests == []
+
+    def test_a_failed_forum_cache_write_names_patch_notes(self, tmp_path: Path) -> None:
+        handler = RecordingHandler(
+            {
+                FORUM_ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                FORUM_THREAD_URL: Response(200, text="<html>thread</html>"),
+            }
+        )
+        with (
+            make_client(handler) as client,
+            patch.object(os, "replace", side_effect=OSError("disk full")),
+            pytest.raises(HttpCacheError) as exc_info,
+        ):
+            make_fetcher(client, tmp_path, policy=FORUM_POLICY).fetch(FORUM_THREAD_URL)
+
+        assert "cannot write patch-notes cache" in str(exc_info.value)
+
+
+class TestCacheMessages:
+    """The cache sentences are the operator's only remediation hint on a one-line exit 1."""
+
+    def test_an_unreadable_cache_names_poe2db(self, tmp_path: Path) -> None:
+        html_path = cache_html_path(tmp_path)
+        meta_path = cache_meta_path(tmp_path)
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<html>Spark</html>", encoding="utf-8")
+        meta_path.write_text("{bad", encoding="utf-8")
+
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(HttpCacheError) as exc_info:
+            make_fetcher(client, tmp_path).fetch(BASE_URL)
+
+        message = str(exc_info.value)
+        assert message.startswith("poe2db cache is unreadable for ")
+        assert BASE_URL in message
+        assert "--refresh" in message
+
+    def test_a_malformed_sidecar_names_poe2db(self, tmp_path: Path) -> None:
+        html_path = cache_html_path(tmp_path)
+        meta_path = cache_meta_path(tmp_path)
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<html>Spark</html>", encoding="utf-8")
+        meta_path.write_text(json.dumps({"url": "other"}), encoding="utf-8")
+
+        handler = RecordingHandler({})
+        with make_client(handler) as client, pytest.raises(HttpCacheError) as exc_info:
+            make_fetcher(client, tmp_path).fetch(BASE_URL)
+
+        message = str(exc_info.value)
+        assert message.startswith("poe2db cache sidecar is malformed for ")
+        assert "--refresh" in message
+
+    def test_a_failed_write_names_poe2db(self, tmp_path: Path) -> None:
+        handler = RecordingHandler(
+            {
+                ROBOTS_URL: Response(200, text=ROBOTS_ALLOW_ALL),
+                BASE_URL: Response(200, text="<html>Spark</html>"),
+            }
+        )
+        with (
+            make_client(handler) as client,
+            patch.object(os, "replace", side_effect=OSError("disk full")),
+            pytest.raises(HttpCacheError) as exc_info,
+        ):
+            make_fetcher(client, tmp_path).fetch(BASE_URL)
+
+        assert "cannot write poe2db cache" in str(exc_info.value)
+
+
 class TestErrorHierarchy:
     @pytest.mark.parametrize(
         "cls",
@@ -605,7 +915,7 @@ class TestErrorHierarchy:
             HttpStatusError,
             HttpTimeoutError,
             HttpRequestError,
-            Poe2dbCacheError,
+            HttpCacheError,
         ],
     )
     def test_all_http_fetch_errors_derive_from_runtime_error(self, cls: type[Exception]) -> None:

@@ -13,6 +13,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,13 +24,22 @@ from poe2_rag.answering.adapters.outbound.dense import bge_embedder
 from poe2_rag.answering.adapters.outbound.rerank import cross_encoder_reranker
 from poe2_rag.answering.application import AnswerQuestion, LanguageModel
 from poe2_rag.answering.domain.errors import InvalidQueryError
-from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, EXPECTED_ERRORS, Container
+from poe2_rag.bootstrap import (
+    DEFAULT_RETRIEVAL_SETTINGS,
+    EXPECTED_ERRORS,
+    FORUM_POLICY,
+    Container,
+)
 from poe2_rag.config import AppConfig, MissingApiKeyError
 from poe2_rag.evaluation.application import EvaluationError
 from poe2_rag.ingestion.adapters.outbound.http import (
     HttpFetchError,
     MissingHttpContactError,
     PoliteHttpFetcher,
+)
+from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
+    PatchNotesParser,
+    UnsupportedSourceTypeError,
 )
 from poe2_rag.ingestion.adapters.outbound.poe2db import (
     Poe2dbGemPageParser,
@@ -39,6 +49,7 @@ from poe2_rag.ingestion.application import (
     EmptyCorpusError,
     IngestSource,
     LexicalIndexWriter,
+    RawDocument,
     ReindexCorpus,
     VectorIndexWriter,
 )
@@ -450,3 +461,26 @@ def test_evaluation_reports_no_commit_when_the_project_root_is_not_a_repository(
     container = build(config)
 
     assert container.evaluation._git_commit is None
+
+
+def test_the_forum_policy_is_the_closed_thread_rule() -> None:
+    """The second host this project may fetch is a rule, not a hostname check (S2)."""
+    assert FORUM_POLICY.host == "www.pathofexile.com"
+    assert FORUM_POLICY.path.prefix == "/forum/view-thread/"
+    assert FORUM_POLICY.path.slug.fullmatch("4009785")
+    assert not FORUM_POLICY.path.slug.fullmatch("not-a-number")
+    assert FORUM_POLICY.cache_directory == "patch_notes"
+
+
+def test_the_forum_policy_source_type_is_the_one_the_parser_accepts() -> None:
+    """One literal for the kind: the policy cannot declare a source the forum parser refuses."""
+    raw = RawDocument(
+        locator="https://www.pathofexile.com/forum/view-thread/4009785",
+        content=(CLI_FIXTURES / "patch-notes-0.1.1.html").read_text(encoding="utf-8"),
+        fetched_at=datetime(2026, 10, 30, 12, 0, tzinfo=UTC),
+        source_type=FORUM_POLICY.source_type,
+    )
+
+    assert PatchNotesParser().parse(raw)
+    with pytest.raises(UnsupportedSourceTypeError):
+        PatchNotesParser().parse(replace(raw, source_type="other_source"))
