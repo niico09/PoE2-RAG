@@ -170,7 +170,7 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 ### 5.2 Flujo de `IngestSource`
 
 1. **Fetch:** el `SourceFetcher` devuelve un `RawDocument` con el contenido, el locator, la fecha de captura (en el snapshot local, la del sidecar de metadatos, nunca el mtime) y el tipo de fuente.
-2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento. El parser de notas de parche lee solo el primer post de staff y fusiona las secciones que resuelven al mismo slug.
+2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento. El parser de notas de parche toma el título del `h1` de `topBar`, o `og:title` y luego `<title>` en los hilos de Content Update que no tienen `h1`. Lee solo el primer post de staff: usa el layout de noticia (`tr.newsPost > td > div.content`) en los Content Update, y `tr.staff` en los demás. Desempaqueta los contenedores que envuelven un encabezado, descarta el banner inicial, omite la tabla de contenidos y el encabezado de reporte, y fusiona las secciones que resuelven al mismo slug.
 3. **Vigencia conocida:** un chunk cuyo `valid_from` no está en el `PatchCatalog` aborta la corrida con `UnknownPatchError`; no se descarta, porque un chunk fuera de la línea de tiempo haría que el corpus afirmara un parche que el sistema no reconoce (D1).
 4. **Identidad única:** si un documento produce dos chunks con el mismo `chunk_id`, `DuplicateChunkIdError` aborta antes de escribir; guardar el último dejaría el corpus en silencio con una sola sección.
 5. **Identidad por documento:** un `chunk_id` ya almacenado desde otra URL de origen aborta con `ChunkIdentityConflictError`; pisarlo movería la cita del primer hilo al segundo. Una recaptura de la misma URL sí es un update.
@@ -505,11 +505,11 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | Riesgo | Mitigación |
 |---|---|
 | Las fuentes cambian de formato y rompen los parsers | Guardar snapshots completos en `data/raw/` (gitignored, [ADR-0002](adr/0002-fuentes-de-datos-mvp.md)); los tests de parser corren sobre fixtures mínimas escritas a mano y versionadas en `tests/fixtures/`. |
-| Las notas de parche describen cambios, no estados completos | En el MVP cada hilo se indexa como su propia entidad `patch_notes`, con una sección por encabezado y vigencia abierta desde su parche (§10.1). Aplicarlas como transiciones que cierran el `valid_until` de chunks de gemas requiere poe2db primero y queda fuera de este corte. |
+| Las notas de parche describen cambios, no estados completos | En el MVP cada hilo se indexa como su propia entidad `patch_notes`, con una sección por encabezado dividida en bloques numerados si supera el presupuesto de tokens, y vigencia abierta desde su parche (§10.1). Aplicarlas como transiciones que cierran el `valid_until` de chunks de gemas requiere poe2db primero y queda fuera de este corte. |
 | El título del hilo puede traer una versión con sufijo (`0.5.5e`) que `PatchVersion` no representa | El parser falla con `PatchVersionUnparseableError` en vez de mapearla a otro parche; si el MVP necesita esos parches, se amplía `PatchVersion` con una decisión explícita. |
 | Encabezados repetidos, o dos encabezados que slugifican igual, producen un `chunk_id` repetido | El parser fusiona las secciones con el mismo slug en orden de documento, incluido el `overview` sintético; `IngestSource` conserva el rechazo con `DuplicateChunkIdError` como red de seguridad. |
 | Dos hilos del mismo parche reclaman el mismo `chunk_id` (el id no incluye la URL) | `IngestSource` rechaza con `ChunkIdentityConflictError` un id ya almacenado desde otra URL; una recaptura de la misma URL es un update. |
-| Una sección borrada del hilo sigue en el corpus | Deuda explícita: el puerto solo expresa upsert y no el alcance de un documento, así que no se poda; se resolverá cuando el corpus necesite reflejar borrados. |
+| Una sección borrada del hilo desaparece en la recaptura | `IngestSource` elimina los chunks almacenados del mismo `valid_from` que el documento recapturado ya no tiene (`_removed_at_the_same_version` en `src/poe2_rag/ingestion/application/ingest_source.py`); `tests/unit/ingestion/application/test_ingest_patch_notes_coexistence.py` pinnea el comportamiento. |
 | Las páginas de poe2db no declaran versión de parche | El snapshot se marca desde `catalog.current()`: la página muestra valores actuales y el catálogo es la única fuente de "parche actual". Una captura cacheada reingerida tras subir el parche queda marcada con el nuevo; `--refresh` después de cambiar el catálogo lo evita. |
 | `PatchCatalog` no expone fechas de publicación, solo versiones | La vigencia no puede calcular "la última release en o antes de `fetched_at`"; se usa `catalog.current()` y la ampliación del puerto queda reportada, no parcheada. |
 | Un snapshot nuevo de la misma gema deja dos vigencias abiertas | `IngestSource` hace upsert por `chunk_id` y no cierra la versión anterior; el límite es explícito y se resolverá con un puerto con alcance de documento. |
@@ -530,8 +530,10 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 Una nota de parche **es su propia entidad**, no una transición aplicada a chunks de gemas:
 
 - `EntityRef(kind="patch_notes", slug="<major>-<minor>-<patch>", name="Patch <version>")`;
-- un `Chunk` por sección de primer nivel del hilo (`section` = slug del encabezado);
+- un `Chunk` por sección de primer nivel del hilo (`section` = slug del encabezado), o varios chunks numerados (`<slug>-NN`) si el texto supera el presupuesto de tokens; los hotfix sin encabezados forman una sección `notes`;
 - `Validity(valid_from=<parche detectado>, valid_until=None)`: un cambio es un hecho desde ese parche en adelante.
+
+El presupuesto por defecto es de 400 tokens estimados, porque `bge-base-en-v1.5` y `bge-reranker-base` leen 512 tokens como máximo; el valor se mide contra el tokenizador real en `tests/integration/test_patch_notes_chunk_budget_integration.py`, y el peor bloque real mide 326 tokens. Una sección que cabe conserva su `section` sin sufijo, así que su `chunk_id` se mantiene entre capturas. Una sección que no cabe se corta en líneas completas, nunca a mitad de frase, en bloques consecutivos cuyo `section` es `<slug>-NN` (relleno a al menos dos dígitos, por ejemplo `endgame-changes-01`); cada bloque repite la línea de contexto `Patch <versión> — <Encabezado> (part N/M)`, porque el embedder y el reranker leen el texto de un bloque solo.
 
 El slug de la entidad lleva la versión, así que dos notas de parches consecutivos son identidades distintas
 y la supersesión de §5.2 nunca cierra una nota con la siguiente.
