@@ -181,7 +181,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   with *and* without `--refresh` → exit 1 with one `error: only https URLs are allowed, got 'ftp://x'` line
   each, which is the only case that catches the guard rejecting `OTHER_SCHEME` as a usage error. Route:
   inline. S3, S5, S6.
-- [ ] T5 — Network test. `tests/network/test_patch_notes_network.py`, marked `network`, mirrors the poe2db
+- [x] T5 — Network test. `tests/network/test_patch_notes_network.py`, marked `network`, mirrors the poe2db
   network test: the real `PoliteHttpFetcher` with the forum policy, `PatchNotesParser`, `JsonChunkRepository`
   and a catalog containing 0.5.5e run through `IngestSource` with every directory under `tmp_path` (never
   `data/`), asserting the detected version, `source.type`, `source.url`, the chunk list and the cache under
@@ -226,7 +226,15 @@ Filled as each task closes: RED → GREEN counts, the focused command, and the c
   deselected (+12 on 1465). `uv run poe2-rag ingest --help` renders `{patch-notes,poe2db} path or URL`
   with both refresh cases in the option text. Commit: `feat(cli): ask the container for the source's
   runner`.
-- T5 —
+- T5 — RED (network, three manual runs): the first two runs failed on the only two things a live
+  thread can prove — the observed chunk list was still an empty placeholder (`['notes'] == []`) and the
+  expected `chunk_id` omitted the entity kind (`patch_notes:0-5-5@0.5.5e#notes` versus the real
+  `patch_notes:patch_notes:0-5-5@0.5.5e#notes`). GREEN:
+  `POE2_RAG_HTTP_CONTACT=… uv run pytest -q -m network tests/network/test_patch_notes_network.py -s` →
+  `1 passed`, printed `ingested 1 chunks from 36762 chars`; the default suite → 1477 passed, 25
+  deselected. The 0.5.5e staff post is a hotfix body (an `h3` repeating the title plus five bullets), so
+  one `notes` chunk is the thread's real shape. Commit: `test(ingest): capture one real patch-notes
+  thread`.
 - T6 —
 - T7 —
 
