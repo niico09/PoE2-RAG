@@ -103,11 +103,17 @@ class TestVersionDetection:
 
         assert "0.5.5hotfix" in str(exc_info.value)
 
-    def test_a_hotfix_shares_the_entity_key_of_its_patch_line(self) -> None:
-        """The key identifies the patch line; the hotfix lives in `Validity` and in the chunk id."""
+    def test_a_hotfix_thread_is_an_entity_of_its_own(self) -> None:
+        """Each forum thread is its own delta, so `0.5.5e` must not supersede `0.5.5`'s notes."""
         chunks = PatchNotesParser().parse(make_raw("suffixed_version.html"))
 
-        assert chunks[0].entity.key == "patch_notes:0-5-5"
+        assert chunks[0].entity.key == "patch_notes:0-5-5e"
+        assert chunks[0].chunk_id.startswith("patch_notes:patch_notes:0-5-5e@0.5.5e#")
+
+    def test_a_base_version_thread_keeps_the_plain_entity_key(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("full_020_thread.html"))
+
+        assert {chunk.entity.key for chunk in chunks} == {"patch_notes:0-2-0"}
 
     def test_a_suffixed_version_parses_as_a_hotfix(self) -> None:
         chunks = PatchNotesParser().parse(make_raw("suffixed_version.html"))
