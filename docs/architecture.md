@@ -116,6 +116,19 @@ El esquema actual del README tiene dos problemas de diseño:
 > delta que solo lista sus propios cambios. Por eso el hilo de `0.5.5e` no supersede al de `0.5.5` y
 > ambos quedan abiertos. Solo una recaptura del mismo hilo supersede a la anterior.
 
+El `text` de todo chunk empieza con **una** línea de contexto: `<Gema> — <Sección>` en poe2db
+(`Spark — Properties`) y `Patch <versión> — <Encabezado>` en las notas (`Patch 0.5.5 — Ritual
+Changes`), o `Patch 0.5.5b — Notes` en un hilo de hotfix sin encabezados. Cuando la página no trae ese
+título, la línea usa el que el parser sintetiza: `Overview` si el hilo arranca con texto antes del
+primer encabezado, y `rows <a>–<b>` si la primera columna de la tabla no numera niveles. Debajo va el
+texto de la página tal cual, porque la cita lo copia. Esa línea cuenta para el presupuesto de tokens
+del splitter y pone la entidad y la sección dentro del texto, porque el embedder denso y el reranker
+puntúan solo el texto: el índice léxico además le concatena la entidad y la sección, y el LLM recibe
+el `chunk_id` como título del documento con la entidad en su contexto, pero ninguno de esos
+metadatos llega al denso ni al reranker. Los bloques en que se parte una sección larga ya llevaban la
+suya con el rango o la parte (`Spark — levels 11–20`, `Patch 0.5.5 — Endgame Changes (part 2/3)`);
+nunca se emiten dos y el `chunk_id` no cambia.
+
 ```json
 {
   "chunk_id": "poe2db:active_gem:spark@0.1.1#description",
@@ -131,7 +144,7 @@ El esquema actual del README tiene dos problemas de diseño:
     "url": "https://poe2db.tw/us/Spark",
     "captured_at": "2026-10-29"
   },
-  "text": "Spark fires lightning projectiles that bounce off walls and move erratically..."
+  "text": "Spark — Description\nLaunch a spray of sparking Projectiles ..."
 }
 ```
 
@@ -170,7 +183,7 @@ Cada etapa es un componente con su propio puerto: se pueden medir y reemplazar p
 ### 5.2 Flujo de `IngestSource`
 
 1. **Fetch:** el `SourceFetcher` devuelve un `RawDocument` con el contenido, el locator, la fecha de captura (en el snapshot local, la del sidecar de metadatos, nunca el mtime) y el tipo de fuente.
-2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento. El parser de notas de parche toma el título del `h1` de `topBar`, o `og:title` y luego `<title>` en los hilos de Content Update que no tienen `h1`. Lee solo el primer post de staff: usa el layout de noticia (`tr.newsPost > td > div.content`) en los Content Update, y `tr.staff` en los demás. Desempaqueta los contenedores que envuelven un encabezado, descarta el banner inicial, omite la tabla de contenidos y el encabezado de reporte, y fusiona las secciones que resuelven al mismo slug.
+2. **Parse:** el `DocumentParser` del tipo de fuente devuelve los chunks del dominio, en orden de documento. El parser de notas de parche toma el título del `h1` de `topBar`, o `og:title` y luego `<title>` en los hilos de Content Update que no tienen `h1`. Lee solo el primer post de staff: usa el layout de noticia (`tr.newsPost > td > div.content`) en los Content Update, y `tr.staff` en los demás. Desempaqueta los contenedores que envuelven un encabezado, descarta el banner inicial, omite la tabla de contenidos y el encabezado de reporte, y fusiona las secciones que resuelven al mismo slug. Cada sección sale con su línea de contexto al frente (`Patch 0.5.5 — Ritual Changes`); un hilo de hotfix sin encabezados la usa con `Notes` como título.
 3. **Vigencia conocida:** un chunk cuyo `valid_from` no está en el `PatchCatalog` aborta la corrida con `UnknownPatchError`; no se descarta, porque un chunk fuera de la línea de tiempo haría que el corpus afirmara un parche que el sistema no reconoce (D1).
 4. **Identidad única:** si un documento produce dos chunks con el mismo `chunk_id`, `DuplicateChunkIdError` aborta antes de escribir; guardar el último dejaría el corpus en silencio con una sola sección.
 5. **Identidad por documento:** un `chunk_id` ya almacenado desde otra URL de origen aborta con `ChunkIdentityConflictError`; pisarlo movería la cita del primer hilo al segundo. Una recaptura de la misma URL sí es un update.

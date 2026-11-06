@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from chunk_text import body, context_line
 
 from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
     InvalidTokenBudgetError,
@@ -200,7 +201,9 @@ class TestSectionSplitting:
 
         overview = chunks[0]
         assert overview.section == "overview"
-        assert overview.text == "This patch introduces major changes."
+        assert overview.text == (
+            "Patch 0.2.0 — Overview\nThis patch introduces major changes."
+        )
 
     def test_repeated_title_heading_is_dropped(self) -> None:
         chunks = PatchNotesParser().parse(make_raw("full_020_thread.html"))
@@ -213,7 +216,9 @@ class TestSectionSplitting:
         chunks = PatchNotesParser().parse(make_raw("title_not_first_thread.html"))
 
         assert [chunk.section for chunk in chunks] == ["overview", "general-changes"]
-        assert chunks[0].text == "Intro before the title heading."
+        assert chunks[0].text == (
+            "Patch 0.2.0 — Overview\nIntro before the title heading."
+        )
 
     def test_duplicate_sections_are_merged(self) -> None:
         chunks = PatchNotesParser().parse(make_raw("duplicate_sections_thread.html"))
@@ -224,11 +229,15 @@ class TestSectionSplitting:
             "fireball-buffs",
         ]
         by_section = {chunk.section: chunk.text for chunk in chunks}
-        assert by_section["overview"] == "Intro paragraph.\nOverview body."
+        assert by_section["overview"] == (
+            "Patch 0.2.0 — Overview\nIntro paragraph.\nOverview body."
+        )
         assert by_section["general-changes"] == (
+            "Patch 0.2.0 — General Changes\n"
             "- First general change.\n- Second general change."
         )
         assert by_section["fireball-buffs"] == (
+            "Patch 0.2.0 — Fireball Buffs\n"
             "Fireball buff detail.\nMore fireball buff detail."
         )
 
@@ -236,7 +245,9 @@ class TestSectionSplitting:
         chunks = PatchNotesParser().parse(make_raw("empty_heading_thread.html"))
 
         assert [chunk.section for chunk in chunks] == ["general-changes"]
-        assert chunks[0].text == "First change.\nSecond change.\nThird change."
+        assert chunks[0].text == (
+            "Patch 0.2.0 — General Changes\nFirst change.\nSecond change.\nThird change."
+        )
 
     def test_a_document_with_only_a_title_raises(self) -> None:
         with pytest.raises(PatchNotesParseError) as exc_info:
@@ -259,8 +270,34 @@ class TestSectionSplitting:
         chunk = chunks[0]
         assert chunk.section == "notes"
         assert chunk.text == (
+            "Patch 0.1.1 — Notes\n"
             "Fixed a crash when opening the map.\n- Fixed bug A.\n- Fixed bug B."
         )
+
+
+class TestChunkContextLines:
+    """Every notes chunk names its patch and section in one line, blocks included (S1-S2)."""
+
+    def test_every_chunk_starts_with_its_context_line(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("full_020_thread.html"))
+
+        assert [context_line(chunk) for chunk in chunks] == [
+            "Patch 0.2.0 — Overview",
+            "Patch 0.2.0 — General Changes",
+            "Patch 0.2.0 — Skill Changes",
+        ]
+
+    def test_no_chunk_carries_a_second_context_line(self) -> None:
+        """A block already carries its part counter: the line is never repeated in the body."""
+        chunks = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
+        total = len(chunks)
+
+        for index, chunk in enumerate(chunks, 1):
+            expected = (
+                f"Patch 0.5.5 — Trial of Chaos Improvements (part {index}/{total})"
+            )
+            assert context_line(chunk) == expected
+            assert chunk.text.split("\n").count(expected) == 1
 
 
 class TestTextRendering:
@@ -268,6 +305,7 @@ class TestTextRendering:
         chunks = PatchNotesParser().parse(make_raw("table_and_blocks_thread.html"))
 
         assert chunks[0].text == (
+            "Patch 0.2.0 — General Changes\n"
             "Skill | Before | After\n"
             "Fireball | 10 | 15\n"
             "Ice Nova | 20 | 25\n"
@@ -424,6 +462,7 @@ class TestLayoutWrappers:
 
         assert [chunk.section for chunk in chunks] == ["notes"]
         assert chunks[0].text.split("\n") == [
+            "Patch 0.7.0 — Notes",
             "- alpha",
             "- beta",
             "Nested Heading",
@@ -507,7 +546,7 @@ class TestTokenBudgetBlocks:
         chunks = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
         total = len(chunks)
 
-        assert [chunk.text.split("\n")[0] for chunk in chunks] == [
+        assert [context_line(chunk) for chunk in chunks] == [
             f"Patch 0.5.5 — Trial of Chaos Improvements (part {part}/{total})"
             for part in range(1, total + 1)
         ]
@@ -520,8 +559,8 @@ class TestTokenBudgetBlocks:
 
         (section,) = whole
         assert section.section == "trial-of-chaos-improvements"
-        bodies = ["\n".join(chunk.text.split("\n")[1:]) for chunk in blocks]
-        assert "\n".join(bodies) == section.text
+        bodies = [body(chunk) for chunk in blocks]
+        assert "\n".join(bodies) == body(section)
 
     def test_every_block_stays_inside_the_budget(self) -> None:
         budget = 240
@@ -548,7 +587,7 @@ class TestTokenBudgetBlocks:
         assert [chunk.section for chunk in chunks] == [
             f"notes-{index:02d}" for index in range(1, total + 1)
         ]
-        assert [chunk.text.split("\n")[0] for chunk in chunks] == [
+        assert [context_line(chunk) for chunk in chunks] == [
             f"Patch 0.5.5c — Notes (part {part}/{total})" for part in range(1, total + 1)
         ]
 
