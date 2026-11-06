@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
+    InvalidTokenBudgetError,
     MissingPatchNotesBodyError,
     PatchNotesParseError,
     PatchNotesParser,
@@ -15,6 +16,7 @@ from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
     PatchVersionUnparseableError,
     ThreadUrlNotFoundError,
     UnsupportedSourceTypeError,
+    estimate_tokens,
 )
 from poe2_rag.ingestion.application import DocumentParser, RawDocument
 from poe2_rag.shared.domain import EntityRef, PatchVersion, SourceRef, Validity
@@ -318,3 +320,258 @@ class TestErrors:
         assert issubclass(MissingPatchNotesBodyError, PatchNotesParseError)
         assert issubclass(ThreadUrlNotFoundError, PatchNotesParseError)
         assert issubclass(UnsupportedSourceTypeError, PatchNotesParseError)
+
+
+class TestTitleFallback:
+    """The title is not always an `h1`: a Content Update thread only has the document title."""
+
+    def test_a_content_update_thread_falls_back_to_the_open_graph_title(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        assert {chunk.entity.key for chunk in chunks} == {"patch_notes:0-5-5"}
+        assert {chunk.validity.valid_from for chunk in chunks} == {
+            PatchVersion.parse("0.5.5")
+        }
+        assert any("Start fresh in a new economy" in chunk.text for chunk in chunks)
+
+    def test_the_open_graph_title_wins_over_the_title_element(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("og_title_only_thread.html"))
+
+        assert {chunk.entity.key for chunk in chunks} == {"patch_notes:0-1-1"}
+
+    def test_the_title_element_is_the_last_resort(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("title_element_only_thread.html"))
+
+        assert {chunk.entity.key for chunk in chunks} == {"patch_notes:0-1-2"}
+
+    def test_the_top_bar_heading_wins_over_the_open_graph_title(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("h1_precedes_meta_thread.html"))
+
+        assert {chunk.entity.key for chunk in chunks} == {"patch_notes:0-1-0"}
+
+    def test_a_page_without_any_title_raises(self) -> None:
+        raw = RawDocument(
+            locator="data/raw/untitled.html",
+            content="<html><body><p>nothing</p></body></html>",
+            fetched_at=CAPTURED_AT,
+            source_type="patch_notes",
+        )
+
+        with pytest.raises(PatchVersionNotFoundError) as exc_info:
+            PatchNotesParser().parse(raw)
+
+        assert "no thread title found" in str(exc_info.value)
+
+
+class TestNewsPostBody:
+    """Content Update threads use `tr.newsPost > td > div.content`, not `tr.staff`."""
+
+    def test_the_news_post_body_is_the_first_staff_post_body(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        text = "\n".join(chunk.text for chunk in chunks)
+        assert "Start fresh in a new economy" in text
+        assert "Report Account" not in text
+
+    def test_a_thread_without_any_post_still_raises(self) -> None:
+        with pytest.raises(MissingPatchNotesBodyError):
+            PatchNotesParser().parse(make_raw("community_only_thread.html"))
+
+    def test_the_earliest_post_wins_across_both_layouts(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("mixed_layout_thread.html"))
+
+        text = "\n".join(chunk.text for chunk in chunks)
+        assert "OP BODY" in text
+        assert "REPLY BODY" not in text
+
+    def test_a_news_post_body_in_a_later_cell_is_found(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("news_post_second_cell_thread.html"))
+
+        text = "\n".join(chunk.text for chunk in chunks)
+        assert "REAL BODY" in text
+        assert "LATER BODY" not in text
+
+    def test_a_staff_body_comes_from_the_content_cell_only(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("staff_body_anchor_thread.html"))
+
+        text = "\n".join(chunk.text for chunk in chunks)
+        assert "REAL BODY" in text
+        assert "NOT THE BODY" not in text
+
+    def test_a_staff_row_without_a_content_cell_is_not_a_post(self) -> None:
+        raw = RawDocument(
+            locator="data/raw/staff_without_content_cell.html",
+            content=(
+                "<html><head><title>0.9.1 Patch Notes</title></head><body>"
+                "<table><tr class='staff'><td>"
+                "<div class='content'><h3>0.9.1 Patch Notes</h3><p>WRONG BODY</p></div>"
+                "</td></tr></table>"
+                "<a href='/forum/post-reply/1414141/quote/1'>Quote</a></body></html>"
+            ),
+            fetched_at=CAPTURED_AT,
+            source_type="patch_notes",
+        )
+
+        with pytest.raises(MissingPatchNotesBodyError):
+            PatchNotesParser().parse(raw)
+
+
+class TestLayoutWrappers:
+    """Only the forum's layout boxes are unwrapped; a heading nested in content stays text."""
+
+    def test_a_list_holding_a_nested_heading_is_not_split(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("nested_heading_list_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["notes"]
+        assert chunks[0].text.split("\n") == [
+            "- alpha",
+            "- beta",
+            "Nested Heading",
+            "- gamma",
+        ]
+
+    def test_a_box_holding_a_nested_heading_is_not_split(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("nested_box_heading_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["notes"]
+        assert "Hidden text inside the box." in chunks[0].text
+
+
+class TestBannerHeading:
+    """A lone leading heading banners the thread; the sections live one level below it."""
+
+    def test_a_content_update_thread_splits_below_its_banner(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == [
+            "the-forbidden-rites-event-league",
+            "endgame-changes",
+        ]
+
+    def test_the_banner_heading_is_not_a_section(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        assert "Content Update 0.5.5" not in "\n".join(chunk.text for chunk in chunks)
+
+    def test_the_banner_stylesheet_never_reaches_the_notes(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        assert ".newsPost li" not in "\n".join(chunk.text for chunk in chunks)
+
+    def test_a_page_without_a_banner_keeps_the_shallowest_split(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("full_020_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == [
+            "overview",
+            "general-changes",
+            "skill-changes",
+        ]
+
+
+class TestNavigationSections:
+    """"Table of Contents" and "Report Forum Post" are page furniture, not notes."""
+
+    def test_the_table_of_contents_is_dropped(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("navigation_headings_thread.html"))
+
+        assert "table-of-contents" not in [chunk.section for chunk in chunks]
+        assert not any(
+            "- Real Changes" in chunk.text for chunk in chunks
+        ), "the table-of-contents links became notes text"
+
+    def test_the_report_forum_post_heading_is_dropped(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("navigation_headings_thread.html"))
+
+        assert "report-forum-post" not in [chunk.section for chunk in chunks]
+        assert "Report Account" not in "\n".join(chunk.text for chunk in chunks)
+
+    def test_the_section_after_a_navigation_heading_is_kept(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("navigation_headings_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == ["real-changes", "extra-changes"]
+
+
+class TestTokenBudgetBlocks:
+    """A section wider than the budget becomes consecutive, self-describing blocks."""
+
+    def test_an_oversized_section_becomes_consecutive_blocks(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
+
+        assert len(chunks) > 1
+        assert [chunk.section for chunk in chunks] == [
+            f"trial-of-chaos-improvements-{index:02d}"
+            for index in range(1, len(chunks) + 1)
+        ]
+
+    def test_every_block_repeats_its_context_line(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
+        total = len(chunks)
+
+        assert [chunk.text.split("\n")[0] for chunk in chunks] == [
+            f"Patch 0.5.5 — Trial of Chaos Improvements (part {part}/{total})"
+            for part in range(1, total + 1)
+        ]
+
+    def test_the_blocks_union_the_section_text_without_loss_or_duplication(self) -> None:
+        whole = PatchNotesParser(max_block_tokens=100_000).parse(
+            make_raw("oversized_section_thread.html")
+        )
+        blocks = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
+
+        (section,) = whole
+        assert section.section == "trial-of-chaos-improvements"
+        bodies = ["\n".join(chunk.text.split("\n")[1:]) for chunk in blocks]
+        assert "\n".join(bodies) == section.text
+
+    def test_every_block_stays_inside_the_budget(self) -> None:
+        budget = 240
+        chunks = PatchNotesParser(max_block_tokens=budget).parse(
+            make_raw("oversized_section_thread.html")
+        )
+
+        assert len(chunks) > 2
+        assert all(estimate_tokens(chunk.text) <= budget for chunk in chunks)
+
+    def test_a_section_that_fits_keeps_its_id(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("content_update_thread.html"))
+
+        assert [chunk.section for chunk in chunks] == [
+            "the-forbidden-rites-event-league",
+            "endgame-changes",
+        ]
+
+    def test_the_no_heading_case_blocks_under_notes(self) -> None:
+        chunks = PatchNotesParser().parse(make_raw("notes_only_thread.html"))
+        total = len(chunks)
+
+        assert total > 1
+        assert [chunk.section for chunk in chunks] == [
+            f"notes-{index:02d}" for index in range(1, total + 1)
+        ]
+        assert [chunk.text.split("\n")[0] for chunk in chunks] == [
+            f"Patch 0.5.5c — Notes (part {part}/{total})" for part in range(1, total + 1)
+        ]
+
+    def test_the_budget_is_a_constructor_parameter(self) -> None:
+        default = PatchNotesParser().parse(make_raw("oversized_section_thread.html"))
+        tight = PatchNotesParser(max_block_tokens=40).parse(
+            make_raw("oversized_section_thread.html")
+        )
+        width = len(str(len(tight)))
+
+        assert len(tight) > len(default)
+        assert [chunk.section for chunk in tight] == [
+            f"trial-of-chaos-improvements-{index:0{width}d}"
+            for index in range(1, len(tight) + 1)
+        ]
+
+    def test_an_invalid_budget_raises_a_specific_error(self) -> None:
+        with pytest.raises(InvalidTokenBudgetError):
+            PatchNotesParser(max_block_tokens=0)
+
+        with pytest.raises(InvalidTokenBudgetError):
+            PatchNotesParser(max_block_tokens=-3)
+
+    def test_an_invalid_budget_is_a_configuration_error(self) -> None:
+        assert issubclass(InvalidTokenBudgetError, ValueError)
+        assert not issubclass(InvalidTokenBudgetError, PatchNotesParseError)
