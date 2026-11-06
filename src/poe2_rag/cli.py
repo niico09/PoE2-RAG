@@ -24,6 +24,7 @@ from poe2_rag.config import ConfigurationError
 from poe2_rag.evaluation.adapters.inbound import cli as eval_cli
 from poe2_rag.evaluation.domain import InvalidMetricsError, require_ks
 from poe2_rag.ingestion.adapters.inbound import cli as ingest_cli
+from poe2_rag.ingestion.adapters.locator import LocatorKind, classify_locator
 from poe2_rag.shared.domain.errors import InvalidPatchVersionError
 from poe2_rag.shared.domain.patch_version import PatchVersion
 
@@ -43,9 +44,8 @@ class CliContainer(Protocol):
         """The failures the wired adapters declare as operational, reported as one line."""
         ...
 
-    @property
-    def ingest_source(self) -> ingest_cli.IngestSourceRunner:
-        """Runner that ingests one source document."""
+    def ingest_source(self, *, source: str, refresh: bool) -> ingest_cli.IngestSourceRunner:
+        """Runner for `source`, whose fetcher ignores the cache when `refresh` is true."""
         ...
 
     @property
@@ -59,16 +59,8 @@ class CliContainer(Protocol):
         ...
 
 
-class Poe2dbIngestContainer(Protocol):
-    """The extra capability the poe2db source needs: a runner for each cache policy."""
-
-    def poe2db_ingest_source(self, *, refresh: bool) -> ingest_cli.IngestSourceRunner:
-        """Return a runner whose fetcher ignores the cache when `refresh` is true."""
-        ...
-
-
 class EvaluationContainer(Protocol):
-    """The extra capability `eval` needs, kept out of `CliContainer` as `Poe2dbIngestContainer` is.
+    """The extra capability `eval` needs, kept out of `CliContainer` so a command fake stays small.
 
     A container that never runs an evaluation does not have to provide one, so the existing command
     fakes stay valid and the boundary keeps depending on the commands that are actually used.
@@ -126,14 +118,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     ingest.add_argument(
         "locator",
-        metavar="path",
-        help="path of a patch-notes snapshot, or the poe2db page URL; relative paths resolve "
-        "against POE2_RAG_RAW_DIR",
+        metavar="path or URL",
+        help="path of a patch-notes snapshot or URL of an official forum thread, or the poe2db page "
+        "URL; a relative path resolves against POE2_RAG_RAW_DIR",
     )
     ingest.add_argument(
         "--refresh",
         action="store_true",
-        help="fetch poe2db again instead of reading the local cache (poe2db only)",
+        help="fetch again instead of reading the local cache (poe2db pages and patch-notes URLs)",
     )
 
     ask = subparsers.add_parser("ask", help="ask a question about the corpus")
@@ -199,22 +191,26 @@ def _k_values(raw: str) -> tuple[int, ...]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _accepts_refresh(*, source: str, locator: str) -> bool:
+    """True when `--refresh` means something for this `(source, locator)` pair.
+
+    poe2db always has a cache to bypass. A patch-notes locator only has one when it was fetched over
+    HTTP: a local snapshot already is the file the run reads, so accepting the flag there would
+    promise a re-fetch the run never performs. `ftp://x` is not a path, so it keeps reaching the
+    fetcher and its own locator error with and without the flag.
+    """
+    if source == "poe2db":
+        return True
+    return source == "patch-notes" and classify_locator(locator) is not LocatorKind.PATH
+
+
 def _dispatch(args: argparse.Namespace, container: CliContainer) -> None:
     """Dispatch a parsed command to the inbound adapter that owns it."""
     if args.command == "ingest":
-        # Only poe2db fetches over HTTP, so only it needs a refresh-aware runner. `cast` keeps the
-        # base container protocol small enough that every existing fake still satisfies it.
-        ingest_runner = (
-            cast(Poe2dbIngestContainer, container).poe2db_ingest_source(
-                refresh=args.refresh
-            )
-            if args.source == "poe2db"
-            else container.ingest_source
-        )
         ingest_cli.run(
             source=args.source,
             locator=args.locator,
-            ingest=ingest_runner,
+            ingest=container.ingest_source(source=args.source, refresh=args.refresh),
             reindex=container.reindex_corpus,
         )
     elif args.command == "ask":
@@ -254,8 +250,12 @@ def main(argv: Sequence[str] | None = None, *, container: CliContainer | None = 
     """
     parser, ingest_parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.command == "ingest" and args.refresh and args.source != "poe2db":
-        ingest_parser.error("--refresh is only supported by the poe2db source")
+    if args.command == "ingest" and args.refresh and not _accepts_refresh(
+        source=args.source, locator=args.locator
+    ):
+        ingest_parser.error(
+            "--refresh is only supported by the poe2db source and patch-notes URLs"
+        )
 
     try:
         runtime = container if container is not None else _default_container()

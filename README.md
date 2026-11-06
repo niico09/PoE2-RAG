@@ -2,7 +2,7 @@
 
 Pipeline modular de RAG diseñado específicamente para resolver los desafíos de dominios con alta densidad técnica, ambigüedad léxica (*more* vs. *increased* damage) y obsolescencia temporal frecuente debida a parches de balance continuos en *Path of Exile 2*.
 
-> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el fetcher HTTP respetuoso y el adaptador de poe2db (caché local, `robots.txt`, límite de pedidos y parser de páginas de gemas), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest`, `ask` y `eval` de la CLI. `eval` implementa la evaluación de recuperación (Hit@K, MRR y tasa de recuperación obsoleta) sin costo de API: la recuperación es determinista y la corrida no toca la generación. Todavía no: el adaptador de poe2wiki.net y la evaluación de generación (fidelidad, promedio sobre varias corridas).
+> **Estado:** en implementación, con la CLI del MVP operativa. Existen con tests el modelo de dominio compartido, el catálogo de parches, el caso de uso `AnswerQuestion` con sus puertos de consulta, el primer corte de ingesta (`IngestSource`, repositorio JSON, fetcher de snapshots locales y parser de notas de parche), el fetcher HTTP respetuoso y el adaptador de poe2db (caché local, `robots.txt`, límite de pedidos y parser de páginas de gemas), el índice léxico BM25 (`ReindexCorpus`, tokenizador propio y adaptador con índice JSON persistido), el índice denso (embedder local `bge-base-en-v1.5` y adaptador sobre Chroma embebido), el reranker cross-encoder, la generación con citas nativas de Claude, la configuración (`AppConfig`), el composition root (`bootstrap.py`) y los comandos `ingest`, `ask` y `eval` de la CLI. La ingesta de notas de parche acepta el hilo oficial por URL o un snapshot local: el fetcher HTTP aplica una política cerrada por host y cachea el hilo en `data/raw/patch_notes/`. `eval` implementa la evaluación de recuperación (Hit@K, MRR y tasa de recuperación obsoleta) sin costo de API: la recuperación es determinista y la corrida no toca la generación. Todavía no: el adaptador de poe2wiki.net y la evaluación de generación (fidelidad, promedio sobre varias corridas).
 > El diseño completo está en [`docs/architecture.md`](docs/architecture.md) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ---
@@ -69,6 +69,12 @@ Requisitos: Python ≥ 3.12 y [`uv`](https://docs.astral.sh/uv/). Los artefactos
 # Ingiere un snapshot local de notas de parche y reconstruye los dos índices
 uv run poe2-rag ingest patch-notes data/raw/patch-notes-0.1.1.html
 
+# Ingiere un hilo oficial del foro desde su URL (sin sidecar ni descarga previa)
+uv run poe2-rag ingest patch-notes https://www.pathofexile.com/forum/view-thread/4009785
+
+# Fuerza una descarga nueva de ese hilo
+uv run poe2-rag ingest patch-notes https://www.pathofexile.com/forum/view-thread/4009785 --refresh
+
 # Ingiere una página de gema de poe2db (usa la caché local si ya la descargaste)
 uv run poe2-rag ingest poe2db https://poe2db.tw/us/Spark
 
@@ -76,7 +82,7 @@ uv run poe2-rag ingest poe2db https://poe2db.tw/us/Spark
 uv run poe2-rag ingest poe2db https://poe2db.tw/us/Spark --refresh
 ```
 
-El snapshot de notas de parche necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. La fuente `poe2db` solo acepta páginas `https://poe2db.tw/us/<slug>` y exige `POE2_RAG_HTTP_CONTACT`: el valor viaja en el `User-Agent` para que el sitio sepa quién lo consulta, no tiene default y la corrida falla sin él. La descarga respeta `robots.txt`, espera `POE2_RAG_HTTP_REQUEST_INTERVAL` entre pedidos al mismo host, usa un timeout y guarda la página en `data/raw/poe2db/` con un sidecar (`url`, `fetched_at`, `status`, digest); una segunda corrida sin `--refresh` lee la caché y no toca la red. El contenido de poe2db es de Grinding Gear Games y del tipo wiki bajo CC BY-NC-SA 3.0: se usa sin fines comerciales, cada chunk conserva su `SourceRef` y el corpus no se redistribuye ([ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md)). Si actualizás `config/patches.toml`, corré `--refresh` antes de reingerir: una página servida desde la caché se marca con el parche vigente al ingerirla, no con el de su captura. `poe2wiki.net` se sumará al mismo comando cuando exista su adaptador. La ingesta **no necesita ninguna clave**: los embeddings del índice denso los produce un modelo local, así que el comando funciona en una máquina que nunca llama a la API. `ANTHROPIC_API_KEY` solo hace falta para `ask`.
+El locator de `patch-notes` es una ruta local o la URL de un hilo oficial. Un snapshot local necesita su sidecar `<archivo>.meta.json` con `{"captured_at": "<ISO 8601 con zona>"}`; sin él la corrida falla en vez de inventar la fecha de captura. Una URL del foro, en cambio, se descarga: solo se aceptan `https://www.pathofexile.com/forum/view-thread/<id>` (sin puerto, query, fragmento, barra final ni otro host), el hilo queda cacheado en `data/raw/patch_notes/` y `captured_at` sale del momento de la descarga, no de la fecha de la corrida; `--refresh` fuerza una descarga nueva y sin la bandera la corrida lee la caché. `--refresh` sobre una ruta local es un error de uso (exit 2), porque un snapshot no tiene caché que saltear. Toda fuente que se descarga por HTTP —poe2db (`https://poe2db.tw/us/<slug>`) y el foro— exige `POE2_RAG_HTTP_CONTACT`: el valor viaja en el `User-Agent` para que el sitio sepa quién lo consulta, no tiene default y la corrida falla sin él; un snapshot local no lo necesita. La descarga respeta `robots.txt`, espera `POE2_RAG_HTTP_REQUEST_INTERVAL` entre pedidos al mismo host, usa un timeout y guarda la página en `data/raw/poe2db/` con un sidecar (`url`, `fetched_at`, `status`, digest); una segunda corrida sin `--refresh` lee la caché y no toca la red. El contenido de poe2db es de Grinding Gear Games y del tipo wiki bajo CC BY-NC-SA 3.0: se usa sin fines comerciales, cada chunk conserva su `SourceRef` y el corpus no se redistribuye ([ADR-0002](docs/adr/0002-fuentes-de-datos-mvp.md)). Si actualizás `config/patches.toml`, corré `--refresh` antes de reingerir: una página servida desde la caché se marca con el parche vigente al ingerirla, no con el de su captura. `poe2wiki.net` se sumará al mismo comando cuando exista su adaptador. La ingesta **no necesita ninguna clave**: los embeddings del índice denso los produce un modelo local, así que el comando funciona en una máquina que nunca llama a la API. `ANTHROPIC_API_KEY` solo hace falta para `ask`.
 
 ### Consulta
 
@@ -130,7 +136,7 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | credencial de `ask`; la lee el SDK |
 | `POE2_RAG_PROJECT_ROOT` | directorio de trabajo | raíz de la que cuelgan los defaults |
-| `POE2_RAG_RAW_DIR` | `data/raw` | raíz de los snapshots; una ruta relativa en `ingest` se resuelve acá |
+| `POE2_RAG_RAW_DIR` | `data/raw` | raíz de los snapshots y de la caché HTTP (`poe2db/` y `patch_notes/`); una ruta relativa en `ingest` se resuelve acá |
 | `POE2_RAG_PROCESSED_DIR` | `data/processed` | corpus procesado (`chunks.json`) |
 | `POE2_RAG_INDEX_DIR` | `data/index` | índices derivados (`bm25.json` y `chroma/`) |
 | `POE2_RAG_PATCH_CATALOG` | `config/patches.toml` | catálogo de parches |
@@ -217,7 +223,10 @@ El catálogo se declara en `config/patches.toml` (`current` más una tabla `[[pa
 - [ ] Conseguir acceso autorizado a poe2wiki.net.
 - [x] Modelo de dominio (`PatchVersion`, `Validity`, `EntityRef`, `SourceRef`, `Modifier`, `Chunk`) y catálogo de parches (`PatchCatalog`) con tests unitarios y de contrato.
 - [x] Caso de uso `AnswerQuestion` y puertos de consulta (`Embedder`, `LexicalIndex`, `VectorIndex`, `Reranker`, `LanguageModel`) con tests unitarios y fakes.
-- [x] Primer corte de ingesta: notas de parche oficiales → chunks validados y persistidos (`IngestSource`, `ChunkRepository` JSON, fetcher de snapshots con metadatos y parser del foro) con fixtures mínimas. La ingesta HTTP queda pendiente.
+- [x] Primer corte de ingesta: notas de parche oficiales → chunks validados y persistidos (`IngestSource`, `ChunkRepository` JSON, fetcher de snapshots con metadatos y parser del foro) con fixtures mínimas.
+- [x] Notas de parche desde la URL del hilo oficial: `LocatorFetcher` elige rama por locator, el fetcher HTTP
+  aplica una política cerrada (`www.pathofexile.com/forum/view-thread/<id>`, https, sin query) y cachea en
+  `data/raw/patch_notes/`; `--refresh` vuelve a descargar y `captured_at` sale de la descarga.
 - [x] Ingesta y chunking con metadatos de gemas de habilidad: fetcher HTTP respetuoso, caché local y
   parser de páginas de gemas de poe2db (`active_gem` y `support_gem`). Ítems y mecánicas quedan
   fuera de este corte.

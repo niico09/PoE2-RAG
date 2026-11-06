@@ -64,9 +64,9 @@ sidecar, and `--refresh` re-captures a thread the same way it does for poe2db.
 Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `pyproject.toml` and
 `tests/cli_fakes.py`.
 
-- [ ] T1 — Branch `feat/patch-notes-url` from `main`, this feature document, Engram mirror. Route: inline.
+- [x] T1 — Branch `feat/patch-notes-url` from `main`, this feature document, Engram mirror. Route: inline.
   S12. Commit: `docs(odd): plan the patch-notes URL ingest`.
-- [ ] T2 — Closed fetch policy with poe2db as the default. `HttpSourcePolicy` is a frozen dataclass with
+- [x] T2 — Closed fetch policy with poe2db as the default. `HttpSourcePolicy` is a frozen dataclass with
   `host: str`, `path: PathRule`, `source_type: str` and `cache_directory: str`; `PathRule` is a frozen
   dataclass with `prefix: str`, `slug: re.Pattern[str]` and `slug_message: str`, consumed by one shared
   ordered validator (prefix → trailing slash → slug fullmatch) so the rule is declared and not a mini-DSL.
@@ -117,7 +117,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   `<cache_dir>/patch_notes/`. The poe2db suites keep their paths and constructor untouched:
   `test_poe2db_network.py:42`, `test_polite_http_fetcher.py:97,137,152` and the `tmp_path/"poe2db"`
   assertions at `:108,:443,:552`. Route: inline. S2, S3.
-- [ ] T3 — Locator dispatch with one classifier. The pure classifier lives in
+- [x] T3 — Locator dispatch with one classifier. The pure classifier lives in
   `src/poe2_rag/ingestion/adapters/locator.py`, a stdlib-only sibling of `inbound/` and `outbound/` — not
   inside `outbound/`, because the CLI imports it at module scope and importing any outbound submodule also
   loads the `outbound` package the import guard forbids. It exports
@@ -141,7 +141,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   that `test_polite_http_fetcher.py` already uses, against the local run over the same fixture, comparing
   full `chunk_id`s, `source.type`, `source.url` and the detected version; a separate test pins
   `captured_at == fetched_at.date()` for a fresh fetch and for a cache hit. Route: inline. S1, S4, S6.
-- [ ] T4 — Composition root and CLI. `bootstrap.Container` gets one method
+- [x] T4 — Composition root and CLI. `bootstrap.Container` gets one method
   `ingest_source(*, source: str, refresh: bool) -> IngestSourceRunner` that raises
   `ValueError(f"unknown source: {source!r}")` with the same shape as
   `ingestion/adapters/inbound/cli/ingest.py:88-90` (the `if handler is None:` guard and its `raise`), so an
@@ -181,13 +181,13 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   with *and* without `--refresh` → exit 1 with one `error: only https URLs are allowed, got 'ftp://x'` line
   each, which is the only case that catches the guard rejecting `OTHER_SCHEME` as a usage error. Route:
   inline. S3, S5, S6.
-- [ ] T5 — Network test. `tests/network/test_patch_notes_network.py`, marked `network`, mirrors the poe2db
+- [x] T5 — Network test. `tests/network/test_patch_notes_network.py`, marked `network`, mirrors the poe2db
   network test: the real `PoliteHttpFetcher` with the forum policy, `PatchNotesParser`, `JsonChunkRepository`
   and a catalog containing 0.5.5e run through `IngestSource` with every directory under `tmp_path` (never
   `data/`), asserting the detected version, `source.type`, `source.url`, the chunk list and the cache under
   `tmp_path/patch_notes/`. The `network` marker description in `pyproject.toml:44` is generalized to the
   remote hosts it now covers. Run once manually and record the result. Route: inline. S6.
-- [ ] T6 — Documentation. README usage gains the URL form, and the sidecar paragraph says the sidecar is
+- [x] T6 — Documentation. README usage gains the URL form, and the sidecar paragraph says the sidecar is
   the local-snapshot rule while a URL takes `captured_at` from the fetch, naming the URL allow-list, the
   `data/raw/patch_notes/` cache and `--refresh`; `docs/architecture.md` §5.2 (the poe2db paragraph and the
   ingest-source list), the `SourceFetcher` row of §6 and the README status/roadmap lines follow. Two README
@@ -195,7 +195,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   acepta páginas … y exige `POE2_RAG_HTTP_CONTACT`") must say that any source fetched over HTTP needs the
   contact, naming the forum allow-list next to the poe2db one, and `README.md:133` (the `POE2_RAG_RAW_DIR`
   row, "raíz de los snapshots") must say it is also the root of the HTTP cache. Route: inline. S5.
-- [ ] T7 — Close: full suite, per-spec verdict, evidence, commit hashes. The per-spec verdict walks every
+- [x] T7 — Close: full suite, per-spec verdict, evidence, commit hashes. The per-spec verdict walks every
   S#, S5 included, and names `README.md:79` and `:133` among the documentation checks. Route: inline. S8,
   S14.
 
@@ -203,13 +203,109 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
 Filled as each task closes: RED → GREEN counts, the focused command, and the commit hash from
 `git log --oneline main..HEAD`.
 
-- T1 —
-- T2 —
-- T3 —
-- T4 —
-- T5 —
-- T6 —
-- T7 —
+- T1 — `1c164af` (merged into `main` by PR #20): the branch, this document and the Engram mirror.
+  No RED: it creates the plan, not behaviour.
+- T2 — RED: 2 collection errors (`ImportError`: `POE2DB_POLICY`, `HttpCacheError`, `HttpSourcePolicy`,
+  `PathRule` and `FORUM_POLICY` do not exist), blocking the 42 new cases in `test_polite_http_fetcher.py`,
+  `test_bootstrap.py` and `test_local_file_fetcher.py`. GREEN:
+  `uv run pytest -q tests/unit/ingestion/adapters/outbound/test_polite_http_fetcher.py
+  tests/unit/test_bootstrap.py tests/unit/ingestion/adapters/outbound/test_local_file_fetcher.py` → 136
+  passed; `uv run pytest -q` → 1448 passed, 24 deselected (+42 on the 1406 baseline). The four locator
+  sentences and the three cache sentences are drift pins: they pass before and after, and fail only if the
+  shared validator changes a user-visible message. Commit: `feat(ingest): declare the HTTP fetch policy in
+  one place`.
+- T3 — RED: `uv run pytest -q tests/unit/ingestion/adapters/test_locator.py
+  tests/unit/ingestion/adapters/outbound/test_locator_fetching.py` → 11 failed, 5 passed (both modules
+  import `LocatorKind`/`classify_locator`/`LocatorFetcher`, which did not exist). GREEN: the same command →
+  17 passed; `uv run pytest -q` → 1465 passed, 24 deselected (+17 on 1448). Later refactor while green:
+  the dispatcher table became one row per `(kind, branch)` decision, `captured_at` is compared with the
+  cache sidecar's `fetched_at` instead of `date.today()`, and the temporary-path literal lost its `noqa`.
+  Commit: `feat(ingest): dispatch the patch-notes locator by kind`.
+- T4 — RED: `uv run pytest -q tests/unit/test_cli.py tests/unit/test_bootstrap.py` → 17 failed
+  (10 CLI cases against the property-shaped container protocol, 7 bootstrap cases against the removed
+  `poe2db_ingest_source`). GREEN: the same two files → 76 passed; `uv run pytest -q` → 1477 passed, 24
+  deselected (+12 on 1465). `uv run poe2-rag ingest --help` renders `{patch-notes,poe2db} path or URL`
+  with both refresh cases in the option text. Commit: `feat(cli): ask the container for the source's
+  runner`.
+- T5 — RED (network, three manual runs): the first two runs failed on the only two things a live
+  thread can prove — the observed chunk list was still an empty placeholder (`['notes'] == []`) and the
+  expected `chunk_id` omitted the entity kind (`patch_notes:0-5-5@0.5.5e#notes` versus the real
+  `patch_notes:patch_notes:0-5-5@0.5.5e#notes`). GREEN:
+  `POE2_RAG_HTTP_CONTACT=… uv run pytest -q -m network tests/network/test_patch_notes_network.py -s` →
+  `1 passed`, printed `ingested 1 chunks from 36762 chars`; the default suite → 1477 passed, 25
+  deselected. The 0.5.5e staff post is a hotfix body (an `h3` repeating the title plus five bullets), so
+  one `notes` chunk is the thread's real shape. Commit: `test(ingest): capture one real patch-notes
+  thread`.
+- T6 — No behaviour change, so no RED: documentation plus one pin for the help text it promises
+  (`tests/unit/test_cli.py::test_ingest_help_names_the_url_form`, GREEN in the same run). README: the two
+  URL forms in the usage block, the sidecar paragraph rewritten around "local snapshot needs a sidecar,
+  a URL takes `captured_at` from the fetch", the HTTP-contact sentence now names both hosts, the
+  `POE2_RAG_RAW_DIR` row names the HTTP cache, and the status line plus roadmap follow. `docs/architecture.md`
+  §5.2 (policy-driven fetcher, the two closed policies and the locator dispatch) and the `SourceFetcher` row
+  of §6 are updated. Commit: `docs(cli): document the patch-notes URL ingest`.
+- T7 — `uv run pytest -q` → 1478 passed, 25 deselected; `uv run pytest -q -m network
+  tests/network/test_patch_notes_network.py` → 1 passed (the one manual run, T5); `git log --oneline
+  main..HEAD` → five commits, one per task; `uv run poe2-rag ingest --help` → `{patch-notes,poe2db} path or
+  URL`. Per-spec verdict below. Commit: `docs(odd): close the patch-notes URL ingest` (its own hash is only
+  readable from `git log -1`, because a commit cannot record the hash it will have).
+
+### Delivery slices
+
+One commit per task, in task order; the per-task slice is the task plus its tests, which is the delivery
+strategy L1 asked for ("about 400 authored changed lines per task is a planning heuristic, not a cap"):
+
+| Task | Commit | Slice |
+|---|---|---|
+| T2 | `7a9df14` | 515 insertions, 47 deletions (8 files) |
+| T3 | `f01b1fc` | 513 insertions, 2 deletions (5 files) |
+| T4 | `e69ee1e` | 289 insertions, 110 deletions (6 files) |
+| T5 | `84f5672` | 110 insertions, 3 deletions (3 files) |
+| T6 | `af31351` | 54 insertions, 13 deletions (4 files) |
+| T7 | closing commit | this document only |
+
+## Per-spec verdict (T7)
+
+- **S1 — locator dispatch.** `LocatorFetcher` (`src/poe2_rag/ingestion/adapters/outbound/locator_fetching.py`)
+  maps `PATH` to the local branch and `HTTP`/`OTHER_SCHEME` to the HTTP one; the composition root builds it
+  and neither `IngestSource` nor `PatchNotesParser` learned about transport (`git diff --name-only
+  main..HEAD` touches no `application/` or `domain/` file). Local paths behave as before, sidecar included
+  (`test_raw_directory_wrapper_resolves_paths_but_never_prefixes_a_url`,
+  `test_a_local_snapshot_never_needs_the_http_contact`), and `captured_at` is the fetch date both fresh and
+  cached (`test_captured_at_is_the_fetched_date_for_a_fresh_fetch_and_a_cache_hit`).
+- **S2 — URL allow-list.** `TestForumPolicy` accepts the four documented thread ids and rejects twelve other
+  shapes with zero requests; the CLI reports the rejection as one `error: only https URLs are allowed, got
+  …` line and exit 1 (`test_a_locator_outside_the_allow_list_is_one_line_and_exits_one`).
+- **S3 — refresh.** `--refresh` reaches the runner for a patch-notes URL
+  (`test_refresh_is_accepted_for_a_patch_notes_url`), stays a usage error (exit 2) for a local snapshot
+  (`test_refresh_is_a_usage_error_for_a_local_snapshot`), and the message names both supported cases.
+- **S4 — identity parity.** `test_url_and_path_runs_produce_identical_chunks_for_the_same_snapshot` compares
+  full `chunk_id`s, `source.type`, `source.url` and the detected version between a local capture and the
+  same thread fetched through `LocatorFetcher`; `Chunk.chunk_id` was not touched.
+- **S5 — documentation.** README usage block, the sidecar paragraph (`README.md:85`, which now says a local
+  snapshot needs the sidecar while a URL takes `captured_at` from the fetch, names the allow-list, the
+  `data/raw/patch_notes/` cache and `--refresh`) and the `POE2_RAG_RAW_DIR` row (`README.md:139`, now the root
+  of the HTTP cache too); `docs/architecture.md` §5.2 and the `SourceFetcher` row of §6; the help line is
+  pinned by `test_ingest_help_names_the_url_form`.
+- **S6 — tests.** Unit tests with fakes for URL vs. path, rejected hosts and paths, refresh propagation and
+  `fetched_at` as `captured_at`; the parity test above; `tests/network/test_patch_notes_network.py` marked
+  `network`, run once by hand (`1 passed`) and excluded from the default suite (25 deselected).
+- **S7 — layers.** No `domain/` or `application/` file is in the diff.
+- **S8 — TDD.** Every task recorded RED before GREEN in `## Evidence`; the two exceptions are documented
+  there (T2's sentences are drift pins that only fail if a shared sentence changes, T6 is documentation).
+- **S9 — commits.** One conventional commit per task, in order, each leaving the suite green.
+- **S10 — language.** Code, tests and commit messages are English. `README.md` and `docs/architecture.md`
+  stay Spanish: the repository's convention is "documentación y comentarios en español" (AGENTS.md), and
+  English paragraphs inside a Spanish page would be the defect. Interpreted spec; the deviation is only
+  here.
+- **S11 — corpus hygiene.** No `data/`, `.env` or capture in the diff; the only place the contact travels is
+  the `User-Agent` the fetcher already built.
+- **S12 — delivery.** Branch `feat/patch-notes-url` from `main` (`1c164af`), no `Co-Authored-By`, nothing
+  pushed and no PR.
+- **S13 — out of scope.** No 0.5.5–0.5.5d ingest into the real corpus, no forum crawler, no eval or
+  retrieval change.
+- **S14 — verification.** `uv run pytest -q` → 1478 passed, 25 deselected; `uv run pytest -q -m network
+  tests/network/test_patch_notes_network.py` → 1 passed (manual, once); `git log --oneline main..HEAD` → the
+  five commits above.
 
 ## Findings applied (gate rounds 1-6)
 
@@ -421,3 +517,23 @@ Close with a `## Key Learnings` block of 1–5 numbered standalone facts
   host, prefix, trailing slash and slug are pinned for poe2db (and for the forum) before the shared
   validator lands, because today only the trailing-slash substring is asserted and the other three are
   user-visible strings with no test behind them.
+
+### L4 — decisions taken while implementing
+- L4.1 — `LocatorFetcher` takes its HTTP branch as a zero-arg factory (`LocatorFetcher(*, local, http)`)
+  instead of two ready fetchers. The eager form the plan assumed in T3 was proved wrong by a test:
+  `PoliteHttpFetcher` refuses to build without `POE2_RAG_HTTP_CONTACT`, so building the patch-notes
+  runner eagerly would make `ingest patch-notes <path>` fail on a machine with no contact. That breaks S1
+  ("local paths behave exactly as today") and `test_a_missing_contact_fails_when_the_poe2db_runner_is_asked_for`,
+  which asserts patch-notes keeps working without one. The factory is built on the first URL and memoized,
+  so one runner still owns one fetcher (robots cache and throttle included) and the nesting is unchanged:
+  `LocatorFetcher` on top of `_RawDirectoryFetcher` and `PoliteHttpFetcher`.
+- L4.2 — README and `docs/architecture.md` stay Spanish. S10 is marked interpreted, and the repository's
+  own convention is "documentación y comentarios en español": appending English paragraphs to a Spanish page
+  would be the defect. Code, tests, docstrings and commit messages are English.
+- L4.3 — T6 grew one test (`test_ingest_help_names_the_url_form`). S5 asks for the usage line and T7 asks for
+  a verdict on it; a documentation claim nobody executes is the one claim that rots silently, and the pin is
+  three lines against a boundary the feature already owns.
+- L4.4 — Consequence of L4.1, recorded rather than fixed: on a machine with no `POE2_RAG_HTTP_CONTACT`,
+  `ingest patch-notes ftp://x` reports the missing contact instead of the rejected locator, because the HTTP
+  branch is built before any locator reaches it. It is still one line and exit 1, and without a contact no
+  URL could be fetched anyway, so naming the contact first is the more actionable of the two errors.

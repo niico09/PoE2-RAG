@@ -91,7 +91,9 @@ class FakeContainer:
 
     ``expected_errors`` is the composition root's real tuple: the point of these cases is that the
     boundary reports what the container declares, so a fake that invented its own list would test the
-    wrong thing.
+    wrong thing. ``ingest_source`` is the one source-aware entry point, so it records the
+    ``(source, refresh)`` pair the CLI asked for and hands back the stored runner: the assertions read
+    both, which is how a wrong refresh flag or a wrong source name becomes visible.
     """
 
     expected_errors: tuple[type[Exception], ...] = CONTAINER_ERRORS
@@ -103,9 +105,15 @@ class FakeContainer:
         reindex_corpus: FakeReindexCorpus | None = None,
         answer_question: FakeAnswerQuestion | None = None,
     ) -> None:
-        self.ingest_source = ingest_source or FakeIngestSource()
+        self.ingest = ingest_source or FakeIngestSource()
         self.reindex_corpus = reindex_corpus or FakeReindexCorpus()
         self.answer_question = answer_question or FakeAnswerQuestion()
+        self.ingest_requests: list[tuple[str, bool]] = []
+
+    def ingest_source(self, *, source: str, refresh: bool) -> FakeIngestSource:
+        """Record the ``(source, refresh)`` request and return the stored runner."""
+        self.ingest_requests.append((source, refresh))
+        return self.ingest
 
 
 class FailingContainer:
@@ -128,8 +136,7 @@ class FailingContainer:
         self._reindex_corpus = reindex_corpus
         self._answer_question = answer_question
 
-    @property
-    def ingest_source(self) -> IngestSourceRunner:
+    def ingest_source(self, *, source: str, refresh: bool) -> IngestSourceRunner:
         if self._ingest_source is not None:
             raise self._ingest_source
         return FakeIngestSource()

@@ -13,6 +13,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,13 +24,24 @@ from poe2_rag.answering.adapters.outbound.dense import bge_embedder
 from poe2_rag.answering.adapters.outbound.rerank import cross_encoder_reranker
 from poe2_rag.answering.application import AnswerQuestion, LanguageModel
 from poe2_rag.answering.domain.errors import InvalidQueryError
-from poe2_rag.bootstrap import DEFAULT_RETRIEVAL_SETTINGS, EXPECTED_ERRORS, Container
+from poe2_rag.bootstrap import (
+    DEFAULT_RETRIEVAL_SETTINGS,
+    EXPECTED_ERRORS,
+    FORUM_POLICY,
+    Container,
+)
 from poe2_rag.config import AppConfig, MissingApiKeyError
 from poe2_rag.evaluation.application import EvaluationError
+from poe2_rag.ingestion.adapters.inbound.cli import ingest as ingest_cli
 from poe2_rag.ingestion.adapters.outbound.http import (
     HttpFetchError,
     MissingHttpContactError,
     PoliteHttpFetcher,
+)
+from poe2_rag.ingestion.adapters.outbound.locator_fetching import LocatorFetcher
+from poe2_rag.ingestion.adapters.outbound.patch_notes_parser import (
+    PatchNotesParser,
+    UnsupportedSourceTypeError,
 )
 from poe2_rag.ingestion.adapters.outbound.poe2db import (
     Poe2dbGemPageParser,
@@ -39,12 +51,14 @@ from poe2_rag.ingestion.application import (
     EmptyCorpusError,
     IngestSource,
     LexicalIndexWriter,
+    RawDocument,
     ReindexCorpus,
     VectorIndexWriter,
 )
 from poe2_rag.shared.domain import PatchNotReleasedError
 
 CLI_FIXTURES = Path(__file__).parents[1] / "fixtures" / "cli"
+SNAPSHOT_NAME = "patch-notes-0.1.1.html"
 HEAVY_MODULES = ("torch", "sentence_transformers")
 API_KEY = "sk-ant-not-a-real-key"
 
@@ -134,7 +148,7 @@ def test_the_container_builds_the_three_use_cases(
 ) -> None:
     container = build(config)
 
-    assert isinstance(container.ingest_source, IngestSource)
+    assert isinstance(container.ingest_source(source="patch-notes", refresh=False), IngestSource)
     assert isinstance(container.reindex_corpus, ReindexCorpus)
     assert isinstance(container.answer_question, AnswerQuestion)
 
@@ -147,7 +161,7 @@ def test_building_the_container_loads_no_model_and_imports_no_heavy_package(
 
     container = build(config)
     for component in (
-        container.ingest_source,
+        container.ingest_source(source="patch-notes", refresh=False),
         container.reindex_corpus,
         container.answer_question,
     ):
@@ -309,7 +323,8 @@ def test_a_relative_locator_resolves_against_the_raw_directory(
         json.dumps({"captured_at": "2026-10-30T12:00:00+00:00"}), encoding="utf-8"
     )
 
-    report = build(config).ingest_source.execute("patch-notes-0.1.1.html")
+    runner = build(config).ingest_source(source="patch-notes", refresh=False)
+    report = runner.execute("patch-notes-0.1.1.html")
 
     # The report echoes the locator as the operator wrote it; the run only succeeds because the
     # snapshot was found under `raw_dir`, since no file of that name exists in the working directory.
@@ -336,31 +351,30 @@ def test_no_field_of_the_container_retains_the_api_key(
 
 
 def _with_contact(config: AppConfig) -> AppConfig:
-    """The poe2db pair refuses to build without a contact; tests give it a harmless one."""
+    """Both HTTP branches refuse to fetch without a contact; tests give it a harmless one."""
     return replace(config, http_contact="ops@example.com")
 
 
 def test_poe2db_ingest_is_built_lazily_from_its_own_fetcher_and_parser(
     config: AppConfig, no_model_load: None
 ) -> None:
-    """One refresh-aware runner per cache policy, sharing the corpus and the catalog."""
+    """One runner per cache policy, reached through the single source-aware entry point."""
     container = build(_with_contact(config))
 
-    runner = container.poe2db_ingest_source(refresh=False)
+    runner = cast(IngestSource, container.ingest_source(source="poe2db", refresh=False))
 
-    assert isinstance(runner, IngestSource)
     assert isinstance(runner._fetcher, PoliteHttpFetcher)
     assert isinstance(runner._parser, Poe2dbGemPageParser)
     assert runner._repository is container.chunk_repository
     assert runner._catalog is container.patch_catalog
-    assert runner is container.poe2db_ingest_source(refresh=False)
+    assert runner is container.ingest_source(source="poe2db", refresh=False)
 
 
 def test_refresh_selects_a_distinct_runner(config: AppConfig, no_model_load: None) -> None:
     container = build(_with_contact(config))
 
-    cached = container.poe2db_ingest_source(refresh=False)
-    refreshed = container.poe2db_ingest_source(refresh=True)
+    cached = cast(IngestSource, container.ingest_source(source="poe2db", refresh=False))
+    refreshed = cast(IngestSource, container.ingest_source(source="poe2db", refresh=True))
 
     assert cached is not refreshed
     cached_fetcher = cast(PoliteHttpFetcher, cached._fetcher)
@@ -376,7 +390,7 @@ def test_the_poe2db_fetcher_receives_the_configured_http_settings(
         _with_contact(config), http_request_interval=2.5, http_timeout=15.0
     )
 
-    runner = build(configured).poe2db_ingest_source(refresh=False)
+    runner = cast(IngestSource, build(configured).ingest_source(source="poe2db", refresh=False))
     fetcher = cast(PoliteHttpFetcher, runner._fetcher)
 
     assert fetcher._request_interval == 2.5
@@ -391,9 +405,9 @@ def test_a_missing_contact_fails_when_the_poe2db_runner_is_asked_for(
     """The read path and patch-notes keep working without a contact; fetching does not."""
     container = build(config)
 
-    assert isinstance(container.ingest_source, IngestSource)
+    assert isinstance(container.ingest_source(source="patch-notes", refresh=False), IngestSource)
     with pytest.raises(MissingHttpContactError) as raised:
-        container.poe2db_ingest_source(refresh=False)
+        container.ingest_source(source="poe2db", refresh=False)
 
     assert "POE2_RAG_HTTP_CONTACT" in str(raised.value)
 
@@ -411,9 +425,9 @@ def test_building_the_poe2db_runner_makes_no_request(
     client = httpx2.Client(transport=httpx2.MockTransport(handler))
     container = Container(_with_contact(config), environ={}, http_client=client)
 
-    runner = container.poe2db_ingest_source(refresh=False)
+    runner = cast(IngestSource, container.ingest_source(source="poe2db", refresh=False))
 
-    assert isinstance(runner, IngestSource)
+    assert isinstance(runner._fetcher, PoliteHttpFetcher)
     assert requests == []
 
 
@@ -450,3 +464,83 @@ def test_evaluation_reports_no_commit_when_the_project_root_is_not_a_repository(
     container = build(config)
 
     assert container.evaluation._git_commit is None
+
+
+def test_the_forum_policy_is_the_closed_thread_rule() -> None:
+    """The second host this project may fetch is a rule, not a hostname check (S2)."""
+    assert FORUM_POLICY.host == "www.pathofexile.com"
+    assert FORUM_POLICY.path.prefix == "/forum/view-thread/"
+    assert FORUM_POLICY.path.slug.fullmatch("4009785")
+    assert not FORUM_POLICY.path.slug.fullmatch("not-a-number")
+    assert FORUM_POLICY.cache_directory == "patch_notes"
+
+
+def test_the_forum_policy_source_type_is_the_one_the_parser_accepts() -> None:
+    """One literal for the kind: the policy cannot declare a source the forum parser refuses."""
+    raw = RawDocument(
+        locator="https://www.pathofexile.com/forum/view-thread/4009785",
+        content=(CLI_FIXTURES / "patch-notes-0.1.1.html").read_text(encoding="utf-8"),
+        fetched_at=datetime(2026, 10, 30, 12, 0, tzinfo=UTC),
+        source_type=FORUM_POLICY.source_type,
+    )
+
+    assert PatchNotesParser().parse(raw)
+    with pytest.raises(UnsupportedSourceTypeError):
+        PatchNotesParser().parse(replace(raw, source_type="other_source"))
+
+
+@pytest.mark.parametrize("refresh", [False, True], ids=["cached", "refresh"])
+@pytest.mark.parametrize("source", ingest_cli.SOURCES)
+def test_every_published_source_resolves_to_a_runner(
+    config: AppConfig, no_model_load: None, source: str, refresh: bool
+) -> None:
+    """The CLI's closed `choices` and the container's builders are one set, kept in step here."""
+    container = build(_with_contact(config))
+
+    runner = cast(IngestSource, container.ingest_source(source=source, refresh=refresh))
+
+    assert isinstance(runner, IngestSource)
+    assert runner._repository is container.chunk_repository
+    assert runner._catalog is container.patch_catalog
+
+
+def test_an_unknown_source_fails_closed(config: AppConfig, no_model_load: None) -> None:
+    """No name outside the table can reach a runner, and the failure names the input."""
+    container = build(_with_contact(config))
+
+    with pytest.raises(ValueError, match="unknown source: 'poe2wiki'"):
+        container.ingest_source(source="poe2wiki", refresh=False)
+
+
+def test_the_patch_notes_runner_dispatches_by_locator(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """A local snapshot and a forum URL share one runner, one corpus and one catalog."""
+    container = build(_with_contact(config))
+
+    runner = cast(IngestSource, container.ingest_source(source="patch-notes", refresh=False))
+
+    assert isinstance(runner._fetcher, LocatorFetcher)
+    assert isinstance(runner._parser, PatchNotesParser)
+    assert runner is container.ingest_source(source="patch-notes", refresh=False)
+    assert runner is not container.ingest_source(source="patch-notes", refresh=True)
+
+
+def test_a_local_snapshot_never_needs_the_http_contact(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """S1: a local path behaves exactly as before, including on a machine with no contact."""
+    config.raw_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = config.raw_dir / SNAPSHOT_NAME
+    shutil.copyfile(CLI_FIXTURES / SNAPSHOT_NAME, snapshot)
+    snapshot.with_name(snapshot.name + ".meta.json").write_text(
+        json.dumps({"captured_at": "2026-10-30T12:00:00+00:00"}), encoding="utf-8"
+    )
+    runner = build(config).ingest_source(source="patch-notes", refresh=False)
+
+    assert runner.execute(SNAPSHOT_NAME).chunk_ids
+
+    with pytest.raises(MissingHttpContactError) as raised:
+        runner.execute("https://www.pathofexile.com/forum/view-thread/4009785")
+
+    assert "POE2_RAG_HTTP_CONTACT" in str(raised.value)

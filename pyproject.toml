@@ -41,7 +41,7 @@ addopts = ["-ra", "-m", "not integration and not live and not network"]
 markers = [
     "integration: needs the real embedding or reranking model; opt in with '-m integration'",
     "live: calls the real Claude API, costs money and needs ANTHROPIC_API_KEY; opt in with '-m live'",
-    "network: performs a real HTTP request to poe2db.tw; opt in with '-m network' and a real POE2_RAG_HTTP_CONTACT",
+    "network: performs a real HTTP request to a remote host (poe2db.tw, www.pathofexile.com); opt in with '-m network' and a real POE2_RAG_HTTP_CONTACT",
 ]
 
 [tool.ruff.lint.isort]

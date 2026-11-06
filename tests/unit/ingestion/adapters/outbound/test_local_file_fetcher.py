@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from poe2_rag.ingestion.adapters.outbound import patch_notes_parser
 from poe2_rag.ingestion.adapters.outbound.local_file_fetcher import (
     DEFAULT_SOURCE_TYPE,
     METADATA_SUFFIX,
@@ -167,3 +168,12 @@ class TestCaptureMetadata:
         raw = LocalFileFetcher().fetch(str(path))
 
         assert raw.fetched_at.date().isoformat() == "2026-09-21"
+
+
+def test_the_default_source_type_is_the_parser_constant() -> None:
+    """One literal per concern: a second spelling of the same kind would stop every snapshot parsing.
+
+    The adapter keeps its own default so it is usable on its own, and the composition root injects the
+    parser's constant on the wired path. Pinning the two together catches the drift either way.
+    """
+    assert DEFAULT_SOURCE_TYPE == patch_notes_parser.SOURCE_TYPE
