@@ -117,7 +117,7 @@ Surfaces: L1's list plus the three entries L3.1 adds — `tests/network/**`, `py
   `<cache_dir>/patch_notes/`. The poe2db suites keep their paths and constructor untouched:
   `test_poe2db_network.py:42`, `test_polite_http_fetcher.py:97,137,152` and the `tmp_path/"poe2db"`
   assertions at `:108,:443,:552`. Route: inline. S2, S3.
-- [ ] T3 — Locator dispatch with one classifier. The pure classifier lives in
+- [x] T3 — Locator dispatch with one classifier. The pure classifier lives in
   `src/poe2_rag/ingestion/adapters/locator.py`, a stdlib-only sibling of `inbound/` and `outbound/` — not
   inside `outbound/`, because the CLI imports it at module scope and importing any outbound submodule also
   loads the `outbound` package the import guard forbids. It exports
@@ -213,7 +213,13 @@ Filled as each task closes: RED → GREEN counts, the focused command, and the c
   sentences and the three cache sentences are drift pins: they pass before and after, and fail only if the
   shared validator changes a user-visible message. Commit: `feat(ingest): declare the HTTP fetch policy in
   one place`.
-- T3 —
+- T3 — RED: `uv run pytest -q tests/unit/ingestion/adapters/test_locator.py
+  tests/unit/ingestion/adapters/outbound/test_locator_fetching.py` → 11 failed, 5 passed (both modules
+  import `LocatorKind`/`classify_locator`/`LocatorFetcher`, which did not exist). GREEN: the same command →
+  17 passed; `uv run pytest -q` → 1465 passed, 24 deselected (+17 on 1448). Later refactor while green:
+  the dispatcher table became one row per `(kind, branch)` decision, `captured_at` is compared with the
+  cache sidecar's `fetched_at` instead of `date.today()`, and the temporary-path literal lost its `noqa`.
+  Commit: `feat(ingest): dispatch the patch-notes locator by kind`.
 - T4 —
 - T5 —
 - T6 —
@@ -429,3 +435,13 @@ Close with a `## Key Learnings` block of 1–5 numbered standalone facts
   host, prefix, trailing slash and slug are pinned for poe2db (and for the forum) before the shared
   validator lands, because today only the trailing-slash substring is asserted and the other three are
   user-visible strings with no test behind them.
+
+### L4 — decisions taken while implementing
+- L4.1 — `LocatorFetcher` takes its HTTP branch as a zero-arg factory (`LocatorFetcher(*, local, http)`)
+  instead of two ready fetchers. The eager form the plan assumed in T3 was proved wrong by a test:
+  `PoliteHttpFetcher` refuses to build without `POE2_RAG_HTTP_CONTACT`, so building the patch-notes
+  runner eagerly would make `ingest patch-notes <path>` fail on a machine with no contact. That breaks S1
+  ("local paths behave exactly as today") and `test_a_missing_contact_fails_when_the_poe2db_runner_is_asked_for`,
+  which asserts patch-notes keeps working without one. The factory is built on the first URL and memoized,
+  so one runner still owns one fetcher (robots cache and throttle included) and the nesting is unchanged:
+  `LocatorFetcher` on top of `_RawDirectoryFetcher` and `PoliteHttpFetcher`.
