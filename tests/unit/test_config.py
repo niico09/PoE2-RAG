@@ -18,7 +18,12 @@ from poe2_rag.answering.adapters.outbound.dense.bge_embedder import DEFAULT_MODE
 from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     DEFAULT_EFFORT,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL,
+)
+from poe2_rag.answering.adapters.outbound.llm.opencode_language_model import (
+    DEFAULT_MODEL as DEFAULT_OPENCODE_MODEL,
+)
+from poe2_rag.answering.adapters.outbound.llm.opencode_language_model import (
+    DEFAULT_TIMEOUT as DEFAULT_OPENCODE_TIMEOUT,
 )
 from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     DEFAULT_MODEL_NAME,
@@ -26,6 +31,7 @@ from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
 from poe2_rag.config import (
     DEFAULT_HTTP_REQUEST_INTERVAL,
     DEFAULT_HTTP_TIMEOUT,
+    DEFAULT_LLM_TIMEOUT,
     LLM_EFFORTS,
     AppConfig,
     ConfigurationError,
@@ -71,13 +77,14 @@ def test_the_default_project_root_is_the_working_directory() -> None:
     assert load_config({}).project_root == Path.cwd()
 
 
-def test_the_default_model_ids_and_llm_budget_are_the_adapters_own_defaults() -> None:
-    """One value per model, not two: a drift between the config and an adapter must fail here."""
+def test_the_default_llm_model_and_timeout_match_the_default_provider_adapter() -> None:
+    """The default provider is opencode; its model and timeout must be the adapter's own defaults."""
     config = resolve()
 
     assert config.embedder_model_id == DEFAULT_MODEL_ID
     assert config.reranker_model_id == DEFAULT_MODEL_NAME
-    assert config.llm_model == DEFAULT_MODEL
+    assert config.llm_model == DEFAULT_OPENCODE_MODEL
+    assert config.llm_timeout == DEFAULT_OPENCODE_TIMEOUT
     assert config.llm_max_tokens == DEFAULT_MAX_TOKENS
     assert config.llm_effort == DEFAULT_EFFORT
 
@@ -91,6 +98,8 @@ def test_every_documented_variable_overrides_its_value() -> None:
         POE2_RAG_EMBEDDER_MODEL="BAAI/bge-small-en-v1.5",
         POE2_RAG_RERANKER_MODEL="BAAI/bge-reranker-v2-m3",
         POE2_RAG_LLM_MODEL="claude-opus-5-5",
+        # The ceiling and the depth are read by the Claude adapter only, so they apply here.
+        POE2_RAG_LLM_PROVIDER="claude",
         POE2_RAG_LLM_MAX_TOKENS="2048",
         POE2_RAG_LLM_EFFORT="high",
         POE2_RAG_HTTP_CONTACT="ops@example.com",
@@ -159,13 +168,13 @@ def test_a_blank_value_means_use_the_default() -> None:
 
     assert config.raw_dir == PROJECT_ROOT / "data/raw"
     assert config.llm_max_tokens == DEFAULT_MAX_TOKENS
-    assert config.llm_model == DEFAULT_MODEL
+    assert config.llm_model == DEFAULT_OPENCODE_MODEL
 
 
 @pytest.mark.parametrize("value", ["zero", "1.5", "0", "-3", "1024k"])
 def test_an_unusable_max_tokens_names_the_variable_and_the_value(value: str) -> None:
     with pytest.raises(ConfigurationError) as raised:
-        resolve(POE2_RAG_LLM_MAX_TOKENS=value)
+        resolve(POE2_RAG_LLM_PROVIDER="claude", POE2_RAG_LLM_MAX_TOKENS=value)
 
     assert "POE2_RAG_LLM_MAX_TOKENS" in str(raised.value)
     assert repr(value) in str(raised.value)
@@ -203,8 +212,12 @@ def test_direct_construction_resolves_relative_paths_against_the_project_root() 
     [("llm_max_tokens", 0), ("llm_effort", ""), ("llm_effort", "medium-high")],
 )
 def test_direct_construction_validates_every_value_it_was_given(field: str, value: object) -> None:
+    kwargs = values(**{field: value})
+    if field in {"llm_max_tokens", "llm_effort"}:
+        # Both knobs are Claude-only: the provider has to select the reader that validates them.
+        kwargs["llm_provider"] = "claude"
     with pytest.raises(ConfigurationError) as raised:
-        AppConfig(**values(**{field: value}))  # type: ignore[arg-type]
+        AppConfig(**kwargs)  # type: ignore[arg-type]
 
     assert field in str(raised.value)
 
@@ -216,10 +229,52 @@ def test_an_unknown_llm_effort_names_the_variable() -> None:
     variable they edited; validating here is what S1 asks for.
     """
     with pytest.raises(ConfigurationError) as raised:
-        resolve(POE2_RAG_LLM_EFFORT="medium-high")
+        resolve(POE2_RAG_LLM_PROVIDER="claude", POE2_RAG_LLM_EFFORT="medium-high")
 
     assert "POE2_RAG_LLM_EFFORT" in str(raised.value)
     assert "medium-high" in str(raised.value)
+
+
+def test_the_claude_only_knobs_do_not_block_an_opencode_run() -> None:
+    """A stale depth or ceiling must not stop startup when the chosen provider ignores them.
+
+    The README marks both as "(solo claude)". Refusing to start an OpenCode run over a value that
+    is never read would make a harmless leftover blocking, so the override is simply not applied.
+    """
+    config = resolve(POE2_RAG_LLM_EFFORT="medium-high", POE2_RAG_LLM_MAX_TOKENS="lots")
+
+    assert config.llm_provider == "opencode"
+    assert config.llm_effort == DEFAULT_EFFORT
+    assert config.llm_max_tokens == DEFAULT_MAX_TOKENS
+
+
+def test_a_provider_only_setting_is_normalised_in_the_value_object_too() -> None:
+    """One table, two layers: a config built by hand must agree with one read from the environment.
+
+    Skipping the validation alone used to leave `llm_max_tokens=0` inside the frozen config while
+    `load_config` returned the default for the same field, which is the disagreement this pins.
+    """
+    config = AppConfig(**values(llm_effort="medium-high", llm_max_tokens=0))  # type: ignore[arg-type]
+
+    assert config.llm_provider == "opencode"
+    assert (config.llm_effort, config.llm_max_tokens) == (DEFAULT_EFFORT, DEFAULT_MAX_TOKENS)
+
+
+def test_the_opencode_only_timeout_does_not_block_a_claude_run() -> None:
+    """`POE2_RAG_LLM_TIMEOUT` exists for the CLI subprocess; Claude never reads it."""
+    config = resolve(POE2_RAG_LLM_PROVIDER="claude", POE2_RAG_LLM_TIMEOUT="abc")
+
+    assert config.llm_provider == "claude"
+    assert config.llm_timeout == DEFAULT_LLM_TIMEOUT
+
+
+def test_an_unusable_llm_timeout_names_the_variable_for_the_opencode_provider() -> None:
+    """The same value must still be rejected by the provider that does read it."""
+    with pytest.raises(ConfigurationError) as raised:
+        resolve(POE2_RAG_LLM_TIMEOUT="abc")
+
+    assert "POE2_RAG_LLM_TIMEOUT" in str(raised.value)
+    assert "abc" in str(raised.value)
 
 
 def test_the_effort_set_matches_the_adapter_that_has_to_accept_it() -> None:
@@ -257,6 +312,61 @@ def test_the_http_settings_default_to_no_contact_and_a_conservative_pace() -> No
     assert config.http_contact is None
     assert config.http_request_interval == DEFAULT_HTTP_REQUEST_INTERVAL
     assert config.http_timeout == DEFAULT_HTTP_TIMEOUT
+
+
+def test_the_default_llm_provider_is_opencode() -> None:
+    assert resolve().llm_provider == "opencode"
+
+
+def test_the_claude_provider_keeps_its_default_model() -> None:
+    assert resolve(POE2_RAG_LLM_PROVIDER="claude").llm_model == "claude-sonnet-5-5"
+
+
+def test_llm_model_overrides_both_provider_defaults() -> None:
+    opencode_config = resolve(POE2_RAG_LLM_MODEL="custom-model")
+    assert opencode_config.llm_model == "custom-model"
+    assert opencode_config.llm_provider == "opencode"
+
+    claude_config = resolve(
+        POE2_RAG_LLM_PROVIDER="claude", POE2_RAG_LLM_MODEL="custom-model"
+    )
+    assert claude_config.llm_model == "custom-model"
+
+
+@pytest.mark.parametrize("value", ["zero", "0", "-3", "inf", "nan"])
+def test_an_unusable_llm_timeout_names_the_variable(value: str) -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        resolve(POE2_RAG_LLM_TIMEOUT=value)
+
+    assert "POE2_RAG_LLM_TIMEOUT" in str(raised.value)
+    assert repr(value) in str(raised.value)
+
+
+def test_an_unknown_llm_provider_names_the_variable() -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        resolve(POE2_RAG_LLM_PROVIDER="openai")
+
+    assert "POE2_RAG_LLM_PROVIDER" in str(raised.value)
+    assert "openai" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("llm_provider", "openai"),
+        ("llm_timeout", 0),
+        ("llm_timeout", float("inf")),
+        ("llm_timeout", -0.5),
+        ("llm_timeout", True),
+    ],
+)
+def test_direct_construction_rejects_an_unusable_llm_setting(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ConfigurationError) as raised:
+        AppConfig(**values(**{field: value}))  # type: ignore[arg-type]
+
+    assert field in str(raised.value)
 
 
 def test_a_contact_override_is_kept() -> None:
