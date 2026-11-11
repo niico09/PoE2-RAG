@@ -507,7 +507,7 @@ Cada una se registra como ADR en `docs/adr/` al resolverse.
 | A2 | Idioma | **Resuelta** — [ADR-0001](adr/0001-idioma-mvp-ingles.md): MVP todo en inglés | Embedder monolingüe; BM25 sin mapeo de términos |
 | A3 | Vector store | **Resuelta** — [ADR-0003](adr/0003-vector-store-chroma.md): Chroma embebido | Capacidad de pre-filtrado por rango de versión |
 | A4 | Embeddings | **Resuelta** — [ADR-0004](adr/0004-embeddings-locales.md): local, `bge-base-en-v1.5` | Costo, privacidad, reproducibilidad de la evaluación |
-| A5 | LLM | **Resuelta** — [ADR-0005](adr/0005-llm-por-api.md): Claude Sonnet 5.5 por API con citas nativas | Costo, calidad de citas, soporte de salida estructurada |
+| A5 | LLM | **Resuelta** — [ADR-0007](adr/0007-generacion-via-opencode.md): OpenCode CLI como proveedor por defecto, Claude por API como alternativa; modifica [ADR-0005](adr/0005-llm-por-api.md) | Costo, calidad de citas, latencia del subproceso, soporte de salida estructurada |
 | A6 | Interfaz de entrada | **Resuelta** — [ADR-0006](adr/0006-cli-como-interfaz.md): solo CLI | Define el adaptador de entrada |
 | A7 | Representación de vigencia en el vector store | **Resuelta** — [ADR-0003](adr/0003-vector-store-chroma.md): versión como entero ordenable y centinela para vigencia abierta | Depende de A3: no todos los stores filtran rangos de versión |
 

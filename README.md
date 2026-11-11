@@ -134,7 +134,7 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 
 | Variable | Default | Qué define |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | credencial de `ask`; la lee el SDK |
+| `ANTHROPIC_API_KEY` | — | credencial de `ask` cuando el proveedor es `claude`; la lee el SDK |
 | `POE2_RAG_PROJECT_ROOT` | directorio de trabajo | raíz de la que cuelgan los defaults |
 | `POE2_RAG_RAW_DIR` | `data/raw` | raíz de los snapshots y de la caché HTTP (`poe2db/` y `patch_notes/`); una ruta relativa en `ingest` se resuelve acá |
 | `POE2_RAG_PROCESSED_DIR` | `data/processed` | corpus procesado (`chunks.json`) |
@@ -142,9 +142,11 @@ Todo se puede ajustar por variables de entorno; un valor vacío usa el default y
 | `POE2_RAG_PATCH_CATALOG` | `config/patches.toml` | catálogo de parches |
 | `POE2_RAG_EMBEDDER_MODEL` | `BAAI/bge-base-en-v1.5` | modelo de embeddings local |
 | `POE2_RAG_RERANKER_MODEL` | `BAAI/bge-reranker-base` | cross-encoder de reranking |
-| `POE2_RAG_LLM_MODEL` | `claude-sonnet-5-5` | modelo de generación |
-| `POE2_RAG_LLM_MAX_TOKENS` | `1024` | tope de tokens de la respuesta |
-| `POE2_RAG_LLM_EFFORT` | `medium` | profundidad de razonamiento del modelo |
+| `POE2_RAG_LLM_PROVIDER` | `opencode` | proveedor de generación: `opencode` (CLI local, sin facturación por API) o `claude` (API de Anthropic) |
+| `POE2_RAG_LLM_MODEL` | depende del proveedor | modelo de generación: `opencode-go/deepseek-v4.1-flash` con `opencode`, `claude-sonnet-5-5` con `claude` |
+| `POE2_RAG_LLM_MAX_TOKENS` | `1024` | tope de tokens de la respuesta (solo `claude`) |
+| `POE2_RAG_LLM_EFFORT` | `medium` | profundidad de razonamiento del modelo (solo `claude`) |
+| `POE2_RAG_LLM_TIMEOUT` | `120.0` | segundos que puede durar una generación antes de matar el proceso (solo `opencode`) |
 | `POE2_RAG_HTTP_CONTACT` | — | contacto obligatorio de `ingest poe2db`; viaja en el `User-Agent` |
 | `POE2_RAG_HTTP_REQUEST_INTERVAL` | `1.0` | segundos mínimos entre pedidos al mismo host |
 | `POE2_RAG_HTTP_TIMEOUT` | `30.0` | segundos que puede durar un pedido HTTP |
