@@ -68,6 +68,19 @@ también mostró dos problemas que esta decisión tiene que resolver, no ignorar
    `huggingface_hub` leen esas banderas al importarse. No va dentro de `build_container`: esa función es un
    valor de su mapping y no tiene por qué mutar el proceso. El nivel es `error`: una barra y un aviso son
    ruido, una descarga fallida no.
+9. **Una salida vacía o no JSON se reintenta una vez; el resto no.** La corrida base de 20 preguntas falló
+   en 2 de 38 llamadas con `model output is not valid JSON` y preview vacío, en preguntas distintas cada
+   vez, y las mismas preguntas respondieron bien en la otra corrida: la falla es transitoria y no depende
+   del insumo. Por eso el adaptador clasifica las respuestas con una subclase propia,
+   `LanguageModelEmptyResponseError(LanguageModelResponseError)`: sin evento de texto, texto vacío o en
+   blanco y texto que no es JSON válido son transitorios y se reintentan una vez con el mismo prompt y un
+   timeout completo nuevo. Un JSON válido que viola el schema, una cita malformada o fuera del contexto
+   entregado, un exit distinto de cero, un timeout y los errores de configuración o autenticación son
+   permanentes y no se reintentan. La cantidad de intentos es `attempts` en el constructor (`2` por
+   defecto, entero >= 1); no se agrega configuración por entorno. Si el reintento también falla, el error
+   dice cuántos intentos se gastaron, sin prompt ni contexto en el mensaje: el error transitorio
+   nombra la falla (sin evento de texto o JSON inválido) y no echa la salida cruda del modelo, que
+   podría citar el contexto entregado.
 
 ## Alternativas descartadas
 
@@ -96,7 +109,10 @@ también mostró dos problemas que esta decisión tiene que resolver, no ignorar
 
 - **Latencia de subproceso.** Cada respuesta paga el arranque del CLI: medido entre 4 y 10 segundos en
   corridas reales, contra una llamada directa por API. Para `ask` interactivo es aceptable; para `eval` con
-  muchas corridas hay que tenerlo en cuenta al leer los tiempos.
+  muchas corridas hay que tenerlo en cuenta al leer los tiempos. Un reintento paga otro arranque completo.
+- **El reintento acota una falla observada, no la elimina.** Si las respuestas vacías fueran independientes,
+  un 5 % por llamada baja a ~0,25 % con dos intentos, pero el timeout es por intento: cada uno recibe el
+  `POE2_RAG_LLM_TIMEOUT` completo, así que el peor caso de `ask` duplica ese plazo.
 - **Sin citas nativas.** La fidelidad de las citas ya no la garantiza el proveedor sino el prompt más la
   validación del adaptador: una cita no verbatim o de otro chunk se rechaza, pero eso **detecta** el error,
   no lo evita. El riesgo de que el modelo invente valores numéricos (D2, D3) es mayor que con la API de
