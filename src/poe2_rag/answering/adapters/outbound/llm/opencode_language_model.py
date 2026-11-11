@@ -1,7 +1,8 @@
 """OpenCode generation with a dedicated no-tool agent and a hard subprocess timeout (S1-S6, S12).
 
 The adapter runs `opencode run` in a private process group, parses the JSONL event stream,
-extracts the model's JSON answer and maps its citations back to the delivered chunks. All
+extracts the model's JSON answer and maps its citations back to the delivered chunks. A transient
+empty or malformed answer is retried once with the same prompt; permanent failures are not. All
 errors are part of the shared `LanguageModel*` hierarchy so `bootstrap.EXPECTED_ERRORS` keeps
 working unchanged.
 """
@@ -37,8 +38,19 @@ from poe2_rag.answering.application import GeneratedAnswer
 from poe2_rag.answering.domain import Citation, RetrievedChunk
 from poe2_rag.shared.domain import is_blank
 
+
+class LanguageModelEmptyResponseError(LanguageModelResponseError):
+    """Raised when the model produced no usable text: no event, blank text or invalid JSON.
+
+    These are the transient failures the adapter retries, because the same prompt can succeed on a
+    second run. Schema violations, bad citations, non-zero exits and timeouts keep their own
+    specific errors, so deciding whether to retry is a type check and never message matching.
+    """
+
+
 DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash"
 DEFAULT_TIMEOUT = 120.0
+DEFAULT_ATTEMPTS = 2
 AGENT_NAME = "poe2-answer"
 _DELIMITER_PATTERN = re.compile(r"<\s*/?\s*source", re.IGNORECASE)
 
@@ -168,13 +180,14 @@ class SubprocessRunner:
 class OpenCodeLanguageModel:
     """Answer from delivered chunks with the `opencode` CLI behind the `LanguageModel` port."""
 
-    __slots__ = ("_model", "_runner", "_timeout")
+    __slots__ = ("_attempts", "_model", "_runner", "_timeout")
 
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
         *,
         timeout: float = DEFAULT_TIMEOUT,
+        attempts: int = DEFAULT_ATTEMPTS,
         runner: ProcessRunner | None = None,
     ) -> None:
         if is_blank(model):
@@ -190,8 +203,13 @@ class OpenCodeLanguageModel:
             raise LanguageModelConfigurationError(
                 f"timeout must be a positive finite number, got {timeout!r}"
             )
+        if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 1:
+            raise LanguageModelConfigurationError(
+                f"attempts must be an integer >= 1, got {attempts!r}"
+            )
         self._model = model
         self._timeout = float(timeout)
+        self._attempts = attempts
         self._runner = runner if runner is not None else SubprocessRunner()
 
     @property
@@ -202,9 +220,33 @@ class OpenCodeLanguageModel:
     def generate(
         self, question: str, context: Sequence[RetrievedChunk]
     ) -> GeneratedAnswer:
-        """Answer `question` from `context` only, returning the text and the citations it claims."""
+        """Answer `question` from `context` only, returning the text and the citations it claims.
+
+        An empty, blank or non-JSON answer is transient: the baseline saw it hit a different
+        question on each run and the same question answered correctly on the other run. So that case
+        is retried with the same prompt and a fresh full timeout, and a permanent failure (schema,
+        citations, exit code, timeout, configuration) is never retried. When every attempt is
+        transient, the last error type is kept and its message says how many attempts were spent.
+        """
         require_question(question)
         delivered = require_context(context)
+        last_error: LanguageModelEmptyResponseError | None = None
+        for _attempt in range(self._attempts):
+            try:
+                return self._generate_once(question, delivered)
+            except LanguageModelEmptyResponseError as exc:
+                last_error = exc
+        if last_error is None:
+            # Unreachable: `attempts` is validated as >= 1, so the loop always runs once.
+            raise LanguageModelEmptyResponseError("model produced no usable answer")
+        raise LanguageModelEmptyResponseError(
+            f"{last_error}; failed after {_attempt_phrase(self._attempts)}"
+        ) from last_error
+
+    def _generate_once(
+        self, question: str, delivered: tuple[RetrievedChunk, ...]
+    ) -> GeneratedAnswer:
+        """Run the child once with its own private config root and parse its answer."""
         with _isolated_config_directory() as config_directory:
             argv, env = self._command(question, delivered, config_directory)
             result = self._runner.run(argv, env=env, timeout=self._timeout)
@@ -347,6 +389,11 @@ def _neutralise_delimiters(value: str) -> str:
     )
 
 
+def _attempt_phrase(attempts: int) -> str:
+    """Return `1 attempt` or `2 attempts`, so the bounded failure message reads correctly."""
+    return f"{attempts} attempt" if attempts == 1 else f"{attempts} attempts"
+
+
 def _parse(
     result: subprocess.CompletedProcess[str],
     delivered: tuple[RetrievedChunk, ...],
@@ -360,7 +407,7 @@ def _parse(
         raise LanguageModelResponseError(message)
     text = _text_from_events(result.stdout or "")
     if text is None:
-        raise LanguageModelResponseError("opencode produced no text event")
+        raise LanguageModelEmptyResponseError("opencode produced no text event")
     answer, raw_citations = _parse_answer_json(text)
     citations = _validated_citations(raw_citations, delivered)
     return GeneratedAnswer(text=answer, citations=tuple(citations))
@@ -427,9 +474,9 @@ def _parse_answer_json(text: str) -> tuple[str, list[Any]]:
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise LanguageModelResponseError(
-            f"model output is not valid JSON: {_truncate(cleaned)}"
-        ) from exc
+        # No preview here: the transient message must not echo model output, which can contain
+        # delivered context. The non-zero-exit message keeps its bounded stderr preview.
+        raise LanguageModelEmptyResponseError("model output is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise LanguageModelResponseError(
             f"model output is not a JSON object: {_truncate(cleaned)}"
