@@ -21,6 +21,12 @@ import httpx2
 import pytest
 
 from poe2_rag.answering.adapters.outbound.dense import bge_embedder
+from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
+    ClaudeLanguageModel,
+)
+from poe2_rag.answering.adapters.outbound.llm.opencode_language_model import (
+    OpenCodeLanguageModel,
+)
 from poe2_rag.answering.adapters.outbound.rerank import cross_encoder_reranker
 from poe2_rag.answering.application import AnswerQuestion, LanguageModel
 from poe2_rag.answering.domain.errors import InvalidQueryError
@@ -30,7 +36,11 @@ from poe2_rag.bootstrap import (
     FORUM_POLICY,
     Container,
 )
-from poe2_rag.config import AppConfig, MissingApiKeyError
+from poe2_rag.config import (
+    LLM_PROVIDERS,
+    AppConfig,
+    MissingApiKeyError,
+)
 from poe2_rag.evaluation.application import EvaluationError
 from poe2_rag.ingestion.adapters.inbound.cli import ingest as ingest_cli
 from poe2_rag.ingestion.adapters.outbound.http import (
@@ -221,7 +231,11 @@ def test_a_missing_key_fails_before_any_retrieval_work(
     config: AppConfig, no_model_load: None, environ: dict[str, str]
 ) -> None:
     factory = CountingFactory()
-    container = build(config, environ=environ, client_factory=factory)
+    container = build(
+        replace(config, llm_provider="claude"),
+        environ=environ,
+        client_factory=factory,
+    )
 
     with pytest.raises(MissingApiKeyError) as raised:
         _ = container.answer_question
@@ -236,7 +250,7 @@ def test_the_key_comes_from_the_process_environment_by_default(
     config: AppConfig, no_model_load: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
-    container = Container(config, client_factory=CountingFactory())
+    container = Container(replace(config, llm_provider="claude"), client_factory=CountingFactory())
 
     assert isinstance(container.answer_question, AnswerQuestion)
 
@@ -245,7 +259,7 @@ def test_the_sdk_client_is_built_once_and_only_when_answering(
     config: AppConfig, no_model_load: None
 ) -> None:
     factory = CountingFactory()
-    container = build(config, client_factory=factory)
+    container = build(replace(config, llm_provider="claude"), client_factory=factory)
 
     assert factory.calls == 0
     first = container.answer_question
@@ -260,7 +274,10 @@ def test_the_client_factory_defaults_to_the_anthropic_sdk(
     from poe2_rag import bootstrap
 
     monkeypatch.setattr(bootstrap, "_default_anthropic_client", FakeAnthropicClient)
-    container = Container(config, environ={"ANTHROPIC_API_KEY": API_KEY})
+    container = Container(
+        replace(config, llm_provider="claude"),
+        environ={"ANTHROPIC_API_KEY": API_KEY},
+    )
 
     assert isinstance(container.answer_question, AnswerQuestion)
 
@@ -343,7 +360,10 @@ def test_no_field_of_the_container_retains_the_api_key(
     one `repr`, one log line or one traceback frame away from a terminal. The container therefore
     reduces the environment to a presence flag while it is being built.
     """
-    container = build(config, environ={"ANTHROPIC_API_KEY": API_KEY})
+    container = build(
+        replace(config, llm_provider="claude"),
+        environ={"ANTHROPIC_API_KEY": API_KEY},
+    )
     _ = container.answer_question
 
     for slot in Container.__slots__:
@@ -510,6 +530,42 @@ def test_an_unknown_source_fails_closed(config: AppConfig, no_model_load: None) 
 
     with pytest.raises(ValueError, match="unknown source: 'poe2wiki'"):
         container.ingest_source(source="poe2wiki", refresh=False)
+
+
+def test_the_opencode_provider_needs_no_api_key(
+    config: AppConfig, no_model_load: None
+) -> None:
+    """The default provider is local; it must receive model and timeout from configuration."""
+    configured = replace(
+        config,
+        llm_provider="opencode",
+        llm_model="opencode-go/probe",
+        llm_timeout=7.5,
+    )
+    container = build(configured, environ={})
+
+    model = container.language_model
+    assert isinstance(model, OpenCodeLanguageModel)
+    assert model._model == "opencode-go/probe"
+    assert model._timeout == 7.5
+
+
+def test_the_claude_provider_builds_the_claude_adapter(
+    config: AppConfig, no_model_load: None
+) -> None:
+    container = build(
+        replace(config, llm_provider="claude"),
+        environ={"ANTHROPIC_API_KEY": API_KEY},
+    )
+
+    assert isinstance(container.language_model, ClaudeLanguageModel)
+
+
+def test_the_provider_builders_match_the_configured_providers() -> None:
+    """The bootstrap mapping and the config set must be the same keys; otherwise one drifts."""
+    from poe2_rag import bootstrap
+
+    assert set(bootstrap._LLM_BUILDERS) == LLM_PROVIDERS
 
 
 def test_the_patch_notes_runner_dispatches_by_locator(

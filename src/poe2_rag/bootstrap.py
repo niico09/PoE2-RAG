@@ -37,8 +37,13 @@ from poe2_rag.answering.adapters.outbound.lexical.bm25_index import (
 )
 from poe2_rag.answering.adapters.outbound.llm.claude_language_model import (
     ClaudeLanguageModel,
+)
+from poe2_rag.answering.adapters.outbound.llm.errors import (
     LanguageModelError,
     LanguageModelRuntimeError,
+)
+from poe2_rag.answering.adapters.outbound.llm.opencode_language_model import (
+    OpenCodeLanguageModel,
 )
 from poe2_rag.answering.adapters.outbound.rerank.cross_encoder_reranker import (
     CrossEncoderReranker,
@@ -330,16 +335,30 @@ class Container:
 
     @property
     def language_model(self) -> LanguageModel:
-        """The generation adapter, built only when it is asked for and only with a credential."""
+        """The generation adapter, built lazily when asked for, with a credential only when the provider needs one."""
         if self._language_model is None:
-            self._require_api_key()
-            self._language_model = ClaudeLanguageModel(
-                self._client_factory(),
-                self._config.llm_model,
-                max_tokens=self._config.llm_max_tokens,
-                effort=self._config.llm_effort,
-            )
+            # `AppConfig.__post_init__` rejects any provider outside `LLM_PROVIDERS`, and
+            # `_LLM_BUILDERS` is pinned to those same keys by a test: a missing entry would be a
+            # broken invariant, so the plain lookup is the whole rule, not one of three guards.
+            self._language_model = _LLM_BUILDERS[self._config.llm_provider](self)
         return self._language_model
+
+    def _build_claude_language_model(self) -> LanguageModel:
+        """Build the Anthropic adapter; the API key must be present."""
+        self._require_api_key()
+        return ClaudeLanguageModel(
+            self._client_factory(),
+            self._config.llm_model,
+            max_tokens=self._config.llm_max_tokens,
+            effort=self._config.llm_effort,
+        )
+
+    def _build_opencode_language_model(self) -> LanguageModel:
+        """Build the local OpenCode CLI adapter; no API key is required."""
+        return OpenCodeLanguageModel(
+            self._config.llm_model,
+            timeout=self._config.llm_timeout,
+        )
 
     def ingest_source(self, *, source: str, refresh: bool) -> IngestSourceRunner:
         """Return the runner that ingests `source`, bypassing its cache when `refresh` is true.
@@ -516,6 +535,17 @@ class Container:
                 f"{API_KEY_VARIABLE} is not set. Export it, or pass it with "
                 f"`uv run --env-file .env ...` (see .env.example)."
             )
+
+
+_LLM_BUILDERS: dict[str, Callable[[Container], LanguageModel]] = {
+    "opencode": Container._build_opencode_language_model,
+    "claude": Container._build_claude_language_model,
+}
+"""The one table that maps a configured provider to the builder of its adapter.
+
+Its keys must match `config.LLM_PROVIDERS`; `tests/unit/test_bootstrap.py` pins that equality so a
+new provider cannot be accepted by configuration without a matching builder here.
+"""
 
 
 _INGEST_BUILDERS: dict[str, Callable[[Container, bool], IngestSource]] = {
