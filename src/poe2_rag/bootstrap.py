@@ -205,9 +205,39 @@ error first.
 ClientFactory = Callable[[], "Anthropic"]
 """Builds the SDK client on demand, so its import and its credential stay out of every other path."""
 
+_MODEL_LOADING_NOISE_ENVIRONMENT = {
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+    "HF_HUB_VERBOSITY": "error",
+    "TRANSFORMERS_VERBOSITY": "error",
+}
+"""What silences the two local model loaders without hiding a real failure.
+
+`transformers/utils/logging.py` computes its `_tqdm_active` flag from the Hub progress-bar setting
+and `huggingface_hub/constants.py` reads it, both at import time, so these values have to be in the
+environment before either library is imported. That is what `silence_model_loading_noise`
+guarantees: every adapter that loads a model imports its library lazily, and the composition root
+runs first. The level is `error` and not something harsher on purpose — a progress bar and an
+unauthenticated-Hub notice are noise, a failed download or a missing weight file is not.
+"""
+
+
+def silence_model_loading_noise() -> None:
+    """Turn off the loaders' progress bars and informational logs for this process.
+
+    The values are assigned, not defaulted: the CLI owns this output, so an inherited value that
+    re-enabled the bars would break the command's contract. It is called by the CLI entry point and
+    never by `build_container`, which stays a pure function of the mapping it is given.
+    """
+    for name, value in _MODEL_LOADING_NOISE_ENVIRONMENT.items():
+        os.environ[name] = value
+
 
 def build_container(environ: Mapping[str, str] | None = None) -> Container:
-    """Build the container from `environ` (the process environment when it is omitted)."""
+    """Build the container from `environ` (the process environment when it is omitted).
+
+    This function only reads its argument and mutates nothing: silencing the model loaders is the
+    process-wide concern of the CLI entry point, which calls `silence_model_loading_noise` itself.
+    """
     source = os.environ if environ is None else environ
     return Container(load_config(source), environ=source)
 

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -55,11 +58,25 @@ SCORES = StageScores(lexical=0.5, dense=0.25, fused=0.125, rerank=0.75)
 
 @dataclass(frozen=True, slots=True)
 class Call:
-    """One invocation the runner received."""
+    """One invocation the runner received, plus its private config directory as the child saw it.
+
+    The adapter deletes that directory before `generate` returns, so the runner is the only place
+    that can observe it: the state is captured here while the child would still be running.
+    """
 
     argv: list[str]
     env: dict[str, str]
     timeout: float
+    config_directory: Path | None
+    config_directory_exists: bool
+    config_directory_entries: tuple[str, ...]
+
+
+def _entries(directory: Path | None) -> tuple[str, ...]:
+    """List what a private config directory holds, tolerating one that does not exist."""
+    if directory is None or not directory.is_dir():
+        return ()
+    return tuple(sorted(entry.name for entry in directory.iterdir()))
 
 
 @dataclass
@@ -83,7 +100,19 @@ class FakeRunner:
         env: dict[str, str],
         timeout: float,
     ) -> subprocess.CompletedProcess[str]:
-        self.calls.append(Call(argv, env, timeout))
+        config_directory = (
+            Path(env["OPENCODE_CONFIG_DIR"]) if "OPENCODE_CONFIG_DIR" in env else None
+        )
+        self.calls.append(
+            Call(
+                argv,
+                env,
+                timeout,
+                config_directory,
+                config_directory is not None and config_directory.is_dir(),
+                _entries(config_directory),
+            )
+        )
         if self.timeout:
             raise LanguageModelTimeoutError(
                 f"opencode did not finish within {timeout} seconds"
@@ -603,3 +632,160 @@ def test_contract_helpers_match_adapter_behaviour() -> None:
     assert quotes_chunk("Sparkdeals10damage.", "Spark deals 10 damage.")
     # Exact about the words: re-spelled text is not evidence of anything.
     assert not quotes_chunk("Spark deals ten damage.", "Spark deals 10 damage.")
+
+
+# --------------------------------------------------------------------------- config isolation
+
+
+def _config_directory(runner: FakeRunner) -> Path:
+    """Return the private config directory the adapter handed the child."""
+    directory = runner.calls[0].config_directory
+    assert directory is not None, "the child must be given a config directory"
+    return directory
+
+
+def test_the_child_reads_its_config_from_a_private_empty_directory() -> None:
+    """A merged global config is the leak: both knobs must point at one private, empty directory.
+
+    `OPENCODE_CONFIG_DIR` replaces the global root in opencode v2 and `XDG_CONFIG_HOME` is the root
+    it replaces, so the two name the same tree and the child has nowhere else to look.
+    """
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+
+    call = runner.calls[0]
+    directory = _config_directory(runner)
+    assert call.config_directory_exists
+    assert call.config_directory_entries == ()
+    assert call.env["OPENCODE_CONFIG_DIR"] == str(directory)
+    assert call.env["XDG_CONFIG_HOME"] == str(directory.parent)
+    assert directory.name == "opencode"
+
+
+def test_the_private_directory_is_a_fresh_temporary_directory() -> None:
+    """A shared or predictable directory would let one run read another run's config."""
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+
+    directory = _config_directory(runner)
+    assert directory.parent.parent == Path(tempfile.gettempdir())
+
+
+def test_each_run_gets_its_own_config_directory() -> None:
+    """Two runs must not share the config root, so a concurrent `ask` cannot collide."""
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+    generate(runner)
+
+    first, second = (call.config_directory for call in runner.calls)
+    assert first is not None and second is not None
+    assert first != second
+
+
+def test_the_data_directory_is_never_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Credentials live in the data dir, so redirecting it would leave every run unauthenticated."""
+    monkeypatch.setenv("HOME", "/home/probe-user")
+    monkeypatch.setenv("XDG_DATA_HOME", "/home/probe-user/.local/share")
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+
+    env = runner.calls[0].env
+    assert env["XDG_DATA_HOME"] == "/home/probe-user/.local/share"
+    assert env["HOME"] == "/home/probe-user"
+    assert "OPENCODE_DB" not in env
+
+
+def test_the_config_content_carries_only_the_harmless_defence_in_depth_keys() -> None:
+    """Defence in depth is the empty config root; the plugin kill switch would break the run.
+
+    `mcp: {}` and `instructions: []` are additive, so they cannot remove a global surface on their
+    own — they only decline to add one. The plugin surface has no safe explicit form: `plugins:
+    ["-*"]` disables every plugin, including the built-in one that registers the agents this
+    adapter injects, and the child then fails with `Agent not found`. Verified against v2.2.7.
+    """
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+
+    config = json.loads(runner.calls[0].env["OPENCODE_CONFIG_CONTENT"])
+    assert config["mcp"] == {}
+    assert config["instructions"] == []
+    assert "plugins" not in config
+
+
+def test_the_private_config_directory_is_removed_after_a_successful_run() -> None:
+    """A leftover directory would accumulate one config root per question asked."""
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+
+    generate(runner)
+
+    assert not _config_directory(runner).parent.exists()
+
+
+def test_the_private_config_directory_is_removed_after_a_timeout() -> None:
+    """The cleanup belongs to the run, not to its success: a timeout must not leak the directory."""
+    runner = FakeRunner(timeout=True)
+
+    with pytest.raises(LanguageModelTimeoutError):
+        generate(runner)
+
+    assert not _config_directory(runner).parent.exists()
+
+
+def test_the_private_config_directory_is_removed_after_a_response_error() -> None:
+    """A failing child leaves no more behind than a successful one."""
+    runner = FakeRunner(returncode=1, stderr="Error: Agent not found")
+
+    with pytest.raises(LanguageModelResponseError):
+        generate(runner)
+
+    assert not _config_directory(runner).parent.exists()
+
+
+def _refuse_removal(*args: object, **kwargs: object) -> None:
+    """Stand in for `shutil.rmtree` so the cleanup path fails instead of deleting anything."""
+    raise OSError("directory is not empty")
+
+
+def test_a_cleanup_failure_is_reported_instead_of_silently_leaking_the_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One 0700 directory per question must not accumulate unseen, so the failure warns with its path.
+
+    `tempfile.tempdir` is redirected into `tmp_path` because this test deliberately defeats the
+    cleanup: without that, every run would leave a real `poe2-rag-opencode-*` directory behind in
+    the machine's temporary directory.
+    """
+    runner = FakeRunner(stdout=jsonl(text_event(answer_payload("ok", []))))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(shutil, "rmtree", _refuse_removal)
+
+    with pytest.warns(RuntimeWarning, match="could not remove the private opencode config"):
+        generate(runner)
+
+    # The directory the adapter tried to remove is the one the warning has to name.
+    assert _config_directory(runner).parent.exists()
+
+
+def test_a_cleanup_warning_never_replaces_the_runs_own_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`warnings.warn` raises under `-W error`, and the timeout must still be what the caller sees.
+
+    The adapter's contract is that every failure reaches `bootstrap.EXPECTED_ERRORS`, so a warning
+    escalated to an error must not swallow the `LanguageModelTimeoutError` already in flight.
+    """
+    runner = FakeRunner(timeout=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(shutil, "rmtree", _refuse_removal)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(LanguageModelTimeoutError):
+            generate(runner)
