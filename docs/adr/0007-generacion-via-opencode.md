@@ -49,6 +49,25 @@ también mostró dos problemas que esta decisión tiene que resolver, no ignorar
    `POE2_RAG_LLM_PROVIDER` acepta `opencode` (default) o `claude`. El modelo por defecto depende del
    proveedor (`opencode-go/deepseek-v4.1-flash` y `claude-sonnet-5-5`), y `POE2_RAG_LLM_MODEL` sigue
    ganando. `ANTHROPIC_API_KEY` se exige **solo** cuando el proveedor es `claude`.
+7. **El hijo no lee la configuración global del usuario.** `OPENCODE_CONFIG_CONTENT` se **fusiona** con lo
+   que la CLI encuentre en disco, y el `AGENTS.md` global, los `plugins/`, `skills/`, `commands/` y los
+   servidores MCP del usuario son parte de esa fusión: corrían dentro de un agente que debía tener las
+   herramientas apagadas. Por eso cada corrida crea un directorio temporal privado y vacío y apunta ahí
+   `OPENCODE_CONFIG_DIR` — que en OpenCode v2 **reemplaza** la raíz global de configuración — y también
+   `XDG_CONFIG_HOME`, la raíz que reemplaza. El directorio se borra en toda salida, timeout y error
+   incluidos. El directorio de **datos** no se toca: ahí viven las credenciales (SQLite en
+   `$XDG_DATA_HOME/opencode`), así que `HOME`, `XDG_DATA_HOME` y `OPENCODE_DB` se heredan y el login sigue
+   funcionando. Como segunda capa se envían `mcp: {}` e `instructions: []`, que son aditivos y no pueden
+   romper nada. La superficie de plugins **no** tiene forma explícita segura: `plugins: ["-*"]` apaga también
+   el plugin incorporado que registra los agentes inyectados, y la corrida falla con `Agent not found`. Esa
+   superficie queda cubierta solo por el reemplazo de la raíz de configuración.
+8. **El ruido de carga de modelos se calla en el composition root.** `ask` carga un embedder y un
+   reranker, y ambos imprimen barras de progreso y un aviso de Hub sin autenticar.
+   `cli._default_container` fija `HF_HUB_DISABLE_PROGRESS_BARS=1`, `HF_HUB_VERBOSITY=error` y
+   `TRANSFORMERS_VERBOSITY=error` antes de construir el container, porque `transformers` y
+   `huggingface_hub` leen esas banderas al importarse. No va dentro de `build_container`: esa función es un
+   valor de su mapping y no tiene por qué mutar el proceso. El nivel es `error`: una barra y un aviso son
+   ruido, una descarga fallida no.
 
 ## Alternativas descartadas
 
@@ -60,9 +79,15 @@ también mostró dos problemas que esta decisión tiene que resolver, no ignorar
 - **Reusar el agente global del usuario:** descartada. Arrastra un prompt largo, herramientas y permisos que
   el caso de uso no necesita, y deja abierta la posibilidad de que el modelo toque archivos al responder
   una pregunta.
-- **Escribir el JSON del agente en un archivo del proyecto** (`OPENCODE_CONFIG` o `OPENCODE_CONFIG_DIR`, que
-  también funcionan): descartada a favor de `OPENCODE_CONFIG_CONTENT` porque no deja un archivo que haya que
-  versionar, limpiar ni sincronizar, y el aislamiento queda contenido en una sola invocación.
+- **Escribir el JSON del agente en un archivo del proyecto** (`OPENCODE_CONFIG`): descartada a favor de
+  `OPENCODE_CONFIG_CONTENT` porque no deja un archivo que haya que versionar, limpiar ni sincronizar. Se usa
+  `OPENCODE_CONFIG_DIR`, en cambio, para algo distinto: apuntarlo a un directorio temporal vacío es el único
+  mecanismo que **quita** la raíz global del usuario, y por eso es parte de la decisión 7 y no del transporte
+  del agente.
+- **Confiar en `OPENCODE_DISABLE_PROJECT_CONFIG=1` para el aislamiento:** descartada. Esa bandera saltea la
+  configuración **del proyecto**, no la global: el `AGENTS.md` del usuario se sigue leyendo. No existe una
+  bandera documentada que lo desactive; la única forma documentada de no leerlo es apuntar la raíz de
+  configuración a un directorio que no lo tenga.
 - **Pasar `--auto` para que no pregunte permisos:** descartada explícitamente. Con el agente dedicado sin
   herramientas no hay permisos que aprobar, y `--auto` ampliaría el radio de acción justo donde queremos lo
   contrario.
@@ -90,3 +115,12 @@ también mostró dos problemas que esta decisión tiene que resolver, no ignorar
 - **Lo que se conserva de ADR-0005:** el puerto `LanguageModel`, la validación de citas en el dominio
   (`Answer.build`), la separación entre recuperación y generación en la evaluación, y el aislamiento del
   dominio. Lo que cambia es el proveedor por defecto y el mecanismo de citas.
+- **Aislamiento con un costo de arranque despreciable.** Cada respuesta crea y borra un directorio temporal
+  privado (un `mkdtemp` y un `rmtree`): nada frente al arranque del CLI. Lo que **no** se aísla son los
+  directorios de estado y de caché, que siguen siendo los del usuario, ni el de datos, que es donde viven
+  las credenciales.
+- **El aviso de Hub sin autenticar deja de aparecer.** `HF_HUB_VERBOSITY=error` lo calla y deja visibles los
+  errores de descarga y de pesos faltantes, porque ese es el nivel que se conserva. Las variables se fijan de
+  forma incondicional en la entrada del CLI, así que **no hay escotilla desde afuera**: exportar
+  `HF_HUB_DISABLE_PROGRESS_BARS=0` antes de invocar `poe2-rag` no reactiva las barras, y recuperarlas exige
+  cambiar el código. Es deliberado: el contrato es que `ask` imprima la respuesta, no cómo va cargando.

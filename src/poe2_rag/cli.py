@@ -78,9 +78,14 @@ def _default_container() -> CliContainer:
     The import lives here so that importing this module — which `--help` does — stays free of the
     composition root and everything it pulls in. The container reduces the environment to what the
     adapters need; this function only asks for it.
+
+    Silencing the model loaders happens here and not in `build_container`: it is a process-wide side
+    effect, and this is the process-wide entry point. It has to run before any adapter can import
+    `transformers` or `huggingface_hub`, which read their progress-bar flags at import time.
     """
     from poe2_rag import bootstrap
 
+    bootstrap.silence_model_loading_noise()
     return bootstrap.build_container()
 
 

@@ -13,9 +13,13 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
-from collections.abc import Sequence
+import tempfile
+import warnings
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from poe2_rag.answering.adapters.outbound.llm.contract import (
@@ -38,6 +42,12 @@ DEFAULT_TIMEOUT = 120.0
 AGENT_NAME = "poe2-answer"
 _DELIMITER_PATTERN = re.compile(r"<\s*/?\s*source", re.IGNORECASE)
 
+_CONFIG_DIRECTORY_NAME = "opencode"
+"""The directory opencode resolves under `XDG_CONFIG_HOME`; both overrides point at it."""
+
+_CONFIG_ROOT_PREFIX = "poe2-rag-opencode-"
+"""Prefix of the private tree, so a directory left behind by a killed process is identifiable."""
+
 _PIPE_DRAIN_SECONDS = 5.0
 
 _INHERITED_ENVIRONMENT = (
@@ -53,7 +63,6 @@ _INHERITED_ENVIRONMENT = (
     "TMPDIR",
     "TMP",
     "TEMP",
-    "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
     "XDG_CACHE_HOME",
@@ -63,6 +72,10 @@ _INHERITED_ENVIRONMENT = (
 
 Restricted on purpose: `opencode` is a third-party process and has no business reading
 `ANTHROPIC_API_KEY` (or any other exported secret) from the environment it inherits.
+
+`XDG_CONFIG_HOME` is absent because `_child_environment` always sets it: inheriting it would hand
+the child the user's global config root, which is the leak this adapter exists to close.
+`XDG_DATA_HOME` is present because credentials live in the data directory, not the config one.
 """
 
 _SYSTEM_PROMPT = (
@@ -192,28 +205,19 @@ class OpenCodeLanguageModel:
         """Answer `question` from `context` only, returning the text and the citations it claims."""
         require_question(question)
         delivered = require_context(context)
-        argv, env = self._command(question, delivered)
-        result = self._runner.run(argv, env=env, timeout=self._timeout)
+        with _isolated_config_directory() as config_directory:
+            argv, env = self._command(question, delivered, config_directory)
+            result = self._runner.run(argv, env=env, timeout=self._timeout)
         return _parse(result, delivered)
 
     def _command(
-        self, question: str, delivered: tuple[RetrievedChunk, ...]
+        self,
+        question: str,
+        delivered: tuple[RetrievedChunk, ...],
+        config_directory: Path,
     ) -> tuple[list[str], dict[str, str]]:
-        """Build the opencode invocation and the child environment."""
-        config = {
-            "default_agent": AGENT_NAME,
-            "instructions": [],
-            "agent": {
-                AGENT_NAME: {
-                    "mode": "primary",
-                    "description": "minimal answer agent",
-                    "prompt": _SYSTEM_PROMPT,
-                    "tools": {"*": False},
-                    "steps": 1,
-                }
-            },
-        }
-        env = _child_environment(config)
+        """Build the opencode invocation and the child environment for one run."""
+        env = _child_environment(_agent_configuration(), config_directory)
         prompt = _build_prompt(delivered, question)
         argv = [
             "opencode",
@@ -230,8 +234,46 @@ class OpenCodeLanguageModel:
         return argv, env
 
 
-def _child_environment(config: dict[str, Any]) -> dict[str, str]:
-    """Return the child environment, filtered down to what the CLI needs plus our overrides."""
+def _agent_configuration() -> dict[str, Any]:
+    """Return the config injected through `OPENCODE_CONFIG_CONTENT`: one no-tool agent, nothing else.
+
+    `mcp: {}` and `instructions: []` are the second isolation layer described in ADR-0007 §7; both are
+    additive, so they only decline to add. `plugins` is deliberately absent: its only disabling form,
+    `["-*"]`, also disables the built-in plugin that registers the agents injected here, and the run
+    then fails with `Agent not found`.
+    """
+    return {
+        "default_agent": AGENT_NAME,
+        "mcp": {},
+        "instructions": [],
+        "agent": {
+            AGENT_NAME: {
+                "mode": "primary",
+                "description": "minimal answer agent",
+                "prompt": _SYSTEM_PROMPT,
+                "tools": {"*": False},
+                "steps": 1,
+            }
+        },
+    }
+
+
+def _child_environment(
+    config: dict[str, Any], config_directory: Path
+) -> dict[str, str]:
+    """Return the child environment: what the CLI needs, plus a private config root.
+
+    The config this adapter injects is *merged* into whatever opencode finds on disk, and the user's
+    global `AGENTS.md`, `plugins/`, `skills/`, `commands/` and MCP servers are part of that merge.
+    `OPENCODE_CONFIG_DIR` replaces the global config root in opencode v2 and `XDG_CONFIG_HOME` is the
+    root it replaces, so both are pointed at the same private, empty directory: the child has
+    nowhere else to read a global instruction, plugin, skill, command or server from. What the config
+    itself carries is `_agent_configuration`'s business.
+
+    The data directory is deliberately left alone. Credentials live there — SQLite under
+    `$XDG_DATA_HOME/opencode`, `~/.local/share/opencode` by default — so `HOME`, `XDG_DATA_HOME` and
+    `OPENCODE_DB` are inherited untouched and the stored login keeps working.
+    """
     environment = {
         name: value
         for name in _INHERITED_ENVIRONMENT
@@ -239,7 +281,40 @@ def _child_environment(config: dict[str, Any]) -> dict[str, str]:
     }
     environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(config, separators=(",", ":"))
     environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+    environment["OPENCODE_CONFIG_DIR"] = str(config_directory)
+    environment["XDG_CONFIG_HOME"] = str(config_directory.parent)
     return environment
+
+
+@contextlib.contextmanager
+def _isolated_config_directory() -> Iterator[Path]:
+    """Yield a private, empty config directory for one run, and remove it afterwards.
+
+    `mkdtemp` creates the tree with mode 0700 and a unique name, so two concurrent `ask` runs cannot
+    read each other's config. Removal runs on every exit path — success, timeout and response error.
+    """
+    root = Path(tempfile.mkdtemp(prefix=_CONFIG_ROOT_PREFIX))
+    try:
+        config_directory = root / _CONFIG_DIRECTORY_NAME
+        config_directory.mkdir()
+        yield config_directory
+    finally:
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            # This must not replace the run's own failure — a timeout or a parse error is what the
+            # caller has to see — but it cannot be silent either: a leftover 0700 directory would
+            # accumulate one per question, and the prefix exists so it can be found and removed.
+            # `warnings.warn` raises on its own under `-W error`, so it is the one call here that has
+            # to be allowed to fail: the report is best-effort, the run's outcome is not.
+            with contextlib.suppress(Exception):
+                # `stacklevel=1` (the default, spelled out for the linter) points at this module, which
+                # is where the failure happened; a higher level would point into `contextlib.__exit__`.
+                warnings.warn(
+                    f"could not remove the private opencode config directory {root}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=1,
+                )
 
 
 def _build_prompt(delivered: tuple[RetrievedChunk, ...], question: str) -> str:
