@@ -29,12 +29,45 @@ from typing import TYPE_CHECKING, Any
 
 import anthropic
 
+from poe2_rag.answering.adapters.outbound.llm.contract import (
+    quotes_chunk,
+    require_context,
+    require_question,
+)
+from poe2_rag.answering.adapters.outbound.llm.errors import (
+    LanguageModelAPIError,
+    LanguageModelAuthenticationError,
+    LanguageModelConfigurationError,
+    LanguageModelConnectionError,
+    LanguageModelError,
+    LanguageModelRateLimitError,
+    LanguageModelRefusedError,
+    LanguageModelRequestError,
+    LanguageModelResponseError,
+    LanguageModelRuntimeError,
+    LanguageModelTruncatedError,
+)
 from poe2_rag.answering.application import NO_INFORMATION_TEXT, GeneratedAnswer
 from poe2_rag.answering.domain import Citation, RetrievedChunk
 from poe2_rag.shared.domain import Chunk, is_blank
 
 if TYPE_CHECKING:
     from anthropic.types.beta import BetaMessage
+
+__all__ = [
+    "ClaudeLanguageModel",
+    "LanguageModelAPIError",
+    "LanguageModelAuthenticationError",
+    "LanguageModelConfigurationError",
+    "LanguageModelConnectionError",
+    "LanguageModelError",
+    "LanguageModelRateLimitError",
+    "LanguageModelRefusedError",
+    "LanguageModelRequestError",
+    "LanguageModelResponseError",
+    "LanguageModelRuntimeError",
+    "LanguageModelTruncatedError",
+]
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_MAX_TOKENS = 1024
@@ -54,59 +87,6 @@ SYSTEM_PROMPT = (
 )
 """Frozen generation rules; the fixed sentence is the one `AnswerQuestion` returns when it delivers
 nothing, so a bare "no information" answer reads the same on both paths."""
-
-
-class LanguageModelError(ValueError):
-    """Base class for caller-provided invalid arguments to the language model adapter.
-
-    Upstream failures do not derive from this class, exactly like `RerankerError` and
-    `RerankScoringError`: a caller that captures `ValueError` for a bad argument gets the configuration
-    and request errors, and never a refusal or an API failure dressed as one.
-    """
-
-
-class LanguageModelConfigurationError(LanguageModelError):
-    """Raised when the adapter is configured with an unusable client, model, budget or effort."""
-
-
-class LanguageModelRequestError(LanguageModelError):
-    """Raised when a question or a context is unusable, before any request is sent."""
-
-
-class LanguageModelRuntimeError(RuntimeError):
-    """Base class for every upstream failure this adapter owns: refusal, truncation, response, API."""
-
-
-class LanguageModelRefusedError(LanguageModelRuntimeError):
-    """Raised when the model declined the request (`stop_reason: "refusal"`)."""
-
-    def __init__(self, message: str, stop_details_category: str | None = None) -> None:
-        super().__init__(message)
-        self.stop_details_category = stop_details_category
-
-
-class LanguageModelTruncatedError(LanguageModelRuntimeError):
-    """Raised when the answer hit `max_tokens` (`stop_reason: "max_tokens"`) and is incomplete."""
-
-
-class LanguageModelResponseError(LanguageModelRuntimeError):
-    """Raised when a response cannot be turned into an answer with mappable citations."""
-
-
-class LanguageModelAuthenticationError(LanguageModelRuntimeError):
-    """Raised when the API rejects the credentials."""
-
-
-class LanguageModelRateLimitError(LanguageModelRuntimeError):
-    """Raised when the API rate-limits the request, after the SDK's own retries."""
-
-
-class LanguageModelAPIError(LanguageModelRuntimeError):
-    """Raised when the API answers with a status error that is neither authentication nor rate limit."""
-
-
-class LanguageModelConnectionError(LanguageModelRuntimeError):
-    """Raised when the request never reached the API, or the connection died on the way."""
 
 
 class ClaudeLanguageModel:
@@ -157,8 +137,8 @@ class ClaudeLanguageModel:
         let a citation lend one chunk's words to another. The quoted text itself is never rewritten or
         dropped, and `Answer.build` still decides whether every citation is backed.
         """
-        _require_question(question)
-        delivered = _require_context(context)
+        require_question(question)
+        delivered = require_context(context)
         request = self._request(question, delivered)
         response = self._send(request)
         return _generated_answer(response, delivered)
@@ -340,45 +320,8 @@ def _citation(citation: object, delivered: tuple[RetrievedChunk, ...]) -> Citati
     if not isinstance(quoted_text, str) or is_blank(quoted_text):
         raise LanguageModelResponseError("a citation must quote a non-blank cited_text")
     chunk = delivered[index].chunk
-    if not _quotes_chunk(quoted_text, chunk.text):
+    if not quotes_chunk(quoted_text, chunk.text):
         raise LanguageModelResponseError(
             f"citation {index} quotes text that is not part of the chunk it names"
         )
     return Citation(chunk.chunk_id, quoted_text)
-
-
-def _quotes_chunk(quoted_text: str, chunk_text: str) -> bool:
-    """Return True when `quoted_text` is the chunk's own text, ignoring whitespace.
-
-    The API returns `cited_text` as the cited block range "joined together", so the separators between
-    two blocks are the API's, not the chunk's. Comparing with every whitespace character removed keeps
-    the check exact about the words and tolerant about the join, and it is what stops an in-range
-    `document_index` from lending one chunk's words to another.
-    """
-    return "".join(quoted_text.split()) in "".join(chunk_text.split())
-
-
-def _require_question(question: object) -> None:
-    """Reject a blank or non-string question before any request is sent."""
-    if is_blank(question):
-        raise LanguageModelRequestError(f"question must be a non-blank string, got {question!r}")
-
-
-def _require_context(context: object) -> tuple[RetrievedChunk, ...]:
-    """Materialize the context, rejecting anything that is not a delivered chunk.
-
-    A bare string is rejected explicitly: iterating it would read characters as chunks. An empty
-    context is rejected too, because a model with no document would answer from the question alone
-    and every citation it produced would be unmappable.
-    """
-    if isinstance(context, (str, bytes)) or not isinstance(context, Sequence):
-        raise LanguageModelRequestError(
-            f"context must be a sequence of RetrievedChunk, got {context!r}"
-        )
-    materialized = tuple(context)
-    if not materialized:
-        raise LanguageModelRequestError("context must deliver at least one chunk")
-    for retrieved in materialized:
-        if not isinstance(retrieved, RetrievedChunk):
-            raise LanguageModelRequestError(f"context must be RetrievedChunk, got {retrieved!r}")
-    return materialized
